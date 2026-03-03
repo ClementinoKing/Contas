@@ -16,16 +16,16 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }: C
         root: 'w-fit',
         months: 'flex flex-col sm:flex-row gap-4',
         month: 'relative flex w-full flex-col gap-4',
-        month_caption: 'relative flex h-9 items-center justify-center',
+        month_caption: 'relative flex h-9 items-center justify-center px-11',
         caption_label: 'inline-flex items-center gap-1 text-sm font-medium',
         nav: 'absolute inset-x-0 top-0 flex items-center justify-between',
         button_previous: cn(
           buttonVariants({ variant: 'outline' }),
-          'h-8 w-8 rounded-xl bg-transparent p-0 opacity-70 hover:opacity-100',
+          'absolute left-0 top-0 h-8 w-8 rounded-xl bg-transparent p-0 opacity-70 hover:opacity-100',
         ),
         button_next: cn(
           buttonVariants({ variant: 'outline' }),
-          'h-8 w-8 rounded-xl bg-transparent p-0 opacity-70 hover:opacity-100',
+          'absolute right-0 top-0 h-8 w-8 rounded-xl bg-transparent p-0 opacity-70 hover:opacity-100',
         ),
         dropdowns: 'flex h-9 items-center justify-center gap-1.5',
         dropdown_root:

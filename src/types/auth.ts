@@ -1,8 +1,23 @@
+export type OnboardingStep = 'name' | 'work' | 'tools' | 'invite'
+
+export interface OnboardingState {
+  completed: boolean
+  currentStep: OnboardingStep
+  fullName: string
+  role: string
+  workFunction: string
+  useCase: string
+  tools: string[]
+  inviteEmails: string[]
+}
+
 export interface User {
   id: string
   email: string
   name: string
   tenantId: string
+  avatarUrl?: string
+  onboarding?: OnboardingState
 }
 
 export interface AuthSession {

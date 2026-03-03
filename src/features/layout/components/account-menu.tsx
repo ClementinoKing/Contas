@@ -1,7 +1,7 @@
 import { Check, ChevronDown, LogOut, Settings, Users } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,6 +36,7 @@ export function AccountMenu() {
           aria-label='Open account menu'
         >
           <Avatar className='h-8 w-8 border'>
+            {currentUser?.avatarUrl ? <AvatarImage src={currentUser.avatarUrl} alt={currentUser.name} /> : null}
             <AvatarFallback className='bg-muted text-xs font-semibold text-foreground'>
               {initials(currentUser?.name ?? 'User')}
             </AvatarFallback>

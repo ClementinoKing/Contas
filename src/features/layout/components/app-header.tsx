@@ -34,6 +34,7 @@ import { Input } from '@/components/ui/input'
 import { USER_PROJECTS } from '@/features/projects/projects-data'
 
 import { AccountMenu } from './account-menu'
+import { InvitePeopleDialog } from './invite-people-dialog'
 
 const PROJECT_TEMPLATES = [
   {
@@ -74,6 +75,7 @@ export function AppHeader({
 
   const [createTaskOpen, setCreateTaskOpen] = useState(false)
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false)
 
   const [selectedAttachment, setSelectedAttachment] = useState('')
   const [descriptionDueDate, setDescriptionDueDate] = useState<Date | undefined>()
@@ -162,7 +164,7 @@ export function AppHeader({
                   <Goal className='mr-2 h-4 w-4' aria-hidden='true' />
                   Create Goal
                 </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => navigate('/dashboard/settings')}>
+                <DropdownMenuItem onSelect={() => setInviteOpen(true)}>
                   <UserPlus2 className='mr-2 h-4 w-4' aria-hidden='true' />
                   Invite
                 </DropdownMenuItem>
@@ -461,6 +463,8 @@ export function AppHeader({
           </div>
         </DialogContent>
       </Dialog>
+
+      <InvitePeopleDialog open={inviteOpen} onOpenChange={setInviteOpen} />
     </>
   )
 }

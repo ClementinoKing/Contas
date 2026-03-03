@@ -53,7 +53,7 @@ export function RegisterPage() {
         email: values.email,
         password: values.password,
       })
-      navigate('/dashboard', { replace: true })
+      navigate('/onboarding/name', { replace: true })
     } finally {
       setSubmitting(false)
     }

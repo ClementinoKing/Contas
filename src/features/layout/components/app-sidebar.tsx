@@ -10,6 +10,7 @@ import {
 import { USER_PROJECTS } from '@/features/projects/projects-data'
 import { cn } from '@/lib/utils'
 
+import { InvitePeopleDialog } from './invite-people-dialog'
 import { SIDEBAR_SECTIONS } from './navigation-items'
 
 const THEME_STORAGE_KEY = 'contas.ui.theme'
@@ -17,6 +18,7 @@ const THEME_TRANSITION_CLASS = 'theme-transition'
 
 function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const navigate = useNavigate()
+  const [inviteOpen, setInviteOpen] = useState(false)
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
     if (storedTheme) {
@@ -46,7 +48,8 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
   }
 
   return (
-    <div className='flex h-full flex-col'>
+    <>
+      <div className='flex h-full flex-col'>
       <div className='px-3 py-4'>
         <p className={cn('px-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground', collapsed && 'sr-only')}>
           Workspace
@@ -148,6 +151,7 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
             <button
               type='button'
               aria-label='Invite'
+              onClick={() => setInviteOpen(true)}
               className={cn(
                 'inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 collapsed && 'h-8 w-8 justify-center p-0',
@@ -198,7 +202,9 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
           </div>
         </div>
       </footer>
-    </div>
+      </div>
+      <InvitePeopleDialog open={inviteOpen} onOpenChange={setInviteOpen} />
+    </>
   )
 }
 

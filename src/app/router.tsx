@@ -3,9 +3,17 @@ import { createBrowserRouter, Navigate } from 'react-router-dom'
 import { AuthRedirectRoute, ProtectedRoute } from './route-guards'
 import { DashboardHomePage } from '@/features/dashboard/pages/dashboard-home-page'
 import { MyTasksPage } from '@/features/dashboard/pages/my-tasks-page'
+import { NotificationsPage } from '@/features/dashboard/pages/notifications-page'
+import { ReportingPage } from '@/features/dashboard/pages/reporting-page'
+import { PortfolioPage } from '@/features/dashboard/pages/portfolio-page'
+import { GoalsPage } from '@/features/dashboard/pages/goals-page'
+import { WorkspacePage } from '@/features/dashboard/pages/workspace-page'
+import { OnboardingInvitePage } from '@/features/onboarding/pages/onboarding-invite-page'
+import { OnboardingNamePage } from '@/features/onboarding/pages/onboarding-name-page'
+import { OnboardingToolsPage } from '@/features/onboarding/pages/onboarding-tools-page'
+import { OnboardingWorkPage } from '@/features/onboarding/pages/onboarding-work-page'
 import { ProjectDetailPage } from '@/features/dashboard/pages/project-detail-page'
 import { ProjectsPage } from '@/features/dashboard/pages/projects-page'
-import { DashboardSectionPage } from '@/features/dashboard/pages/dashboard-section-page'
 import { LoginPage } from '@/features/auth/pages/login-page'
 import { RegisterPage } from '@/features/auth/pages/register-page'
 import { AppShellLayout } from '@/features/layout/components/app-shell-layout'
@@ -37,6 +45,10 @@ export const router = createBrowserRouter([
   {
     element: <ProtectedRoute />,
     children: [
+      { path: '/onboarding/name', element: <OnboardingNamePage /> },
+      { path: '/onboarding/work', element: <OnboardingWorkPage /> },
+      { path: '/onboarding/tools', element: <OnboardingToolsPage /> },
+      { path: '/onboarding/invite', element: <OnboardingInvitePage /> },
       {
         path: '/dashboard',
         element: <AppShellLayout />,
@@ -44,13 +56,13 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to='home' replace /> },
           { path: 'home', element: <DashboardHomePage /> },
           { path: 'my-tasks', element: <MyTasksPage /> },
-          { path: 'notifications', element: <DashboardSectionPage title='Notifications' /> },
-          { path: 'reporting', element: <DashboardSectionPage title='Reporting' /> },
-          { path: 'portfolio', element: <DashboardSectionPage title='Portfolio' /> },
-          { path: 'goals', element: <DashboardSectionPage title='Goals' /> },
+          { path: 'notifications', element: <NotificationsPage /> },
+          { path: 'reporting', element: <ReportingPage /> },
+          { path: 'portfolio', element: <PortfolioPage /> },
+          { path: 'goals', element: <GoalsPage /> },
           { path: 'projects', element: <ProjectsPage /> },
           { path: 'projects/:projectId', element: <ProjectDetailPage /> },
-          { path: 'workspace', element: <DashboardSectionPage title='Workspace' /> },
+          { path: 'workspace', element: <WorkspacePage /> },
           { path: 'settings', element: <SettingsPage /> },
         ],
       },

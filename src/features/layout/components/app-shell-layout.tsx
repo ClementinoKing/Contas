@@ -25,12 +25,14 @@ export function AppShellLayout() {
         <DesktopSidebar collapsed={sidebarCollapsed} />
         <MobileSidebar open={mobileOpen} onOpenChange={setMobileOpen} />
 
-        <main className='min-w-0 flex-1 overflow-x-hidden p-4 md:p-6' aria-label='Dashboard content'>
+        <main className='flex min-w-0 flex-1 flex-col overflow-x-hidden p-4 md:p-6' aria-label='Dashboard content'>
           <div className='mb-5 flex items-center gap-3'>
             <h1 className='text-xl font-semibold text-foreground'>Project Workspace</h1>
             <Badge variant='secondary'>{currentTenant.name}</Badge>
           </div>
-          <Outlet />
+          <div className='min-h-0 flex-1'>
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

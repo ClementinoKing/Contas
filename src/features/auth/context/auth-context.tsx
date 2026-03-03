@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from 'react'
 
 import { STORAGE_KEYS } from '@/lib/storage'
-import type { AuthSession, LoginPayload, RegisterPayload, User } from '@/types/auth'
+import type { AuthSession, LoginPayload, OnboardingState, RegisterPayload, User } from '@/types/auth'
 
 type AuthState = {
   session: AuthSession | null
@@ -20,6 +20,9 @@ export interface AuthContextValue {
   loading: boolean
   login: (payload: LoginPayload) => Promise<void>
   register: (payload: RegisterPayload) => Promise<void>
+  updateCurrentUser: (updates: Partial<User>) => void
+  updateOnboarding: (updates: Partial<OnboardingState>) => void
+  completeOnboarding: () => void
   logout: () => void
 }
 
@@ -53,6 +56,25 @@ function buildMockSession({ email, name, tenantId }: { email: string; name: stri
     },
     token: `mock_${crypto.randomUUID()}`,
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  }
+}
+
+function createInitialOnboarding({
+  fullName = '',
+  completed,
+}: {
+  fullName?: string
+  completed: boolean
+}): OnboardingState {
+  return {
+    completed,
+    currentStep: completed ? 'invite' : 'name',
+    fullName,
+    role: '',
+    workFunction: '',
+    useCase: '',
+    tools: [],
+    inviteEmails: [],
   }
 }
 
@@ -90,14 +112,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const tenantId = localStorage.getItem(STORAGE_KEYS.tenantId) ?? 'tenant-acme'
     const mockName = email.split('@')[0]?.replace(/\./g, ' ') ?? 'User'
     const session = buildMockSession({ email, name: mockName, tenantId })
+    session.user.onboarding = createInitialOnboarding({ fullName: mockName, completed: true })
     setSession(session)
   }, [setSession])
 
   const register = useCallback(async ({ name, email }: RegisterPayload) => {
     const tenantId = localStorage.getItem(STORAGE_KEYS.tenantId) ?? 'tenant-acme'
     const session = buildMockSession({ email, name, tenantId })
+    session.user.onboarding = createInitialOnboarding({ fullName: name, completed: false })
     setSession(session)
   }, [setSession])
+
+  const updateCurrentUser = useCallback(
+    (updates: Partial<User>) => {
+      if (!state.session) return
+
+      const updatedSession: AuthSession = {
+        ...state.session,
+        user: {
+          ...state.session.user,
+          ...updates,
+        },
+      }
+
+      setSession(updatedSession)
+    },
+    [setSession, state.session],
+  )
+
+  const updateOnboarding = useCallback(
+    (updates: Partial<OnboardingState>) => {
+      if (!state.session) return
+
+      const currentOnboarding =
+        state.session.user.onboarding ?? createInitialOnboarding({ fullName: state.session.user.name, completed: false })
+
+      const updatedSession: AuthSession = {
+        ...state.session,
+        user: {
+          ...state.session.user,
+          onboarding: {
+            ...currentOnboarding,
+            ...updates,
+          },
+        },
+      }
+
+      setSession(updatedSession)
+    },
+    [setSession, state.session],
+  )
+
+  const completeOnboarding = useCallback(() => {
+    updateOnboarding({ completed: true, currentStep: 'invite' })
+  }, [updateOnboarding])
 
   const logout = useCallback(() => {
     localStorage.removeItem(STORAGE_KEYS.authSession)
@@ -112,9 +180,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading: state.loading,
       login,
       register,
+      updateCurrentUser,
+      updateOnboarding,
+      completeOnboarding,
       logout,
     }),
-    [login, logout, register, state.loading, state.session],
+    [completeOnboarding, login, logout, register, state.loading, state.session, updateCurrentUser, updateOnboarding],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

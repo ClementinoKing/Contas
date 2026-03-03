@@ -1,20 +1,26 @@
 import {
+  Activity,
   Bell,
   BriefcaseBusiness,
   Building2,
+  Camera,
   CircleUserRound,
+  Flame,
   Mail,
+  Medal,
   MonitorCog,
   SmartphoneNfc,
   Plug,
   Shield,
   Smartphone,
+  Trophy,
   Trash2,
   UserCircle2,
   UserRoundCog,
 } from 'lucide-react'
-import { useState, type ComponentType } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type ComponentType } from 'react'
 
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -71,6 +77,13 @@ function SectionHeader({
   )
 }
 
+function initials(name: string) {
+  const parts = name.split(' ').filter(Boolean)
+  if (parts.length === 0) return 'U'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
+}
+
 const SETTINGS_TABS: Array<{ key: SettingsTabKey; label: string }> = [
   { key: 'profile', label: 'Profile' },
   { key: 'organization', label: 'Organization' },
@@ -80,8 +93,17 @@ const SETTINGS_TABS: Array<{ key: SettingsTabKey; label: string }> = [
   { key: 'apps', label: 'Apps' },
 ]
 
+const MONTHLY_PERFORMANCE = [
+  { month: 'Sep', energy: 28, rank: 21 },
+  { month: 'Oct', energy: 35, rank: 17 },
+  { month: 'Nov', energy: 43, rank: 11 },
+  { month: 'Dec', energy: 39, rank: 13 },
+  { month: 'Jan', energy: 52, rank: 8 },
+  { month: 'Feb', energy: 57, rank: 6 },
+]
+
 export function SettingsPage() {
-  const { currentUser } = useAuth()
+  const { currentUser, updateCurrentUser } = useAuth()
   const { currentTenant } = useTenant()
 
   const [activeTab, setActiveTab] = useState<SettingsTabKey>('profile')
@@ -98,6 +120,41 @@ export function SettingsPage() {
   const [mobileAppSync, setMobileAppSync] = useState(true)
   const [gmailAddonSync, setGmailAddonSync] = useState(false)
   const [teamsSync, setTeamsSync] = useState(false)
+  const [profileName, setProfileName] = useState(currentUser?.name ?? 'Workspace User')
+  const [profileEmail, setProfileEmail] = useState(currentUser?.email ?? 'user@example.com')
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | undefined>(currentUser?.avatarUrl)
+  const avatarInputRef = useRef<HTMLInputElement | null>(null)
+  const currentEnergy = MONTHLY_PERFORMANCE[MONTHLY_PERFORMANCE.length - 1]?.energy ?? 0
+  const currentRank = MONTHLY_PERFORMANCE[MONTHLY_PERFORMANCE.length - 1]?.rank ?? 0
+  const bestRank = Math.min(...MONTHLY_PERFORMANCE.map((entry) => entry.rank))
+  const maxEnergy = Math.max(...MONTHLY_PERFORMANCE.map((entry) => entry.energy), 1)
+
+  useEffect(() => {
+    setProfileName(currentUser?.name ?? 'Workspace User')
+    setProfileEmail(currentUser?.email ?? 'user@example.com')
+    setProfileAvatarUrl(currentUser?.avatarUrl)
+  }, [currentUser?.avatarUrl, currentUser?.email, currentUser?.name])
+
+  const handleAvatarFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) return
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : undefined
+      if (!result) return
+      setProfileAvatarUrl(result)
+      updateCurrentUser({ avatarUrl: result })
+    }
+    reader.readAsDataURL(file)
+    event.target.value = ''
+  }
+
+  const handleRemoveAvatar = () => {
+    setProfileAvatarUrl(undefined)
+    updateCurrentUser({ avatarUrl: undefined })
+  }
 
   const renderActiveSection = () => {
     switch (activeTab) {
@@ -108,13 +165,118 @@ export function SettingsPage() {
               <SectionHeader icon={UserCircle2} title='Profile' description='Update identity and contact details.' />
             </CardHeader>
             <CardContent className='grid gap-4 md:grid-cols-2'>
+              <div className='rounded-lg border bg-muted/10 p-4 md:col-span-2'>
+                <div className='flex flex-wrap items-center justify-between gap-4'>
+                  <div className='flex items-center gap-3'>
+                    <Avatar className='h-16 w-16 border'>
+                      {profileAvatarUrl ? <AvatarImage src={profileAvatarUrl} alt={profileName} /> : null}
+                      <AvatarFallback className='text-sm font-semibold'>{initials(profileName)}</AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <p className='font-medium text-foreground'>Profile photo</p>
+                      <p className='text-sm text-muted-foreground'>JPG, PNG, or WEBP. Recommended square image.</p>
+                    </div>
+                  </div>
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <input
+                      ref={avatarInputRef}
+                      type='file'
+                      accept='image/*'
+                      onChange={handleAvatarFileChange}
+                      className='hidden'
+                    />
+                    <Button
+                      type='button'
+                      variant='outline'
+                      onClick={() => avatarInputRef.current?.click()}
+                    >
+                      <Camera className='mr-2 h-4 w-4' aria-hidden='true' />
+                      {profileAvatarUrl ? 'Change photo' : 'Upload photo'}
+                    </Button>
+                    {profileAvatarUrl ? (
+                      <Button type='button' variant='outline' onClick={handleRemoveAvatar}>
+                        Remove
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className='grid gap-4 md:col-span-2 lg:grid-cols-3'>
+                <div className='rounded-lg border bg-muted/10 p-4 lg:col-span-1'>
+                  <p className='mb-3 text-sm font-semibold text-foreground'>Overview</p>
+                  <div className='space-y-3'>
+                    <div className='flex items-center justify-between rounded-md border px-3 py-2'>
+                      <span className='inline-flex items-center gap-2 text-sm text-muted-foreground'>
+                        <Flame className='h-4 w-4 text-amber-500' />
+                        Energy Points
+                      </span>
+                      <span className='font-semibold text-foreground'>{currentEnergy}</span>
+                    </div>
+                    <div className='flex items-center justify-between rounded-md border px-3 py-2'>
+                      <span className='inline-flex items-center gap-2 text-sm text-muted-foreground'>
+                        <Trophy className='h-4 w-4 text-violet-500' />
+                        Current Rank
+                      </span>
+                      <span className='font-semibold text-foreground'>#{currentRank}</span>
+                    </div>
+                    <div className='flex items-center justify-between rounded-md border px-3 py-2'>
+                      <span className='inline-flex items-center gap-2 text-sm text-muted-foreground'>
+                        <Medal className='h-4 w-4 text-emerald-500' />
+                        Best Rank
+                      </span>
+                      <span className='font-semibold text-foreground'>#{bestRank}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className='rounded-lg border bg-muted/10 p-4 lg:col-span-2'>
+                  <div className='mb-3 flex items-center justify-between'>
+                    <p className='text-sm font-semibold text-foreground'>Energy Points</p>
+                    <p className='text-xs text-muted-foreground'>Monthly</p>
+                  </div>
+                  <div className='grid h-32 grid-cols-6 items-end gap-2'>
+                    {MONTHLY_PERFORMANCE.map((entry) => (
+                      <div key={entry.month} className='flex h-full flex-col items-center justify-end gap-1.5'>
+                        <div className='text-[11px] text-muted-foreground'>{entry.energy}</div>
+                        <div className='flex h-[85%] w-full items-end rounded bg-muted/50 p-1'>
+                          <div
+                            className='w-full rounded-sm bg-primary/80'
+                            style={{ height: `${(entry.energy / maxEnergy) * 100}%` }}
+                          />
+                        </div>
+                        <div className='text-[11px] text-muted-foreground'>{entry.month}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className='rounded-lg border bg-muted/10 p-4 lg:col-span-3'>
+                  <div className='mb-3 flex items-center justify-between'>
+                    <p className='inline-flex items-center gap-2 text-sm font-semibold text-foreground'>
+                      <Activity className='h-4 w-4 text-blue-500' />
+                      Rank by Month
+                    </p>
+                    <p className='text-xs text-muted-foreground'>Lower rank number means better position</p>
+                  </div>
+                  <div className='grid gap-2 sm:grid-cols-2 xl:grid-cols-3'>
+                    {MONTHLY_PERFORMANCE.map((entry) => (
+                      <div key={`rank-${entry.month}`} className='flex items-center justify-between rounded-md border px-3 py-2'>
+                        <span className='text-sm text-muted-foreground'>{entry.month}</span>
+                        <span className='text-sm font-semibold text-foreground'>#{entry.rank}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Full Name</label>
-                <Input defaultValue={currentUser?.name ?? 'Workspace User'} />
+                <Input value={profileName} onChange={(event) => setProfileName(event.target.value)} />
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Email</label>
-                <Input type='email' defaultValue={currentUser?.email ?? 'user@example.com'} />
+                <Input type='email' value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} />
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Pronouns</label>
@@ -172,7 +334,17 @@ export function SettingsPage() {
                 </div>
               </div>
               <div className='flex justify-end md:col-span-2'>
-                <Button>Save profile</Button>
+                <Button
+                  onClick={() =>
+                    updateCurrentUser({
+                      name: profileName.trim() || 'Workspace User',
+                      email: profileEmail.trim() || 'user@example.com',
+                      avatarUrl: profileAvatarUrl,
+                    })
+                  }
+                >
+                  Save profile
+                </Button>
               </div>
             </CardContent>
           </>

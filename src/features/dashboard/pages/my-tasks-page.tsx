@@ -22,6 +22,7 @@ import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { TASK_ROWS, type TaskRow } from '@/features/tasks/tasks-data'
@@ -256,14 +257,47 @@ function taskHoverDetails(task: TaskRow) {
 }
 
 function parseBoardDueDate(due: string) {
+  const dueWithTime = parseBoardDueValue(due)
+  return dueWithTime ? startOfDay(dueWithTime) : null
+}
+
+function parseBoardDueValue(due: string) {
   const label = due.trim()
   if (!label || label === 'No due date' || label === 'Completed') return null
-  if (label === 'Today') return startOfDay(new Date())
+  if (label.startsWith('Today')) {
+    const now = new Date()
+    const todayWithTime = new Date(now)
+    todayWithTime.setSeconds(0, 0)
+
+    const timePart = label.split(',').slice(1).join(',').trim()
+    if (!timePart) return todayWithTime
+
+    const parsedTime = new Date(`1970-01-01 ${timePart}`)
+    if (Number.isNaN(parsedTime.getTime())) return todayWithTime
+
+    todayWithTime.setHours(parsedTime.getHours(), parsedTime.getMinutes(), 0, 0)
+    return todayWithTime
+  }
 
   const year = new Date().getFullYear()
-  const parsed = new Date(`${label}, ${year}`)
+  const parsed = /\b\d{4}\b/.test(label) ? new Date(label) : new Date(`${label}, ${year}`)
   if (Number.isNaN(parsed.getTime())) return null
-  return startOfDay(parsed)
+  return parsed
+}
+
+function formatBoardDueLabel(date?: Date) {
+  if (!date) return ''
+  const today = startOfDay(new Date())
+  const timeLabel = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date)
+  if (isSameDay(startOfDay(date), today)) return `Today, ${timeLabel}`
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(
+    date,
+  )
+}
+
+function parseBoardDueForPicker(due: string) {
+  const parsed = parseBoardDueValue(due)
+  return parsed ?? undefined
 }
 
 function TaskHoverCard({ task, align = 'left' }: { task: TaskRow; align?: HoverAlign }) {
@@ -371,6 +405,7 @@ export function MyTasksPage() {
       ).sort(),
     [boardColumns],
   )
+  const boardMemberOptions = useMemo(() => allAssignees.filter((assignee) => assignee !== 'Unassigned'), [allAssignees])
 
   const totalTasksCount = useMemo(
     () => boardColumns.reduce((count, column) => count + column.items.length, 0),
@@ -1258,24 +1293,31 @@ export function MyTasksPage() {
                                     className='h-8'
                                   />
                                   <div className='grid grid-cols-2 gap-2'>
-                                    <Input
-                                      value={editingTaskDraft.due}
-                                      onClick={(event) => event.stopPropagation()}
-                                      onChange={(event) =>
-                                        setEditingTaskDraft((draft) => ({ ...draft, due: event.target.value }))
+                                    <DatePicker
+                                      value={parseBoardDueForPicker(editingTaskDraft.due)}
+                                      onChange={(date) =>
+                                        setEditingTaskDraft((draft) => ({ ...draft, due: formatBoardDueLabel(date) }))
                                       }
-                                      className='h-8'
                                       placeholder='Due date'
+                                      withTime
+                                      className='h-8 text-xs'
                                     />
-                                    <Input
+                                    <select
                                       value={editingTaskDraft.assignee}
                                       onClick={(event) => event.stopPropagation()}
                                       onChange={(event) =>
                                         setEditingTaskDraft((draft) => ({ ...draft, assignee: event.target.value }))
                                       }
-                                      className='h-8'
-                                      placeholder='Assignee'
-                                    />
+                                      className='h-8 rounded-md border bg-background px-2 text-xs text-foreground'
+                                    >
+                                      <option value=''>Assign member</option>
+                                      {boardMemberOptions.map((member) => (
+                                        <option key={member} value={member}>
+                                          {member}
+                                        </option>
+                                      ))}
+                                      <option value='Unassigned'>Unassigned</option>
+                                    </select>
                                   </div>
                                   <textarea
                                     rows={2}
@@ -1384,20 +1426,22 @@ export function MyTasksPage() {
                         }}
                       />
                       <div className='grid grid-cols-2 gap-2'>
-                        <Input
-                          value={getColumnDraft(column.id).due}
-                          onChange={(event) =>
+                        <DatePicker
+                          value={parseBoardDueForPicker(getColumnDraft(column.id).due)}
+                          onChange={(date) =>
                             setColumnTaskDrafts((drafts) => ({
                               ...drafts,
                               [column.id]: {
                                 ...getColumnDraft(column.id),
-                                due: event.target.value,
+                                due: formatBoardDueLabel(date),
                               },
                             }))
                           }
                           placeholder='Due date'
+                          withTime
+                          className='text-xs'
                         />
-                        <Input
+                        <select
                           value={getColumnDraft(column.id).assignee}
                           onChange={(event) =>
                             setColumnTaskDrafts((drafts) => ({
@@ -1408,8 +1452,16 @@ export function MyTasksPage() {
                               },
                             }))
                           }
-                          placeholder='Assignee'
-                        />
+                          className='h-9 rounded-md border bg-background px-2 text-xs text-foreground'
+                        >
+                          <option value=''>Assign member</option>
+                          {boardMemberOptions.map((member) => (
+                            <option key={member} value={member}>
+                              {member}
+                            </option>
+                          ))}
+                          <option value='Unassigned'>Unassigned</option>
+                        </select>
                       </div>
                       <textarea
                         rows={2}
@@ -1467,15 +1519,15 @@ export function MyTasksPage() {
     switch (activeTab) {
       case 'list':
         return (
-          <Card>
+          <Card className='flex h-full w-full min-h-0 flex-col overflow-hidden'>
             <CardHeader className='pb-3'>
               <CardTitle className='text-base'>Task List</CardTitle>
               <CardDescription>Compact table for quick tracking and updates.</CardDescription>
             </CardHeader>
-            <CardContent className='p-0'>
-              <div className='overflow-x-auto'>
+            <CardContent className='min-h-0 flex-1 p-0'>
+              <div className='h-full overflow-auto'>
                 <table className='w-full text-sm'>
-                  <thead className='border-y bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground'>
+                  <thead className='sticky top-0 z-10 border-y bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground'>
                     <tr>
                       <th className='px-4 py-2 font-medium'>Task</th>
                       <th className='px-4 py-2 font-medium'>Project</th>
@@ -1588,43 +1640,43 @@ export function MyTasksPage() {
 
   return (
     <>
-      <div className='space-y-4'>
+      <div className='flex h-full min-h-0 flex-col gap-4 overflow-hidden'>
         <Card>
           <CardContent className='p-2'>
-            <div className='inline-flex flex-wrap gap-1 rounded-md bg-muted/35 p-1'>
-              {TABS.map((tab) => {
-                const Icon = tab.icon
-                return (
-                  <button
-                    key={tab.key}
-                    type='button'
-                    onClick={() => setActiveTab(tab.key)}
-                    className={cn(
-                      'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      activeTab === tab.key
-                        ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
-                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                    )}
-                  >
-                    <Icon className='h-4 w-4' aria-hidden='true' />
-                    {tab.label}
-                  </button>
-                )
-              })}
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <div className='inline-flex flex-wrap gap-1 rounded-md bg-muted/35 p-1'>
+                {TABS.map((tab) => {
+                  const Icon = tab.icon
+                  return (
+                    <button
+                      key={tab.key}
+                      type='button'
+                      onClick={() => setActiveTab(tab.key)}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        activeTab === tab.key
+                          ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                      )}
+                    >
+                      <Icon className='h-4 w-4' aria-hidden='true' />
+                      {tab.label}
+                    </button>
+                  )
+                })}
+              </div>
+              {activeTab === 'board' ? (
+                <p className='text-xs text-muted-foreground sm:text-sm'>
+                  {totalTasksCount} total tasks • {selectedTasksCount} selected • Press and hold a task to select
+                </p>
+              ) : null}
             </div>
           </CardContent>
         </Card>
 
-        {activeTab === 'board' ? (
-          <Card>
-            <CardContent className='flex items-center justify-between p-3 text-sm text-muted-foreground'>
-              <span>{totalTasksCount} total tasks across board</span>
-              <span>{selectedTasksCount} selected • Press and hold a task to select</span>
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {renderContent()}
+        <div className={cn('min-h-0', activeTab === 'list' && 'flex flex-1 overflow-hidden')}>
+          {renderContent()}
+        </div>
       </div>
 
       <Dialog open={Boolean(activeTaskData)} onOpenChange={(open) => (!open ? closeTaskDetails() : undefined)}>
@@ -1638,24 +1690,33 @@ export function MyTasksPage() {
                 </DialogDescription>
               </DialogHeader>
 
-              <div className='grid h-full min-h-0 gap-0 md:grid-cols-[1.4fr_1fr]'>
-                <div className='space-y-3 overflow-y-auto p-5'>
+              <div className='min-h-0 flex-1 overflow-y-auto'>
+                <div className='space-y-5 p-5'>
                   <Input
                     value={detailDraft.title}
                     onChange={(event) => setDetailDraft((draft) => ({ ...draft, title: event.target.value }))}
                     placeholder='Task title'
                   />
                   <div className='grid grid-cols-2 gap-2'>
-                    <Input
-                      value={detailDraft.due}
-                      onChange={(event) => setDetailDraft((draft) => ({ ...draft, due: event.target.value }))}
+                    <DatePicker
+                      value={parseBoardDueForPicker(detailDraft.due)}
+                      onChange={(date) => setDetailDraft((draft) => ({ ...draft, due: formatBoardDueLabel(date) }))}
                       placeholder='Due date'
+                      withTime
                     />
-                    <Input
+                    <select
                       value={detailDraft.assignee}
                       onChange={(event) => setDetailDraft((draft) => ({ ...draft, assignee: event.target.value }))}
-                      placeholder='Assignee'
-                    />
+                      className='h-9 rounded-md border bg-background px-2 text-sm text-foreground'
+                    >
+                      <option value=''>Assign member</option>
+                      {boardMemberOptions.map((member) => (
+                        <option key={member} value={member}>
+                          {member}
+                        </option>
+                      ))}
+                      <option value='Unassigned'>Unassigned</option>
+                    </select>
                   </div>
                   <textarea
                     rows={8}
@@ -1669,10 +1730,8 @@ export function MyTasksPage() {
                     <Button type='button' onClick={saveDetailTask}>Save Changes</Button>
                     <Button type='button' variant='outline' onClick={closeTaskDetails}>Close</Button>
                   </div>
-                </div>
 
-                <div className='flex min-h-0 flex-col border-l'>
-                  <div className='border-b p-4'>
+                  <div className='space-y-3 border-t pt-4'>
                     <div className='mb-2 inline-flex items-center gap-1 text-sm font-semibold'>
                       <MessageSquare className='h-4 w-4' />
                       Comments
@@ -1687,9 +1746,6 @@ export function MyTasksPage() {
                       />
                       <Button type='button' size='sm' onClick={addCommentToTask}>Add</Button>
                     </div>
-                  </div>
-
-                  <div className='min-h-0 flex-1 overflow-y-auto p-4'>
                     <div className='space-y-3'>
                       {activeTaskData.task.comments.length === 0 ? (
                         <p className='text-xs text-muted-foreground'>No comments yet.</p>
@@ -1705,8 +1761,10 @@ export function MyTasksPage() {
                         ))
                       )}
                     </div>
+                  </div>
 
-                    <div className='mt-5'>
+                  <div className='border-t pt-4'>
+                    <div className='space-y-3'>
                       <div className='mb-2 inline-flex items-center gap-1 text-sm font-semibold'>
                         <Activity className='h-4 w-4' />
                         Activity

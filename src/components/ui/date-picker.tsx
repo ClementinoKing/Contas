@@ -1,6 +1,6 @@
-import { format } from 'date-fns'
+import { format, isValid } from 'date-fns'
 import { Calendar as CalendarIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -10,11 +10,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 export function DatePicker({
   value,
   onChange,
-  placeholder = 'Pick a date',
+  placeholder = 'Pick date and time',
   disabled = false,
   className,
   fromYear = 1950,
   toYear = 2100,
+  withTime = true,
 }: {
   value?: Date
   onChange: (date?: Date) => void
@@ -23,8 +24,29 @@ export function DatePicker({
   className?: string
   fromYear?: number
   toYear?: number
+  withTime?: boolean
 }) {
   const [open, setOpen] = useState(false)
+  const [draftDate, setDraftDate] = useState<Date | undefined>(value)
+
+  useEffect(() => {
+    if (!open) return
+    setDraftDate(value ?? new Date())
+  }, [open, value])
+
+  const safeValue = value && isValid(value) ? value : undefined
+  const safeDraftDate = draftDate && isValid(draftDate) ? draftDate : undefined
+  const selectedDate = safeDraftDate ?? safeValue
+
+  const updateTime = (time: string) => {
+    const [hours, minutes] = time.split(':').map(Number)
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) return
+
+    const base = selectedDate ?? new Date()
+    const next = new Date(base)
+    next.setHours(hours, minutes, 0, 0)
+    setDraftDate(next)
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -32,7 +54,7 @@ export function DatePicker({
         <Button
           type='button'
           variant='outline'
-          data-empty={!value}
+          data-empty={!safeValue}
           disabled={disabled}
           className={cn(
             'w-full justify-start text-left font-normal data-[empty=true]:text-muted-foreground',
@@ -40,24 +62,73 @@ export function DatePicker({
           )}
         >
           <CalendarIcon className='mr-2 h-4 w-4' aria-hidden='true' />
-          {value ? format(value, 'PPP') : <span>{placeholder}</span>}
+          {safeValue ? format(safeValue, withTime ? 'PPP p' : 'PPP') : <span>{placeholder}</span>}
         </Button>
       </PopoverTrigger>
       <PopoverContent className='w-auto overflow-hidden p-0' align='start'>
         <Calendar
           mode='single'
-          selected={value}
-          defaultMonth={value}
+          selected={selectedDate}
+          defaultMonth={selectedDate ?? new Date()}
           captionLayout='dropdown'
           navLayout='around'
           fromYear={fromYear}
           toYear={toYear}
           onSelect={(date) => {
-            onChange(date)
-            setOpen(false)
+            if (!date) {
+              setDraftDate(undefined)
+              return
+            }
+
+            const base = selectedDate ?? new Date()
+            const next = new Date(date)
+            next.setHours(base.getHours(), base.getMinutes(), 0, 0)
+            setDraftDate(next)
+
+            if (!withTime) {
+              onChange(next)
+              setOpen(false)
+            }
           }}
           initialFocus
         />
+        {withTime ? (
+          <div className='space-y-3 border-t p-3'>
+            <div className='space-y-1'>
+              <label className='text-xs font-medium text-muted-foreground'>Time</label>
+              <input
+                type='time'
+                value={selectedDate && isValid(selectedDate) ? format(selectedDate, 'HH:mm') : '09:00'}
+                onChange={(event) => updateTime(event.target.value)}
+                className='h-9 w-full rounded-md border bg-background px-2 text-sm'
+              />
+            </div>
+            <div className='flex items-center justify-end gap-2'>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  setDraftDate(undefined)
+                  onChange(undefined)
+                  setOpen(false)
+                }}
+              >
+                Clear
+              </Button>
+              <Button
+                type='button'
+                size='sm'
+                onClick={() => {
+                  onChange(selectedDate)
+                  setOpen(false)
+                }}
+              >
+                Apply
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   )
