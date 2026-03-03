@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 210 20% 98%;
+  --foreground: 222.2 47.4% 11.2%;
+  --card: 0 0% 100%;
+  --card-foreground: 222.2 47.4% 11.2%;
+  --primary: 221 78% 31%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 210 40% 96.1%;
+  --secondary-foreground: 222.2 47.4% 11.2%;
+  --muted: 215 27.9% 92.5%;
+  --muted-foreground: 215.4 16.3% 40%;
+  --accent: 210 40% 93%;
+  --accent-foreground: 222.2 47.4% 11.2%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 214.3 31.8% 87.4%;
+  --input: 214.3 31.8% 87.4%;
+  --ring: 221 78% 31%;
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: 220 6% 10%;
+  --foreground: 210 15% 92%;
+  --card: 220 6% 13%;
+  --card-foreground: 210 15% 92%;
+  --primary: 210 35% 78%;
+  --primary-foreground: 220 10% 12%;
+  --secondary: 220 5% 18%;
+  --secondary-foreground: 210 15% 92%;
+  --muted: 220 5% 18%;
+  --muted-foreground: 215 9% 68%;
+  --accent: 220 5% 22%;
+  --accent-foreground: 210 15% 92%;
+  --destructive: 0 62.8% 50.6%;
+  --destructive-foreground: 210 15% 92%;
+  --border: 220 5% 24%;
+  --input: 220 5% 24%;
+  --ring: 210 35% 78%;
+}
+
+* {
+  @apply border-border;
+}
+
+body {
+  @apply bg-background text-foreground min-h-screen antialiased;
+}
+
+#root {
+  @apply min-h-screen;
+}
+
+html.theme-transition *,
+html.theme-transition *::before,
+html.theme-transition *::after {
+  transition:
+    background-color 250ms ease,
+    border-color 250ms ease,
+    color 250ms ease,
+    fill 250ms ease,
+    stroke 250ms ease;
+}

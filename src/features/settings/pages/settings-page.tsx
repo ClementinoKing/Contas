@@ -1,0 +1,494 @@
+import {
+  Bell,
+  BriefcaseBusiness,
+  Building2,
+  CircleUserRound,
+  Mail,
+  MonitorCog,
+  SmartphoneNfc,
+  Plug,
+  Shield,
+  Smartphone,
+  Trash2,
+  UserCircle2,
+  UserRoundCog,
+} from 'lucide-react'
+import { useState, type ComponentType } from 'react'
+
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
+import { DatePicker } from '@/components/ui/date-picker'
+import { Input } from '@/components/ui/input'
+import { useAuth } from '@/features/auth/context/auth-context'
+import { useTenant } from '@/features/tenancy/context/tenant-context'
+import { cn } from '@/lib/utils'
+
+type SettingsTabKey = 'profile' | 'organization' | 'notifications' | 'account' | 'display' | 'apps'
+
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
+  return (
+    <button
+      type='button'
+      role='switch'
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'relative inline-flex h-6 w-11 items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        checked ? 'border-primary bg-primary' : 'border-border bg-muted',
+      )}
+    >
+      <span
+        className={cn(
+          'inline-block h-5 w-5 transform rounded-full bg-card transition-transform',
+          checked ? 'translate-x-5' : 'translate-x-0.5',
+        )}
+      />
+    </button>
+  )
+}
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  description,
+}: {
+  icon: ComponentType<{ className?: string }>
+  title: string
+  description: string
+}) {
+  return (
+    <div className='mb-4 flex items-start gap-3'>
+      <div className='mt-0.5 rounded-md border bg-muted/40 p-2'>
+        <Icon className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+      </div>
+      <div>
+        <h3 className='text-base font-semibold text-foreground'>{title}</h3>
+        <p className='text-sm text-muted-foreground'>{description}</p>
+      </div>
+    </div>
+  )
+}
+
+const SETTINGS_TABS: Array<{ key: SettingsTabKey; label: string }> = [
+  { key: 'profile', label: 'Profile' },
+  { key: 'organization', label: 'Organization' },
+  { key: 'notifications', label: 'Notifications' },
+  { key: 'account', label: 'Account' },
+  { key: 'display', label: 'Display' },
+  { key: 'apps', label: 'Apps' },
+]
+
+export function SettingsPage() {
+  const { currentUser } = useAuth()
+  const { currentTenant } = useTenant()
+
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>('profile')
+
+  const [emailUpdates, setEmailUpdates] = useState(true)
+  const [pushAlerts, setPushAlerts] = useState(false)
+  const [weeklyDigest, setWeeklyDigest] = useState(true)
+  const [twoFactor, setTwoFactor] = useState(false)
+  const [outOfOffice, setOutOfOffice] = useState(false)
+  const [outOfOfficeStart, setOutOfOfficeStart] = useState<Date | undefined>()
+  const [outOfOfficeEnd, setOutOfOfficeEnd] = useState<Date | undefined>()
+  const [connectedCalendar, setConnectedCalendar] = useState(true)
+  const [slackSync, setSlackSync] = useState(false)
+  const [mobileAppSync, setMobileAppSync] = useState(true)
+  const [gmailAddonSync, setGmailAddonSync] = useState(false)
+  const [teamsSync, setTeamsSync] = useState(false)
+
+  const renderActiveSection = () => {
+    switch (activeTab) {
+      case 'profile':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={UserCircle2} title='Profile' description='Update identity and contact details.' />
+            </CardHeader>
+            <CardContent className='grid gap-4 md:grid-cols-2'>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Full Name</label>
+                <Input defaultValue={currentUser?.name ?? 'Workspace User'} />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Email</label>
+                <Input type='email' defaultValue={currentUser?.email ?? 'user@example.com'} />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Pronouns</label>
+                <Input defaultValue='She/Her' />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Job Title</label>
+                <Input defaultValue='Product Manager' />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Department</label>
+                <Input defaultValue='Product' />
+              </div>
+              <div className='space-y-2'>
+                <label className='text-sm font-medium text-foreground'>Role</label>
+                <Input defaultValue='Admin' />
+              </div>
+              <div className='space-y-2 md:col-span-2'>
+                <label className='text-sm font-medium text-foreground'>About Me</label>
+                <textarea
+                  defaultValue='I lead roadmap planning, sprint coordination, and stakeholder communication across teams.'
+                  rows={4}
+                  className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                />
+              </div>
+              <div className='space-y-3 rounded-lg border p-3 md:col-span-2'>
+                <div className='flex items-center justify-between gap-3'>
+                  <div>
+                    <p className='font-medium text-foreground'>Out of office</p>
+                    <p className='text-sm text-muted-foreground'>
+                      Team members will see you as unavailable during the selected time.
+                    </p>
+                  </div>
+                  <Toggle checked={outOfOffice} onChange={setOutOfOffice} label='Toggle out of office status' />
+                </div>
+                <div className='grid gap-3 md:grid-cols-2'>
+                  <div className='space-y-2'>
+                    <label className='text-sm font-medium text-foreground'>Start</label>
+                    <DatePicker
+                      value={outOfOfficeStart}
+                      onChange={setOutOfOfficeStart}
+                      disabled={!outOfOffice}
+                      placeholder='Pick start date'
+                    />
+                  </div>
+                  <div className='space-y-2'>
+                    <label className='text-sm font-medium text-foreground'>End</label>
+                    <DatePicker
+                      value={outOfOfficeEnd}
+                      onChange={setOutOfOfficeEnd}
+                      disabled={!outOfOffice}
+                      placeholder='Pick end date'
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className='flex justify-end md:col-span-2'>
+                <Button>Save profile</Button>
+              </div>
+            </CardContent>
+          </>
+        )
+
+      case 'organization':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={Building2} title='Organization' description='Manage workspace structure and billing plan.' />
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              <div className='grid gap-4 md:grid-cols-2'>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Organization Name</label>
+                  <Input defaultValue={currentTenant.name} />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Plan</label>
+                  <Input defaultValue={currentTenant.plan} readOnly />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Legal Name</label>
+                  <Input defaultValue='Acme Operations Ltd.' />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Website</label>
+                  <Input defaultValue='https://acme.example.com' />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Industry</label>
+                  <Input defaultValue='Software & Services' />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Company Size</label>
+                  <Input defaultValue='51-200 employees' />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Timezone</label>
+                  <Input defaultValue='Africa/Blantyre (CAT)' />
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Location</label>
+                  <Input defaultValue='Lilongwe, Malawi' />
+                </div>
+                <div className='space-y-2 md:col-span-2'>
+                  <label className='text-sm font-medium text-foreground'>Organization Details</label>
+                  <textarea
+                    defaultValue='Acme Operations builds internal productivity systems for distributed teams across product, engineering, and operations.'
+                    rows={4}
+                    className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                  />
+                </div>
+              </div>
+              <div className='flex justify-end'>
+                <Button variant='outline'>Update organization</Button>
+              </div>
+            </CardContent>
+          </>
+        )
+
+      case 'notifications':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={Bell} title='Notifications' description='Control when and how we notify you.' />
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div>
+                  <p className='font-medium text-foreground'>Email task updates</p>
+                  <p className='text-sm text-muted-foreground'>Receive task assignment and due date updates by email.</p>
+                </div>
+                <Toggle checked={emailUpdates} onChange={setEmailUpdates} label='Toggle email task updates' />
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div>
+                  <p className='font-medium text-foreground'>Push alerts</p>
+                  <p className='text-sm text-muted-foreground'>Show real-time desktop notifications for comments and mentions.</p>
+                </div>
+                <Toggle checked={pushAlerts} onChange={setPushAlerts} label='Toggle push alerts' />
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div>
+                  <p className='font-medium text-foreground'>Weekly digest</p>
+                  <p className='text-sm text-muted-foreground'>Get a weekly summary every Monday morning.</p>
+                </div>
+                <Toggle checked={weeklyDigest} onChange={setWeeklyDigest} label='Toggle weekly digest' />
+              </div>
+            </CardContent>
+          </>
+        )
+
+      case 'account':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={Shield} title='Account' description='Security and account access controls.' />
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              <div className='rounded-lg border p-3'>
+                <div className='mb-3 flex items-center gap-2'>
+                  <Mail className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                  <p className='font-medium text-foreground'>Email Addresses</p>
+                </div>
+                <div className='grid gap-3 md:grid-cols-3'>
+                  <div className='space-y-2'>
+                    <label className='text-sm font-medium text-foreground'>Work Email</label>
+                    <Input type='email' defaultValue={currentUser?.email ?? 'work@example.com'} />
+                  </div>
+                  <div className='space-y-2'>
+                    <label className='text-sm font-medium text-foreground'>Personal Email</label>
+                    <Input type='email' defaultValue='personal@example.com' />
+                  </div>
+                  <div className='space-y-2'>
+                    <label className='text-sm font-medium text-foreground'>Other Email</label>
+                    <Input type='email' defaultValue='other@example.com' />
+                  </div>
+                </div>
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div>
+                  <p className='font-medium text-foreground'>Two-factor authentication</p>
+                  <p className='text-sm text-muted-foreground'>Require a verification code during sign in.</p>
+                </div>
+                <Toggle checked={twoFactor} onChange={setTwoFactor} label='Toggle two-factor authentication' />
+              </div>
+              <div className='flex items-center justify-end gap-2'>
+                <Button variant='outline'>Change password</Button>
+                <Button variant='outline'>Manage sessions</Button>
+                <Button variant='outline'>
+                  <BriefcaseBusiness className='mr-2 h-4 w-4' aria-hidden='true' />
+                  Manage work profile
+                </Button>
+              </div>
+              <div className='rounded-lg border border-destructive/40 bg-destructive/5 p-3'>
+                <div className='mb-3'>
+                  <p className='font-medium text-foreground'>Danger Zone</p>
+                  <p className='text-sm text-muted-foreground'>These actions affect account access and cannot be easily reversed.</p>
+                </div>
+                <div className='flex flex-wrap gap-2'>
+                  <Button variant='outline'>
+                    <UserRoundCog className='mr-2 h-4 w-4' aria-hidden='true' />
+                    Deactivate account
+                  </Button>
+                  <Button variant='destructive'>
+                    <Trash2 className='mr-2 h-4 w-4' aria-hidden='true' />
+                    Delete account
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </>
+        )
+
+      case 'display':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={MonitorCog} title='Display' description='Personalize the interface and visual experience.' />
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              <div className='grid gap-4 md:grid-cols-2'>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>Language</label>
+                  <select className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'>
+                    <option>English (US)</option>
+                    <option>English (UK)</option>
+                    <option>French</option>
+                    <option>Portuguese</option>
+                  </select>
+                </div>
+                <div className='space-y-2'>
+                  <label className='text-sm font-medium text-foreground'>First Day of the Week</label>
+                  <select className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'>
+                    <option>Monday</option>
+                    <option>Sunday</option>
+                    <option>Saturday</option>
+                  </select>
+                </div>
+              </div>
+              <div className='grid gap-3 md:grid-cols-3'>
+                {['System', 'Light', 'Dark'].map((mode) => (
+                  <button
+                    key={mode}
+                    type='button'
+                    className='rounded-lg border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+              <p className='text-sm text-muted-foreground'>Use the sidebar theme control for instant light/dark switching.</p>
+              <div className='flex justify-end'>
+                <Button variant='outline'>Save display preferences</Button>
+              </div>
+            </CardContent>
+          </>
+        )
+
+      case 'apps':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={Plug} title='Apps' description='Connect external apps and sync workflows.' />
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              <div className='rounded-lg border p-4'>
+                <div className='flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
+                  <div>
+                    <p className='font-medium text-foreground'>Download Contas Mobile App</p>
+                    <p className='text-sm text-muted-foreground'>
+                      Scan the QR code to open the mobile app download page.
+                    </p>
+                    <div className='mt-3 flex flex-wrap gap-2'>
+                      <Badge variant='outline'>iOS</Badge>
+                      <Badge variant='outline'>Android</Badge>
+                    </div>
+                  </div>
+                  <div className='rounded-md border bg-card p-2'>
+                    <img
+                      src='https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=https%3A%2F%2Fcontas.app%2Fdownload'
+                      alt='QR code to download the Contas mobile app'
+                      width={160}
+                      height={160}
+                      className='h-24 w-24 md:h-28 md:w-28'
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div className='flex items-center gap-3'>
+                  <SmartphoneNfc className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                  <div>
+                    <p className='font-medium text-foreground'>Contas Mobile App</p>
+                    <p className='text-sm text-muted-foreground'>Sync push alerts and mobile activity updates.</p>
+                  </div>
+                </div>
+                <Toggle checked={mobileAppSync} onChange={setMobileAppSync} label='Toggle mobile app integration' />
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div className='flex items-center gap-3'>
+                  <Mail className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                  <div>
+                    <p className='font-medium text-foreground'>Gmail Add-on</p>
+                    <p className='text-sm text-muted-foreground'>Turn emails into tasks directly from Gmail.</p>
+                  </div>
+                </div>
+                <Toggle checked={gmailAddonSync} onChange={setGmailAddonSync} label='Toggle Gmail add-on integration' />
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div className='flex items-center gap-3'>
+                  <CircleUserRound className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                  <div>
+                    <p className='font-medium text-foreground'>Microsoft Teams</p>
+                    <p className='text-sm text-muted-foreground'>Share task updates and reminders in team channels.</p>
+                  </div>
+                </div>
+                <Toggle checked={teamsSync} onChange={setTeamsSync} label='Toggle Microsoft Teams integration' />
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div className='flex items-center gap-3'>
+                  <Smartphone className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                  <div>
+                    <p className='font-medium text-foreground'>Google Calendar</p>
+                    <p className='text-sm text-muted-foreground'>Sync task deadlines with your calendar.</p>
+                  </div>
+                </div>
+                <Toggle checked={connectedCalendar} onChange={setConnectedCalendar} label='Toggle calendar integration' />
+              </div>
+              <div className='flex items-center justify-between rounded-lg border p-3'>
+                <div className='flex items-center gap-3'>
+                  <CircleUserRound className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                  <div>
+                    <p className='font-medium text-foreground'>Slack</p>
+                    <p className='text-sm text-muted-foreground'>Send project updates to your team channels.</p>
+                  </div>
+                </div>
+                <Toggle checked={slackSync} onChange={setSlackSync} label='Toggle slack integration' />
+              </div>
+            </CardContent>
+          </>
+        )
+
+      default:
+        return null
+    }
+  }
+
+  return (
+    <div className='space-y-6'>
+      <Card>
+        <CardContent className='p-3'>
+          <div className='overflow-x-auto'>
+            <div className='inline-flex min-w-full gap-1 rounded-lg bg-muted/35 p-1'>
+              {SETTINGS_TABS.map((tab) => (
+                <button
+                  key={tab.key}
+                  type='button'
+                  onClick={() => setActiveTab(tab.key)}
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    activeTab === tab.key
+                      ? 'bg-card text-foreground border shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>{renderActiveSection()}</Card>
+    </div>
+  )
+}
