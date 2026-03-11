@@ -1,14 +1,14 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useTenant } from '@/features/tenancy/context/tenant-context'
+import { useOrganization } from '@/features/organization/context/organization-context'
 
 export function DashboardSectionPage({ title }: { title: string }) {
-  const { currentTenant } = useTenant()
+  const { currentOrganization } = useOrganization()
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
-        <CardDescription>{currentTenant.name} module coming next</CardDescription>
+        <CardDescription>{currentOrganization.name} module coming next</CardDescription>
       </CardHeader>
       <CardContent>
         <p className='text-sm text-muted-foreground'>

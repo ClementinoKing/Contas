@@ -60,7 +60,7 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthLayout title='Create your workspace' subtitle='Set up your account to organize projects and goals.'>
+    <AuthLayout title='Create your organization' subtitle='Set up your account to organize projects, goals, and delivery.'>
       <form className='space-y-4' onSubmit={handleSubmit(onSubmit)}>
         <AuthInputGroup label='Full name' htmlFor='name' error={errors.name?.message}>
           <Input id='name' type='text' autoComplete='name' placeholder='Alex Johnson' {...register('name')} />

@@ -1,6 +1,7 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 
 import { useAuth } from '@/features/auth/context/auth-context'
+import { STORAGE_KEYS } from '@/lib/storage'
 import {
   canAccessOnboardingStep,
   getFirstIncompleteOnboardingStep,
@@ -8,12 +9,24 @@ import {
   getOnboardingStepFromPathname,
 } from '@/features/onboarding/lib/onboarding-routes'
 
-export function ProtectedRoute() {
-  const { isAuthenticated, loading, currentUser } = useAuth()
-  const location = useLocation()
+const LAST_DASHBOARD_PATH_KEY = 'contas.last-dashboard-path'
 
-  if (loading) {
-    return <div className='flex min-h-screen items-center justify-center text-muted-foreground'>Loading workspace...</div>
+function getLastDashboardPath() {
+  const savedPath = sessionStorage.getItem(LAST_DASHBOARD_PATH_KEY)
+  return savedPath && savedPath.startsWith('/dashboard/') ? savedPath : '/dashboard/home'
+}
+
+function hasPersistedSupabaseSession() {
+  return Boolean(localStorage.getItem(STORAGE_KEYS.supabaseAuthToken))
+}
+
+export function ProtectedRoute() {
+  const { isAuthenticated, loading, currentUser, hasProfile, profileLoading } = useAuth()
+  const location = useLocation()
+  const persistedSessionExists = hasPersistedSupabaseSession()
+
+  if (loading || profileLoading) {
+    return persistedSessionExists ? <Outlet /> : null
   }
 
   if (!isAuthenticated) {
@@ -21,19 +34,19 @@ export function ProtectedRoute() {
   }
 
   const onboarding = currentUser?.onboarding
-  const onboardingIncomplete = onboarding?.completed === false
+  const onboardingIncomplete = !hasProfile && onboarding?.completed === false
   const isOnboardingPath = location.pathname.startsWith('/onboarding')
+  const requiresProfileSetup = !onboarding?.fullName?.trim() || onboarding.fullName.trim().length < 2
 
-  if (onboardingIncomplete && onboarding) {
-    if (!isOnboardingPath) {
-      const step = getFirstIncompleteOnboardingStep(onboarding)
-      return <Navigate to={getOnboardingPath(step)} replace />
-    }
-
+  if (onboardingIncomplete && onboarding && isOnboardingPath) {
     const currentStep = getOnboardingStepFromPathname(location.pathname)
     const firstIncomplete = getFirstIncompleteOnboardingStep(onboarding)
     if (!currentStep) {
       return <Navigate to={getOnboardingPath(firstIncomplete)} replace />
+    }
+
+    if (requiresProfileSetup && currentStep !== 'name') {
+      return <Navigate to='/onboarding/name' replace />
     }
 
     if (!canAccessOnboardingStep(currentStep, onboarding)) {
@@ -41,26 +54,33 @@ export function ProtectedRoute() {
     }
   }
 
-  if (!onboardingIncomplete && isOnboardingPath) {
-    return <Navigate to='/dashboard/home' replace />
+  if (onboardingIncomplete && onboarding && !isOnboardingPath && !persistedSessionExists) {
+    if (!isOnboardingPath) {
+      const step = getFirstIncompleteOnboardingStep(onboarding)
+      return <Navigate to={getOnboardingPath(step)} replace />
+    }
+  }
+
+  if ((!onboardingIncomplete || hasProfile) && isOnboardingPath) {
+    return <Navigate to={getLastDashboardPath()} replace />
   }
 
   return <Outlet />
 }
 
 export function AuthRedirectRoute() {
-  const { isAuthenticated, loading, currentUser } = useAuth()
+  const { isAuthenticated, loading, currentUser, hasProfile, profileLoading } = useAuth()
 
-  if (loading) {
-    return <div className='flex min-h-screen items-center justify-center text-muted-foreground'>Checking session...</div>
+  if (loading || profileLoading) {
+    return hasPersistedSupabaseSession() ? null : <Outlet />
   }
 
   if (isAuthenticated) {
     const onboarding = currentUser?.onboarding
-    if (onboarding?.completed === false) {
+    if (!hasProfile && onboarding?.completed === false) {
       return <Navigate to={getOnboardingPath(getFirstIncompleteOnboardingStep(onboarding))} replace />
     }
-    return <Navigate to='/dashboard' replace />
+    return <Navigate to={getLastDashboardPath()} replace />
   }
 
   return <Outlet />

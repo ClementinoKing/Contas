@@ -1,4 +1,4 @@
-export type OnboardingStep = 'name' | 'work' | 'tools' | 'invite'
+export type OnboardingStep = 'name' | 'work' | 'tools'
 
 export interface OnboardingState {
   completed: boolean
@@ -8,15 +8,16 @@ export interface OnboardingState {
   workFunction: string
   useCase: string
   tools: string[]
-  inviteEmails: string[]
 }
 
 export interface User {
   id: string
   email: string
   name: string
-  tenantId: string
+  username?: string
+  jobTitle?: string
   avatarUrl?: string
+  avatarPath?: string
   onboarding?: OnboardingState
 }
 

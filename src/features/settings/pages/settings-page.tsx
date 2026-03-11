@@ -27,7 +27,9 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { useAuth } from '@/features/auth/context/auth-context'
-import { useTenant } from '@/features/tenancy/context/tenant-context'
+import { useOrganization } from '@/features/organization/context/organization-context'
+import { uploadAvatarToR2 } from '@/lib/r2'
+import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 type SettingsTabKey = 'profile' | 'organization' | 'notifications' | 'account' | 'display' | 'apps'
@@ -84,6 +86,11 @@ function initials(name: string) {
   return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
 }
 
+function isDirectAvatarUrl(value?: string | null) {
+  if (!value) return false
+  return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')
+}
+
 const SETTINGS_TABS: Array<{ key: SettingsTabKey; label: string }> = [
   { key: 'profile', label: 'Profile' },
   { key: 'organization', label: 'Organization' },
@@ -104,7 +111,7 @@ const MONTHLY_PERFORMANCE = [
 
 export function SettingsPage() {
   const { currentUser, updateCurrentUser } = useAuth()
-  const { currentTenant } = useTenant()
+  const { currentOrganization } = useOrganization()
 
   const [activeTab, setActiveTab] = useState<SettingsTabKey>('profile')
 
@@ -120,9 +127,19 @@ export function SettingsPage() {
   const [mobileAppSync, setMobileAppSync] = useState(true)
   const [gmailAddonSync, setGmailAddonSync] = useState(false)
   const [teamsSync, setTeamsSync] = useState(false)
-  const [profileName, setProfileName] = useState(currentUser?.name ?? 'Workspace User')
+  const [profileName, setProfileName] = useState(currentUser?.name ?? 'Organization User')
   const [profileEmail, setProfileEmail] = useState(currentUser?.email ?? 'user@example.com')
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | undefined>(currentUser?.avatarUrl)
+  const [profileAvatarPath, setProfileAvatarPath] = useState<string | undefined>(currentUser?.avatarPath)
+  const [profilePronouns, setProfilePronouns] = useState('She/Her')
+  const [profileJobTitle, setProfileJobTitle] = useState('Product Manager')
+  const [profileDepartment, setProfileDepartment] = useState('Product')
+  const [profileRoleLabel, setProfileRoleLabel] = useState('Admin')
+  const [profileAboutMe, setProfileAboutMe] = useState(
+    'I lead roadmap planning, sprint coordination, and stakeholder communication across teams.',
+  )
+  const [uploadingAvatar, setUploadingAvatar] = useState(false)
+  const [avatarError, setAvatarError] = useState<string | null>(null)
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
   const currentEnergy = MONTHLY_PERFORMANCE[MONTHLY_PERFORMANCE.length - 1]?.energy ?? 0
   const currentRank = MONTHLY_PERFORMANCE[MONTHLY_PERFORMANCE.length - 1]?.rank ?? 0
@@ -130,30 +147,73 @@ export function SettingsPage() {
   const maxEnergy = Math.max(...MONTHLY_PERFORMANCE.map((entry) => entry.energy), 1)
 
   useEffect(() => {
-    setProfileName(currentUser?.name ?? 'Workspace User')
+    setProfileName(currentUser?.name ?? 'Organization User')
     setProfileEmail(currentUser?.email ?? 'user@example.com')
     setProfileAvatarUrl(currentUser?.avatarUrl)
-  }, [currentUser?.avatarUrl, currentUser?.email, currentUser?.name])
+    setProfileAvatarPath(currentUser?.avatarPath)
+  }, [currentUser?.avatarPath, currentUser?.avatarUrl, currentUser?.email, currentUser?.name])
 
-  const handleAvatarFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    if (!currentUser?.id) return
+
+    let cancelled = false
+
+    void supabase
+      .from('profiles')
+      .select(
+        'full_name, email, avatar_url, pronouns, job_title, department, role_label, about_me, out_of_office, out_of_office_start, out_of_office_end',
+      )
+      .eq('id', currentUser.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return
+
+        setProfileName(data.full_name ?? currentUser.name ?? 'Organization User')
+        setProfileEmail(data.email ?? currentUser.email ?? 'user@example.com')
+        setProfileAvatarUrl(isDirectAvatarUrl(data.avatar_url) ? (data.avatar_url ?? undefined) : currentUser.avatarUrl)
+        setProfileAvatarPath(!isDirectAvatarUrl(data.avatar_url) ? (data.avatar_url ?? undefined) : currentUser.avatarPath)
+        setProfilePronouns(data.pronouns ?? 'She/Her')
+        setProfileJobTitle(data.job_title ?? 'Product Manager')
+        setProfileDepartment(data.department ?? 'Product')
+        setProfileRoleLabel(data.role_label ?? 'Admin')
+        setProfileAboutMe(
+          data.about_me ?? 'I lead roadmap planning, sprint coordination, and stakeholder communication across teams.',
+        )
+        setOutOfOffice(data.out_of_office ?? false)
+        setOutOfOfficeStart(data.out_of_office_start ? new Date(data.out_of_office_start) : undefined)
+        setOutOfOfficeEnd(data.out_of_office_end ? new Date(data.out_of_office_end) : undefined)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser?.avatarPath, currentUser?.avatarUrl, currentUser?.email, currentUser?.id, currentUser?.name])
+
+  const handleAvatarFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
     if (!file.type.startsWith('image/')) return
 
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : undefined
-      if (!result) return
-      setProfileAvatarUrl(result)
-      updateCurrentUser({ avatarUrl: result })
+    setUploadingAvatar(true)
+    setAvatarError(null)
+    try {
+      const upload = await uploadAvatarToR2(file)
+      setProfileAvatarUrl(upload.url)
+      setProfileAvatarPath(upload.key)
+      updateCurrentUser({ avatarUrl: upload.url, avatarPath: upload.key })
+    } catch (error) {
+      setAvatarError(error instanceof Error ? error.message : 'Avatar upload failed.')
+    } finally {
+      setUploadingAvatar(false)
+      event.target.value = ''
     }
-    reader.readAsDataURL(file)
-    event.target.value = ''
   }
 
   const handleRemoveAvatar = () => {
     setProfileAvatarUrl(undefined)
-    updateCurrentUser({ avatarUrl: undefined })
+    setProfileAvatarPath(undefined)
+    setAvatarError(null)
+    updateCurrentUser({ avatarUrl: undefined, avatarPath: undefined })
   }
 
   const renderActiveSection = () => {
@@ -169,7 +229,7 @@ export function SettingsPage() {
                 <div className='flex flex-wrap items-center justify-between gap-4'>
                   <div className='flex items-center gap-3'>
                     <Avatar className='h-16 w-16 border'>
-                      {profileAvatarUrl ? <AvatarImage src={profileAvatarUrl} alt={profileName} /> : null}
+                      {profileAvatarUrl ? <AvatarImage src={profileAvatarUrl} alt={profileName} className='object-cover' /> : null}
                       <AvatarFallback className='text-sm font-semibold'>{initials(profileName)}</AvatarFallback>
                     </Avatar>
                     <div>
@@ -182,16 +242,17 @@ export function SettingsPage() {
                       ref={avatarInputRef}
                       type='file'
                       accept='image/*'
-                      onChange={handleAvatarFileChange}
+                      onChange={(event) => void handleAvatarFileChange(event)}
                       className='hidden'
                     />
                     <Button
                       type='button'
                       variant='outline'
                       onClick={() => avatarInputRef.current?.click()}
+                      disabled={uploadingAvatar}
                     >
                       <Camera className='mr-2 h-4 w-4' aria-hidden='true' />
-                      {profileAvatarUrl ? 'Change photo' : 'Upload photo'}
+                      {uploadingAvatar ? 'Uploading...' : profileAvatarUrl ? 'Change photo' : 'Upload photo'}
                     </Button>
                     {profileAvatarUrl ? (
                       <Button type='button' variant='outline' onClick={handleRemoveAvatar}>
@@ -200,6 +261,7 @@ export function SettingsPage() {
                     ) : null}
                   </div>
                 </div>
+                {avatarError ? <p className='mt-3 text-xs text-destructive'>{avatarError}</p> : null}
               </div>
 
               <div className='grid gap-4 md:col-span-2 lg:grid-cols-3'>
@@ -280,24 +342,25 @@ export function SettingsPage() {
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Pronouns</label>
-                <Input defaultValue='She/Her' />
+                <Input value={profilePronouns} onChange={(event) => setProfilePronouns(event.target.value)} />
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Job Title</label>
-                <Input defaultValue='Product Manager' />
+                <Input value={profileJobTitle} onChange={(event) => setProfileJobTitle(event.target.value)} />
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Department</label>
-                <Input defaultValue='Product' />
+                <Input value={profileDepartment} onChange={(event) => setProfileDepartment(event.target.value)} />
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Role</label>
-                <Input defaultValue='Admin' />
+                <Input value={profileRoleLabel} onChange={(event) => setProfileRoleLabel(event.target.value)} />
               </div>
               <div className='space-y-2 md:col-span-2'>
                 <label className='text-sm font-medium text-foreground'>About Me</label>
                 <textarea
-                  defaultValue='I lead roadmap planning, sprint coordination, and stakeholder communication across teams.'
+                  value={profileAboutMe}
+                  onChange={(event) => setProfileAboutMe(event.target.value)}
                   rows={4}
                   className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
                 />
@@ -337,9 +400,11 @@ export function SettingsPage() {
                 <Button
                   onClick={() =>
                     updateCurrentUser({
-                      name: profileName.trim() || 'Workspace User',
+                      name: profileName.trim() || 'Organization User',
                       email: profileEmail.trim() || 'user@example.com',
+                      jobTitle: profileJobTitle.trim() || 'Product Manager',
                       avatarUrl: profileAvatarUrl,
+                      avatarPath: profileAvatarPath,
                     })
                   }
                 >
@@ -354,46 +419,46 @@ export function SettingsPage() {
         return (
           <>
             <CardHeader>
-              <SectionHeader icon={Building2} title='Organization' description='Manage workspace structure and billing plan.' />
+              <SectionHeader icon={Building2} title='Organization' description='Manage your organization profile and operating details.' />
             </CardHeader>
             <CardContent className='space-y-4'>
               <div className='grid gap-4 md:grid-cols-2'>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Organization Name</label>
-                  <Input defaultValue={currentTenant.name} />
+                  <Input defaultValue={currentOrganization.name} />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Plan</label>
-                  <Input defaultValue={currentTenant.plan} readOnly />
+                  <Input defaultValue={currentOrganization.plan} readOnly />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Legal Name</label>
-                  <Input defaultValue='Acme Operations Ltd.' />
+                  <Input defaultValue={currentOrganization.legalName} />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Website</label>
-                  <Input defaultValue='https://acme.example.com' />
+                  <Input defaultValue={currentOrganization.website} />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Industry</label>
-                  <Input defaultValue='Software & Services' />
+                  <Input defaultValue={currentOrganization.industry} />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Company Size</label>
-                  <Input defaultValue='51-200 employees' />
+                  <Input defaultValue={currentOrganization.size} />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Timezone</label>
-                  <Input defaultValue='Africa/Blantyre (CAT)' />
+                  <Input defaultValue={currentOrganization.timezone} />
                 </div>
                 <div className='space-y-2'>
                   <label className='text-sm font-medium text-foreground'>Location</label>
-                  <Input defaultValue='Lilongwe, Malawi' />
+                  <Input defaultValue={currentOrganization.location} />
                 </div>
                 <div className='space-y-2 md:col-span-2'>
                   <label className='text-sm font-medium text-foreground'>Organization Details</label>
                   <textarea
-                    defaultValue='Acme Operations builds internal productivity systems for distributed teams across product, engineering, and operations.'
+                    defaultValue={currentOrganization.description}
                     rows={4}
                     className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
                   />

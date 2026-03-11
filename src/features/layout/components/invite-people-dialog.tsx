@@ -1,10 +1,16 @@
 import { Info, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { USER_PROJECTS } from '@/features/projects/projects-data'
+import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+
+type ProjectOption = {
+  id: string
+  name: string
+  color: string | null
+}
 
 function splitEmails(input: string) {
   return input
@@ -17,6 +23,10 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
+function projectColorClass(color: string | null) {
+  return typeof color === 'string' && color.startsWith('bg-') ? color : 'bg-primary'
+}
+
 export function InvitePeopleDialog({
   open,
   onOpenChange,
@@ -25,7 +35,25 @@ export function InvitePeopleDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const [emailInput, setEmailInput] = useState('')
-  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([USER_PROJECTS[0]?.id ?? ''])
+  const [projects, setProjects] = useState<ProjectOption[]>([])
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void supabase
+      .from('projects')
+      .select('id, name, color')
+      .order('name', { ascending: true })
+      .then(({ data }) => {
+        if (cancelled) return
+        setProjects((data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project', color: project.color ?? null })))
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const parsedEmails = useMemo(() => splitEmails(emailInput), [emailInput])
   const invalidEmails = useMemo(() => parsedEmails.filter((email) => !isValidEmail(email)), [parsedEmails])
@@ -43,7 +71,7 @@ export function InvitePeopleDialog({
 
   const reset = () => {
     setEmailInput('')
-    setSelectedProjectIds([USER_PROJECTS[0]?.id ?? ''])
+    setSelectedProjectIds(projects[0] ? [projects[0].id] : [])
   }
 
   return (
@@ -56,10 +84,8 @@ export function InvitePeopleDialog({
     >
       <DialogContent className='max-w-3xl p-0'>
         <DialogHeader className='border-b px-6 py-5'>
-          <DialogTitle className='text-2xl leading-tight'>Invite people to My workspace</DialogTitle>
-          <DialogDescription className='text-sm'>
-            Add one or multiple emails and assign access to projects.
-          </DialogDescription>
+          <DialogTitle className='text-2xl leading-tight'>Invite people to your organization</DialogTitle>
+          <DialogDescription className='text-sm'>Add one or multiple emails and assign access to projects.</DialogDescription>
         </DialogHeader>
 
         <div className='space-y-6 px-6 py-5'>
@@ -74,11 +100,7 @@ export function InvitePeopleDialog({
             />
             <div className='flex items-center justify-between text-xs text-muted-foreground'>
               <span>{parsedEmails.length} recipient(s)</span>
-              {invalidEmails.length > 0 ? (
-                <span className='text-destructive'>Invalid: {invalidEmails.join(', ')}</span>
-              ) : (
-                <span>All emails valid</span>
-              )}
+              {invalidEmails.length > 0 ? <span className='text-destructive'>Invalid: {invalidEmails.join(', ')}</span> : <span>All emails valid</span>}
             </div>
           </div>
 
@@ -94,14 +116,11 @@ export function InvitePeopleDialog({
                   <p className='px-1 py-1 text-sm text-muted-foreground'>No project selected</p>
                 ) : (
                   selectedProjectIds.map((id) => {
-                    const project = USER_PROJECTS.find((item) => item.id === id)
+                    const project = projects.find((item) => item.id === id)
                     if (!project) return null
                     return (
-                      <span
-                        key={project.id}
-                        className='inline-flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1 text-sm'
-                      >
-                        <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} />
+                      <span key={project.id} className='inline-flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1 text-sm'>
+                        <span className={cn('h-2.5 w-2.5 rounded-full', projectColorClass(project.color))} />
                         {project.name}
                         <button
                           type='button'
@@ -119,7 +138,7 @@ export function InvitePeopleDialog({
             </div>
 
             <div className='flex flex-wrap gap-2'>
-              {USER_PROJECTS.map((project) => {
+              {projects.map((project) => {
                 const selected = selectedProjectIds.includes(project.id)
                 return (
                   <button
@@ -131,7 +150,7 @@ export function InvitePeopleDialog({
                       selected ? 'border-primary/50 bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-accent',
                     )}
                   >
-                    <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} />
+                    <span className={cn('h-2.5 w-2.5 rounded-full', projectColorClass(project.color))} />
                     {project.name}
                   </button>
                 )

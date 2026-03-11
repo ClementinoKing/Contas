@@ -3,29 +3,41 @@ import {
   CalendarDays,
   Check,
   CheckCheck,
+  CirclePlus,
   ChevronLeft,
   ChevronRight,
   Clock3,
   KanbanSquare,
   List,
   MessageSquare,
+  Loader2,
+  MessageCircle,
   NotebookPen,
   Paperclip,
   Pencil,
   Search,
+  Send,
+  Heart,
+  Trash2,
   UserRound,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { Link } from 'react-router-dom'
 
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { TASK_ROWS, type TaskRow } from '@/features/tasks/tasks-data'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useAuth } from '@/features/auth/context/auth-context'
+import { CreateTaskDialog, type CreatedTaskPayload } from '@/features/tasks/components/create-task-dialog'
+import type { TaskRow } from '@/features/tasks/tasks-data'
+import { resolveAvatarUrl } from '@/lib/r2'
+import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 type TaskTab = 'list' | 'board' | 'calendar' | 'notes'
@@ -33,12 +45,29 @@ type CalendarView = 'daily' | 'weekly' | 'monthly' | 'yearly'
 type BoardSavedView = 'all' | 'my-open' | 'due-soon'
 type BoardDueFilter = 'all' | 'today' | 'upcoming' | 'overdue' | 'none'
 type BoardCompletionFilter = 'all' | 'open' | 'completed'
+type ListScopeFilter = 'all' | 'assigned_to_me' | 'created_by_me' | 'due_soon' | 'overdue'
+type ListCompletionFilter = 'all' | 'open' | 'completed'
+type ListStatusFilter = 'all' | TaskRow['status']
+
+const MY_TASKS_ACTIVE_TAB_KEY = 'contas.my-tasks.active-tab'
 
 type BoardComment = {
   id: string
+  authorId: string
   author: string
+  authorAvatarUrl?: string
   content: string
   createdAt: string
+  likes: number
+  likedByMe: boolean
+  replies: Array<{
+    id: string
+    authorId: string
+    author: string
+    authorAvatarUrl?: string
+    content: string
+    createdAt: string
+  }>
 }
 
 type BoardActivity = {
@@ -58,8 +87,25 @@ type BoardTask = {
   activity: BoardActivity[]
 }
 
-type BoardColumn = { id: string; title: string; items: BoardTask[] }
-type BoardTaskDraft = { title: string; due: string; assignee: string; description: string }
+type BoardDefinition = {
+  id: string
+  title: string
+  sortOrder: number
+  isDefault: boolean
+}
+
+type BoardColumn = { id: string; title: string; isDefault: boolean; items: BoardTask[] }
+type BoardTaskDraft = {
+  title: string
+  projectId: string
+  startDate: string
+  endDate: string
+  assigneeIds: string[]
+  status: TaskRow['status']
+  priority: TaskRow['priority']
+  description: string
+  completed: boolean
+}
 type HoverAlign = 'left' | 'center' | 'right'
 
 const BOARD_ME_ASSIGNEE = 'Lina'
@@ -92,6 +138,40 @@ function nowTimeLabel() {
   )
 }
 
+function dateTimeLabel(value: string | null | undefined) {
+  if (!value) return nowTimeLabel()
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return nowTimeLabel()
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(parsed)
+}
+
+function getMentionDraft(value: string, cursor: number | null) {
+  if (cursor === null || cursor < 0) return null
+  const beforeCursor = value.slice(0, cursor)
+  const match = beforeCursor.match(/(^|\s)@([a-zA-Z0-9._-]*)$/)
+  if (!match) return null
+
+  const query = match[2] ?? ''
+  const start = cursor - query.length - 1
+  return { start, end: cursor, query }
+}
+
+function initialsForName(value: string) {
+  return (
+    value
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? '')
+      .join('') || 'U'
+  )
+}
+
+function isDirectAvatarUrl(value?: string | null) {
+  if (!value) return false
+  return value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')
+}
+
 function makeActivity(message: string): BoardActivity {
   return {
     id: `act-${crypto.randomUUID()}`,
@@ -100,75 +180,11 @@ function makeActivity(message: string): BoardActivity {
   }
 }
 
-const INITIAL_BOARD_COLUMNS: BoardColumn[] = [
-  {
-    id: 'todo',
-    title: 'To Do',
-    items: [
-      {
-        id: 'b-1',
-        title: 'Set reporting baseline',
-        due: 'Mar 6',
-        assignee: 'Lina',
-        description: 'Baseline metrics for weekly project reporting and risk visibility.',
-        completed: false,
-        comments: [{ id: 'c-1', author: 'Lina', content: 'I will draft the first report structure today.', createdAt: 'Mar 2, 10:15 AM' }],
-        activity: [makeActivity('Task created in To Do')],
-      },
-      {
-        id: 'b-2',
-        title: 'Collect launch assets',
-        due: 'Mar 8',
-        assignee: 'James',
-        description: 'Gather approved visual assets and copy for launch tasks.',
-        completed: false,
-        comments: [],
-        activity: [makeActivity('Task created in To Do')],
-      },
-    ],
-  },
-  {
-    id: 'in-progress',
-    title: 'In Progress',
-    items: [
-      {
-        id: 'b-3',
-        title: 'Align sprint milestones',
-        due: 'Today',
-        assignee: 'Maya',
-        description: 'Map sprint outcomes to release milestones and dependencies.',
-        completed: false,
-        comments: [{ id: 'c-2', author: 'Maya', content: 'Need final sign-off from stakeholders by EOD.', createdAt: 'Mar 2, 09:40 AM' }],
-        activity: [makeActivity('Moved to In Progress')],
-      },
-      {
-        id: 'b-4',
-        title: 'Consolidate stakeholder feedback',
-        due: 'Mar 5',
-        assignee: 'Noah',
-        description: 'Summarize feedback from product, engineering, and marketing teams.',
-        completed: false,
-        comments: [],
-        activity: [makeActivity('Task created in In Progress')],
-      },
-    ],
-  },
-  {
-    id: 'done',
-    title: 'Done',
-    items: [
-      {
-        id: 'b-5',
-        title: 'QA checklist update',
-        due: 'Completed',
-        assignee: 'Lina',
-        description: 'Checklist refreshed with deployment and rollback verification.',
-        completed: true,
-        comments: [],
-        activity: [makeActivity('Task marked complete')],
-      },
-    ],
-  },
+const INITIAL_BOARD_DEFINITIONS: BoardDefinition[] = [
+  { id: 'planned', title: 'Planned', sortOrder: 0, isDefault: true },
+  { id: 'in_progress', title: 'In Progress', sortOrder: 1, isDefault: true },
+  { id: 'review', title: 'Review', sortOrder: 2, isDefault: true },
+  { id: 'blocked', title: 'Blocked', sortOrder: 3, isDefault: true },
 ]
 
 function parseDate(date: string) {
@@ -250,6 +266,34 @@ function calendarBarTone(status: TaskRow['status']) {
   }
 }
 
+function statusBadgeTone(status: TaskRow['status']) {
+  switch (status) {
+    case 'In Progress':
+      return 'border-blue-500/40 bg-blue-500/15 text-blue-300'
+    case 'Review':
+      return 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+    case 'Planned':
+      return 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+    case 'Blocked':
+      return 'border-rose-500/40 bg-rose-500/15 text-rose-300'
+    default:
+      return 'border-slate-500/40 bg-slate-500/15 text-slate-300'
+  }
+}
+
+function priorityBadgeTone(priority: TaskRow['priority']) {
+  switch (priority) {
+    case 'Urgent':
+      return 'border-rose-500/40 bg-rose-500/15 text-rose-300'
+    case 'High':
+      return 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+    case 'Medium':
+      return 'border-blue-500/40 bg-blue-500/15 text-blue-300'
+    default:
+      return 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+  }
+}
+
 function taskHoverDetails(task: TaskRow) {
   return {
     range: formatRange(task),
@@ -285,22 +329,233 @@ function parseBoardDueValue(due: string) {
   return parsed
 }
 
-function formatBoardDueLabel(date?: Date) {
+function toDateInputValue(date?: Date | null) {
   if (!date) return ''
+  return date.toISOString().slice(0, 10)
+}
+
+function dateFromInputValue(value: string) {
+  if (!value) return undefined
+  const parsed = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return undefined
+  return parsed
+}
+
+function normalizeTaskScheduleDates(startDate: string, endDate: string, fallbackStart?: string, fallbackEnd?: string) {
+  const today = toDateInputValue(new Date())
+  const normalizedStart = startDate || endDate || fallbackStart || fallbackEnd || today
+  const normalizedEnd = endDate || startDate || fallbackEnd || fallbackStart || today
+  if (normalizedStart <= normalizedEnd) {
+    return { startDate: normalizedStart, endDate: normalizedEnd, valid: true }
+  }
+  return { startDate: normalizedStart, endDate: normalizedEnd, valid: false }
+}
+
+function formatTaskDueLabel(value?: string | null) {
+  if (!value) return 'No due date'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'No due date'
   const today = startOfDay(new Date())
-  const timeLabel = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(date)
-  if (isSameDay(startOfDay(date), today)) return `Today, ${timeLabel}`
-  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(
-    date,
-  )
+  if (isSameDay(startOfDay(parsed), today)) return 'Today'
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(parsed)
 }
 
-function parseBoardDueForPicker(due: string) {
-  const parsed = parseBoardDueValue(due)
-  return parsed ?? undefined
+function mapTaskStatus(value?: string | null): TaskRow['status'] {
+  switch (value) {
+    case 'in_progress':
+      return 'In Progress'
+    case 'review':
+      return 'Review'
+    case 'blocked':
+      return 'Blocked'
+    case 'done':
+      return 'Done'
+    default:
+      return 'Planned'
+  }
 }
 
-function TaskHoverCard({ task, align = 'left' }: { task: TaskRow; align?: HoverAlign }) {
+function mapTaskPriority(value?: string | null): TaskRow['priority'] {
+  switch (value) {
+    case 'urgent':
+      return 'Urgent'
+    case 'high':
+      return 'High'
+    case 'medium':
+      return 'Medium'
+    default:
+      return 'Low'
+  }
+}
+
+function mapTaskPriorityToDatabasePriority(priority: TaskRow['priority']) {
+  switch (priority) {
+    case 'Urgent':
+      return 'urgent'
+    case 'High':
+      return 'high'
+    case 'Medium':
+      return 'medium'
+    default:
+      return 'low'
+  }
+}
+
+function createBoardId(name: string) {
+  const base = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  return base ? `board_${base}_${crypto.randomUUID().slice(0, 8)}` : `board_${crypto.randomUUID()}`
+}
+
+function isStatusBackedBoardColumn(value: string) {
+  return value === 'planned' || value === 'in_progress' || value === 'review' || value === 'blocked'
+}
+
+function boardColumnIdFromTask(task: Pick<TaskRow, 'status' | 'boardColumn'>) {
+  if (task.boardColumn) return task.boardColumn
+
+  switch (task.status) {
+    case 'Done':
+      return 'review'
+    case 'In Progress':
+      return 'in_progress'
+    case 'Review':
+      return 'review'
+    case 'Blocked':
+      return 'blocked'
+    default:
+      return 'planned'
+  }
+}
+
+function fallbackBoardTitle(boardId: string) {
+  return boardId
+    .replace(/^board_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function createBoardColumnsFromTasks(
+  tasks: TaskRow[],
+  boardDefinitions: BoardDefinition[],
+  commentsByTaskId: Record<string, BoardComment[]>,
+): BoardColumn[] {
+  const definitionSource = boardDefinitions.length > 0 ? boardDefinitions : INITIAL_BOARD_DEFINITIONS
+  const columns = definitionSource
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((column) => ({ id: column.id, title: column.title, isDefault: column.isDefault, items: [] as BoardTask[] }))
+  const columnMap = new Map(columns.map((column) => [column.id, column]))
+
+  tasks.forEach((task) => {
+    const columnId = boardColumnIdFromTask(task)
+    let column = columnMap.get(columnId)
+    if (!column) {
+      column = { id: columnId, title: fallbackBoardTitle(columnId), isDefault: false, items: [] }
+      columnMap.set(columnId, column)
+      columns.push(column)
+    }
+    if (!column) return
+
+    column.items.push({
+      id: task.id,
+      title: task.title,
+      due: task.due,
+      assignee: task.owner,
+      description: task.description ?? `${task.projectName} task`,
+      completed: task.completed ?? false,
+      comments: commentsByTaskId[task.id] ?? [],
+      activity: [makeActivity('Loaded from task database')],
+    })
+  })
+
+  return columns
+}
+
+function mapColumnIdToTaskStatus(columnId: string): TaskRow['status'] {
+  switch (columnId) {
+    case 'in_progress':
+      return 'In Progress'
+    case 'review':
+      return 'Review'
+    case 'blocked':
+      return 'Blocked'
+    default:
+      return 'Planned'
+  }
+}
+
+function mapTaskStatusToDatabaseStatus(status: TaskRow['status']) {
+  switch (status) {
+    case 'In Progress':
+      return 'in_progress'
+    case 'Review':
+      return 'review'
+    case 'Blocked':
+      return 'blocked'
+    case 'Done':
+      return 'done'
+    default:
+      return 'planned'
+  }
+}
+
+function nextTaskStatusForBoardMove(columnId: string, currentStatus: TaskRow['status']) {
+  return isStatusBackedBoardColumn(columnId) ? mapColumnIdToTaskStatus(columnId) : currentStatus
+}
+
+function boardColumnIdFromStatus(status: TaskRow['status']) {
+  switch (status) {
+    case 'In Progress':
+      return 'in_progress'
+    case 'Review':
+      return 'review'
+    case 'Blocked':
+      return 'blocked'
+    default:
+      return 'planned'
+  }
+}
+
+async function fetchBoardDefinitions() {
+  const withDefaults = await supabase.from('boards').select('id, name, sort_order, is_default').order('sort_order', { ascending: true })
+
+  if (!withDefaults.error && withDefaults.data) {
+    return withDefaults.data.map((board) => ({
+      id: board.id,
+      title: board.name,
+      sortOrder: board.sort_order ?? 0,
+      isDefault: board.is_default ?? false,
+    }))
+  }
+
+  const withoutDefaults = await supabase.from('boards').select('id, name, sort_order').order('sort_order', { ascending: true })
+
+  if (!withoutDefaults.error && withoutDefaults.data) {
+    return withoutDefaults.data.map((board) => ({
+      id: board.id,
+      title: board.name,
+      sortOrder: board.sort_order ?? 0,
+      isDefault: board.id === 'planned' || board.id === 'in_progress' || board.id === 'review' || board.id === 'blocked',
+    }))
+  }
+
+  return INITIAL_BOARD_DEFINITIONS
+}
+
+function TaskHoverCard({
+  task,
+  align = 'left',
+  onOpenTask,
+}: {
+  task: TaskRow
+  align?: HoverAlign
+  onOpenTask?: (taskId: string) => void
+}) {
   const details = taskHoverDetails(task)
 
   return (
@@ -314,7 +569,6 @@ function TaskHoverCard({ task, align = 'left' }: { task: TaskRow; align?: HoverA
     >
       <div className='space-y-1'>
         <p className='text-sm font-semibold text-foreground'>{task.title}</p>
-        <p className='text-xs text-muted-foreground'>{task.id}</p>
       </div>
 
       <div className='mt-3 space-y-1.5 text-xs'>
@@ -333,27 +587,191 @@ function TaskHoverCard({ task, align = 'left' }: { task: TaskRow; align?: HoverA
       </div>
 
       <div className='mt-3 flex items-center justify-between'>
-        <Badge variant='outline'>{task.status}</Badge>
-        <Link to={`/dashboard/projects/${task.projectId}`} className='text-xs font-medium text-primary'>
-          Open project
-        </Link>
+        <Badge variant='outline' className={statusBadgeTone(task.status)}>{task.status}</Badge>
+        <button
+          type='button'
+          className='pointer-events-auto text-xs font-medium text-primary hover:underline'
+          onClick={() => onOpenTask?.(task.id)}
+        >
+          Open task
+        </button>
       </div>
     </div>
   )
 }
 
+function SkeletonBlock({ className }: { className?: string }) {
+  return <div className={cn('animate-pulse rounded-md bg-muted/60', className)} />
+}
+
+function TaskListSkeleton() {
+  return (
+    <Card className='flex h-full w-full min-h-0 flex-col overflow-hidden'>
+      <CardHeader className='pb-3'>
+        <div className='flex items-center justify-between gap-3'>
+          <div className='space-y-2'>
+            <SkeletonBlock className='h-5 w-24' />
+            <SkeletonBlock className='h-4 w-56' />
+          </div>
+          <SkeletonBlock className='h-9 w-28' />
+        </div>
+      </CardHeader>
+      <CardContent className='min-h-0 flex-1 p-0'>
+        <div className='h-full overflow-auto'>
+          <table className='w-full text-sm'>
+            <thead className='sticky top-0 z-10 border-y bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground'>
+              <tr>
+                <th className='px-4 py-2 font-medium'>Task</th>
+                <th className='px-4 py-2 font-medium'>Project</th>
+                <th className='px-4 py-2 font-medium'>Owner</th>
+                <th className='px-4 py-2 font-medium'>Due</th>
+                <th className='px-4 py-2 font-medium'>Priority</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: 6 }, (_, index) => (
+                <tr key={index} className='border-b last:border-b-0'>
+                  <td className='px-4 py-3'>
+                    <div className='space-y-2'>
+                      <SkeletonBlock className='h-4 w-40' />
+                      <SkeletonBlock className='h-3 w-16' />
+                    </div>
+                  </td>
+                  <td className='px-4 py-3'><SkeletonBlock className='h-4 w-24' /></td>
+                  <td className='px-4 py-3'><SkeletonBlock className='h-4 w-20' /></td>
+                  <td className='px-4 py-3'><SkeletonBlock className='h-4 w-16' /></td>
+                  <td className='px-4 py-3'><SkeletonBlock className='h-6 w-24' /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TaskBoardSkeleton() {
+  return (
+    <div className='space-y-3'>
+      <Card>
+        <CardContent className='space-y-3 p-3'>
+          <div className='flex flex-wrap items-center gap-2'>
+            {Array.from({ length: 3 }, (_, index) => (
+              <SkeletonBlock key={index} className='h-8 w-24' />
+            ))}
+          </div>
+          <div className='grid gap-2 md:grid-cols-2 xl:grid-cols-5'>
+            <SkeletonBlock className='h-9 md:col-span-2' />
+            <SkeletonBlock className='h-9' />
+            <SkeletonBlock className='h-9' />
+            <SkeletonBlock className='h-9' />
+          </div>
+        </CardContent>
+      </Card>
+      <section className='w-full max-w-full overflow-hidden rounded-lg border bg-muted/10 p-2'>
+        <div className='w-full max-w-full overflow-x-auto pb-1'>
+          <div className='inline-flex min-w-full gap-3 pr-1'>
+            {Array.from({ length: 4 }, (_, index) => (
+              <Card key={index} className='w-[320px] shrink-0'>
+                <CardHeader className='pb-3'>
+                  <SkeletonBlock className='h-4 w-24' />
+                  <SkeletonBlock className='h-3 w-16' />
+                </CardHeader>
+                <CardContent className='space-y-2'>
+                  {Array.from({ length: 3 }, (_, itemIndex) => (
+                    <div key={itemIndex} className='rounded-md border bg-muted/20 p-3'>
+                      <div className='space-y-2'>
+                        <SkeletonBlock className='h-4 w-32' />
+                        <SkeletonBlock className='h-3 w-full' />
+                        <SkeletonBlock className='h-3 w-3/4' />
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function TaskCalendarSkeleton() {
+  return (
+    <div className='space-y-3'>
+      <Card>
+        <CardContent className='flex flex-wrap items-center justify-between gap-3 p-3'>
+          <div className='inline-flex flex-wrap gap-1 rounded-md bg-muted/35 p-1'>
+            {Array.from({ length: 4 }, (_, index) => (
+              <SkeletonBlock key={index} className='h-8 w-20' />
+            ))}
+          </div>
+          <div className='flex items-center gap-1'>
+            <SkeletonBlock className='h-8 w-8' />
+            <SkeletonBlock className='h-8 w-16' />
+            <SkeletonBlock className='h-8 w-8' />
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader className='pb-3'>
+          <SkeletonBlock className='h-5 w-32' />
+          <SkeletonBlock className='h-4 w-48' />
+        </CardHeader>
+        <CardContent className='grid gap-3 md:grid-cols-2 xl:grid-cols-3'>
+          {Array.from({ length: 6 }, (_, index) => (
+            <div key={index} className='rounded-md border bg-muted/10 p-3'>
+              <SkeletonBlock className='h-4 w-24' />
+              <div className='mt-3 space-y-2'>
+                <SkeletonBlock className='h-3 w-full' />
+                <SkeletonBlock className='h-3 w-4/5' />
+                <SkeletonBlock className='h-3 w-2/3' />
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 export function MyTasksPage() {
-  const [activeTab, setActiveTab] = useState<TaskTab>('list')
+  const { currentUser } = useAuth()
+  const [activeTab, setActiveTab] = useState<TaskTab>(() => {
+    const storedTab = localStorage.getItem(MY_TASKS_ACTIVE_TAB_KEY)
+    return storedTab === 'board' || storedTab === 'calendar' || storedTab === 'notes' || storedTab === 'list' ? storedTab : 'list'
+  })
   const [calendarView, setCalendarView] = useState<CalendarView>('monthly')
   const [calendarDate, setCalendarDate] = useState<Date>(() => startOfDay(new Date()))
+  const [loadingTasks, setLoadingTasks] = useState(true)
+  const [taskRows, setTaskRows] = useState<TaskRow[]>([])
+  const [commentsByTaskId, setCommentsByTaskId] = useState<Record<string, BoardComment[]>>({})
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [members, setMembers] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([])
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false)
+  const [createTaskColumnId, setCreateTaskColumnId] = useState('planned')
 
-  const [boardColumns, setBoardColumns] = useState<BoardColumn[]>(INITIAL_BOARD_COLUMNS)
+  const [boardDefinitions, setBoardDefinitions] = useState<BoardDefinition[]>(INITIAL_BOARD_DEFINITIONS)
+  const [boardColumns, setBoardColumns] = useState<BoardColumn[]>(() =>
+    createBoardColumnsFromTasks([], INITIAL_BOARD_DEFINITIONS, {}),
+  )
   const [newColumnName, setNewColumnName] = useState('')
   const [draggingTask, setDraggingTask] = useState<{ taskId: string; fromColumnId: string } | null>(null)
-  const [columnTaskDrafts, setColumnTaskDrafts] = useState<Record<string, BoardTaskDraft>>({})
 
   const [editingTask, setEditingTask] = useState<{ columnId: string; taskId: string } | null>(null)
-  const [editingTaskDraft, setEditingTaskDraft] = useState<BoardTaskDraft>({ title: '', due: '', assignee: '', description: '' })
+  const [editingTaskDraft, setEditingTaskDraft] = useState<BoardTaskDraft>({
+    title: '',
+    projectId: '',
+    startDate: '',
+    endDate: '',
+    assigneeIds: [],
+    status: 'Planned',
+    priority: 'Low',
+    description: '',
+    completed: false,
+  })
 
   const [savedBoardView, setSavedBoardView] = useState<BoardSavedView>('all')
   const [boardSearch, setBoardSearch] = useState('')
@@ -366,8 +784,34 @@ export function MyTasksPage() {
   const [bulkAssignValue, setBulkAssignValue] = useState('')
 
   const [activeTaskRef, setActiveTaskRef] = useState<{ columnId: string; taskId: string } | null>(null)
-  const [detailDraft, setDetailDraft] = useState<BoardTaskDraft>({ title: '', due: '', assignee: '', description: '' })
+  const [detailDraft, setDetailDraft] = useState<BoardTaskDraft>({
+    title: '',
+    projectId: '',
+    startDate: '',
+    endDate: '',
+    assigneeIds: [],
+    status: 'Planned',
+    priority: 'Low',
+    description: '',
+    completed: false,
+  })
   const [commentDraft, setCommentDraft] = useState('')
+  const [replyDraftByCommentId, setReplyDraftByCommentId] = useState<Record<string, string>>({})
+  const [activeReplyCommentId, setActiveReplyCommentId] = useState<string | null>(null)
+  const [descriptionMentionDraft, setDescriptionMentionDraft] = useState<{ start: number; end: number; query: string } | null>(null)
+  const [descriptionMentionActiveIndex, setDescriptionMentionActiveIndex] = useState(0)
+  const [detailAssigneeOpen, setDetailAssigneeOpen] = useState(false)
+  const [detailAssigneeSearch, setDetailAssigneeSearch] = useState('')
+  const [detailSaveState, setDetailSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const detailDescriptionDebounceRef = useRef<number | null>(null)
+  const detailSavedFlashRef = useRef<number | null>(null)
+  const detailLastPersistedRef = useRef('')
+  const [listSearch, setListSearch] = useState('')
+  const [listScopeFilter, setListScopeFilter] = useState<ListScopeFilter>('all')
+  const [listCompletionFilter, setListCompletionFilter] = useState<ListCompletionFilter>('all')
+  const [listStatusFilter, setListStatusFilter] = useState<ListStatusFilter>('all')
+  const [listProjectFilter, setListProjectFilter] = useState('all')
 
   const weekStart = useMemo(() => getWeekStart(calendarDate), [calendarDate])
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart])
@@ -382,11 +826,192 @@ export function MyTasksPage() {
     [calendarDate],
   )
 
-  const dailyTasks = useMemo(() => TASK_ROWS.filter((task) => spansDate(task, calendarDate)), [calendarDate])
+  useEffect(() => {
+    let cancelled = false
+    setLoadingTasks(true)
+
+    void Promise.all([
+      fetchBoardDefinitions(),
+      supabase
+        .from('tasks')
+        .select('id, title, description, status, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, completed_at, created_at')
+        .order('created_at', { ascending: false }),
+      supabase.from('task_assignees').select('task_id, assignee_id'),
+      supabase
+        .from('task_comments')
+        .select('id, task_id, author_id, content, created_at, parent_comment_id')
+        .order('created_at', { ascending: false }),
+      supabase.from('task_comment_reactions').select('comment_id, user_id, reaction'),
+      supabase.from('projects').select('id, name').order('name', { ascending: true }),
+      supabase.from('profiles').select('id, full_name, email, avatar_url').order('full_name', { ascending: true }),
+    ]).then(
+      async ([
+        fetchedBoards,
+        tasksResult,
+        taskAssigneesResult,
+        taskCommentsResult,
+        taskCommentReactionsResult,
+        projectsResult,
+        profilesResult,
+      ]) => {
+      if (cancelled) return
+
+      const projects = (projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
+      const members = await Promise.all(
+        (profilesResult.data ?? []).map(async (profile) => {
+          const rawAvatar = profile.avatar_url ?? undefined
+          if (!rawAvatar) {
+            return {
+              id: profile.id,
+              name: profile.full_name ?? profile.email ?? 'Unknown member',
+              avatarUrl: undefined,
+            }
+          }
+
+          if (isDirectAvatarUrl(rawAvatar)) {
+            return {
+              id: profile.id,
+              name: profile.full_name ?? profile.email ?? 'Unknown member',
+              avatarUrl: rawAvatar,
+            }
+          }
+
+          try {
+            const resolvedUrl = await resolveAvatarUrl(rawAvatar)
+            return {
+              id: profile.id,
+              name: profile.full_name ?? profile.email ?? 'Unknown member',
+              avatarUrl: resolvedUrl,
+            }
+          } catch {
+            return {
+              id: profile.id,
+              name: profile.full_name ?? profile.email ?? 'Unknown member',
+              avatarUrl: undefined,
+            }
+          }
+        }),
+      )
+      setProjects(projects)
+      setMembers(members)
+
+      if (tasksResult.error || !tasksResult.data) {
+        setLoadingTasks(false)
+        return
+      }
+
+      setBoardDefinitions(fetchedBoards)
+
+      const projectMap = new Map(projects.map((project) => [project.id, project.name]))
+      const memberMap = new Map(members.map((member) => [member.id, member.name]))
+      const avatarMap = new Map(members.map((member) => [member.id, member.avatarUrl]))
+      const assigneeIdsByTaskId = new Map<string, string[]>()
+      if (!taskAssigneesResult.error && taskAssigneesResult.data) {
+        for (const row of taskAssigneesResult.data) {
+          const list = assigneeIdsByTaskId.get(row.task_id) ?? []
+          list.push(row.assignee_id)
+          assigneeIdsByTaskId.set(row.task_id, list)
+        }
+      }
+      const commentsByTask = new Map<string, BoardComment[]>()
+      const likeCountByCommentId = new Map<string, number>()
+      const likedByMeCommentIds = new Set<string>()
+      if (!taskCommentReactionsResult.error && taskCommentReactionsResult.data) {
+        for (const row of taskCommentReactionsResult.data) {
+          if (row.reaction !== 'like') continue
+          likeCountByCommentId.set(row.comment_id, (likeCountByCommentId.get(row.comment_id) ?? 0) + 1)
+          if (row.user_id === currentUser?.id) {
+            likedByMeCommentIds.add(row.comment_id)
+          }
+        }
+      }
+      if (!taskCommentsResult.error && taskCommentsResult.data) {
+        const rootsById = new Map<string, BoardComment>()
+        for (const row of taskCommentsResult.data) {
+          if (row.parent_comment_id) continue
+          const taskComments = commentsByTask.get(row.task_id) ?? []
+          const authorName = row.author_id ? memberMap.get(row.author_id) : undefined
+          const root: BoardComment = {
+            id: row.id,
+            authorId: row.author_id ?? '',
+            author: authorName ?? BOARD_ME_ASSIGNEE,
+            authorAvatarUrl: row.author_id ? avatarMap.get(row.author_id) : undefined,
+            content: row.content,
+            createdAt: dateTimeLabel(row.created_at),
+            likes: likeCountByCommentId.get(row.id) ?? 0,
+            likedByMe: likedByMeCommentIds.has(row.id),
+            replies: [],
+          }
+          taskComments.push(root)
+          commentsByTask.set(row.task_id, taskComments)
+          rootsById.set(row.id, root)
+        }
+        for (const row of taskCommentsResult.data) {
+          if (!row.parent_comment_id) continue
+          const parent = rootsById.get(row.parent_comment_id)
+          if (!parent) continue
+          const authorName = row.author_id ? memberMap.get(row.author_id) : undefined
+          parent.replies.push({
+            id: row.id,
+            authorId: row.author_id ?? '',
+            author: authorName ?? BOARD_ME_ASSIGNEE,
+            authorAvatarUrl: row.author_id ? avatarMap.get(row.author_id) : undefined,
+            content: row.content,
+            createdAt: dateTimeLabel(row.created_at),
+          })
+        }
+      }
+      setCommentsByTaskId(Object.fromEntries(commentsByTask.entries()))
+
+      setTaskRows(
+        tasksResult.data.map((task) => {
+          const baseDate = task.start_at ?? task.due_at ?? task.created_at ?? new Date().toISOString()
+          const startDate = new Date(baseDate)
+          const endDate = task.due_at ? new Date(task.due_at) : startDate
+          const assigneeIds = assigneeIdsByTaskId.get(task.id) ?? (task.assigned_to ? [task.assigned_to] : [])
+          const assigneeNames = assigneeIds.map((id) => memberMap.get(id)).filter((name): name is string => Boolean(name))
+
+          return {
+            id: task.id,
+            title: task.title,
+            description: task.description ?? `${projectMap.get(task.project_id ?? '') ?? 'Unassigned project'} task`,
+            createdById: task.created_by ?? '',
+            owner: assigneeNames.length > 0 ? assigneeNames.join(', ') : 'Unassigned',
+            assigneeIds,
+            due: formatTaskDueLabel(task.due_at),
+            completed: Boolean(task.completed_at),
+            status: mapTaskStatus(task.status),
+            priority: mapTaskPriority(task.priority),
+            boardColumn: task.board_column ?? undefined,
+            projectId: task.project_id ?? '',
+            projectName: projectMap.get(task.project_id ?? '') ?? 'Unassigned project',
+            startDate: startDate.toISOString().slice(0, 10),
+            endDate: endDate.toISOString().slice(0, 10),
+          }
+        }),
+      )
+      setLoadingTasks(false)
+      },
+    )
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    setBoardColumns(createBoardColumnsFromTasks(taskRows, boardDefinitions, commentsByTaskId))
+  }, [taskRows, boardDefinitions, commentsByTaskId])
+
+  useEffect(() => {
+    localStorage.setItem(MY_TASKS_ACTIVE_TAB_KEY, activeTab)
+  }, [activeTab])
+
+  const dailyTasks = useMemo(() => taskRows.filter((task) => spansDate(task, calendarDate)), [calendarDate, taskRows])
 
   const weeklyTasks = useMemo(
-    () => TASK_ROWS.filter((task) => intersectsRange(task, weekStart, weekEnd)),
-    [weekStart, weekEnd],
+    () => taskRows.filter((task) => intersectsRange(task, weekStart, weekEnd)),
+    [taskRows, weekStart, weekEnd],
   )
 
   const selectedTaskSet = useMemo(() => new Set(selectedTaskIds), [selectedTaskIds])
@@ -405,14 +1030,12 @@ export function MyTasksPage() {
       ).sort(),
     [boardColumns],
   )
-  const boardMemberOptions = useMemo(() => allAssignees.filter((assignee) => assignee !== 'Unassigned'), [allAssignees])
-
   const totalTasksCount = useMemo(
     () => boardColumns.reduce((count, column) => count + column.items.length, 0),
     [boardColumns],
   )
 
-  const boardMatchesFilters = (task: BoardTask) => {
+  const boardMatchesFilters = useCallback((task: BoardTask) => {
     const query = boardSearch.trim().toLowerCase()
     if (query) {
       const haystack = `${task.title} ${task.assignee} ${task.due} ${task.description}`.toLowerCase()
@@ -444,7 +1067,7 @@ export function MyTasksPage() {
     }
 
     return true
-  }
+  }, [boardAssigneeFilter, boardCompletionFilter, boardDueFilter, boardSearch, savedBoardView])
 
   const visibleBoardColumns = useMemo(
     () =>
@@ -452,13 +1075,117 @@ export function MyTasksPage() {
         ...column,
         items: column.items.filter(boardMatchesFilters),
       })),
-    [boardColumns, boardSearch, boardAssigneeFilter, boardDueFilter, boardCompletionFilter, savedBoardView],
+    [boardColumns, boardMatchesFilters],
   )
 
   const selectedTasksCount = selectedTaskIds.length
 
-  const getColumnDraft = (columnId: string): BoardTaskDraft =>
-    columnTaskDrafts[columnId] ?? { title: '', due: '', assignee: '', description: '' }
+  const listFilteredTasks = useMemo(() => {
+    const currentUserId = currentUser?.id ?? ''
+    const today = startOfDay(new Date())
+    const dueSoonLimit = addDays(today, 7)
+    const query = listSearch.trim().toLowerCase()
+
+    return taskRows.filter((task) => {
+      if (query) {
+        const haystack = `${task.title} ${task.projectName} ${task.owner} ${task.description ?? ''}`.toLowerCase()
+        if (!haystack.includes(query)) return false
+      }
+
+      if (listProjectFilter !== 'all' && task.projectId !== listProjectFilter) return false
+      if (listStatusFilter !== 'all' && task.status !== listStatusFilter) return false
+      if (listCompletionFilter === 'open' && task.completed) return false
+      if (listCompletionFilter === 'completed' && !task.completed) return false
+
+      if (listScopeFilter === 'assigned_to_me' && (!currentUserId || !task.assigneeIds.includes(currentUserId))) return false
+      if (listScopeFilter === 'created_by_me' && (!currentUserId || task.createdById !== currentUserId)) return false
+      if (listScopeFilter === 'due_soon') {
+        const dueDate = task.endDate ? parseDate(task.endDate) : null
+        if (!dueDate || dueDate < today || dueDate > dueSoonLimit || task.completed) return false
+      }
+      if (listScopeFilter === 'overdue') {
+        const dueDate = task.endDate ? parseDate(task.endDate) : null
+        if (!dueDate || dueDate >= today || task.completed) return false
+      }
+
+      return true
+    })
+  }, [currentUser?.id, listCompletionFilter, listProjectFilter, listScopeFilter, listSearch, listStatusFilter, taskRows])
+
+  const listSections = useMemo(() => {
+    const definitions = (boardDefinitions.length > 0 ? boardDefinitions : INITIAL_BOARD_DEFINITIONS)
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+    const sections = definitions.map((definition) => ({
+      id: definition.id,
+      title: definition.title,
+      tasks: [] as TaskRow[],
+    }))
+    const sectionById = new Map(sections.map((section) => [section.id, section]))
+
+    listFilteredTasks.forEach((task) => {
+      const columnId = boardColumnIdFromTask(task)
+      let section = sectionById.get(columnId)
+      if (!section) {
+        section = {
+          id: columnId,
+          title: fallbackBoardTitle(columnId),
+          tasks: [],
+        }
+        sections.push(section)
+        sectionById.set(columnId, section)
+      }
+      section.tasks.push(task)
+    })
+
+    return sections
+  }, [listFilteredTasks, boardDefinitions])
+
+  const openTaskDetailsById = (taskId: string) => {
+    for (const column of boardColumns) {
+      const task = column.items.find((item) => item.id === taskId)
+      if (task) {
+        openTaskDetails(column.id, task)
+        return
+      }
+    }
+  }
+
+  const handleTaskDialogOpenChange = (open: boolean) => {
+    setTaskDialogOpen(open)
+    if (!open) setCreateTaskColumnId('planned')
+  }
+
+  const openTaskDialogForColumn = (columnId: string) => {
+    setCreateTaskColumnId(columnId)
+    setTaskDialogOpen(true)
+  }
+
+  const handleTaskCreated = (task: CreatedTaskPayload) => {
+    const startDate = new Date(task.startAt)
+    const endDate = task.dueAt ? new Date(task.dueAt) : startDate
+
+    setTaskRows((rows) => [
+      {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        createdById: task.createdById ?? currentUser?.id ?? '',
+        owner: task.assigneeName,
+        assigneeIds: task.assigneeIds,
+        due: formatTaskDueLabel(task.dueAt),
+        completed: false,
+        status: mapTaskStatus(task.status),
+        priority: mapTaskPriority(task.priority),
+        boardColumn: task.boardColumn ?? 'planned',
+        projectId: task.projectId,
+        projectName: task.projectName,
+        startDate: startDate.toISOString().slice(0, 10),
+        endDate: endDate.toISOString().slice(0, 10),
+      },
+      ...rows,
+    ])
+  }
 
   const moveCalendar = (direction: 'prev' | 'next') => {
     const factor = direction === 'prev' ? -1 : 1
@@ -477,6 +1204,15 @@ export function MyTasksPage() {
     }
     setCalendarDate((date) => addYears(date, factor))
   }
+
+  useEffect(() => () => {
+    if (detailDescriptionDebounceRef.current !== null) {
+      window.clearTimeout(detailDescriptionDebounceRef.current)
+    }
+    if (detailSavedFlashRef.current !== null) {
+      window.clearTimeout(detailSavedFlashRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     const validIds = new Set(boardColumns.flatMap((column) => column.items.map((item) => item.id)))
@@ -554,13 +1290,18 @@ export function MyTasksPage() {
     )
   }
 
-  const markSelectedCompleted = () => {
+  const markSelectedCompleted = async () => {
     if (selectedTaskSet.size === 0) return
-    updateSelectedTasks((task) => ({
-      ...task,
-      completed: true,
-      activity: [makeActivity('Marked complete from bulk action'), ...task.activity],
-    }))
+    const selectedIds = Array.from(selectedTaskSet)
+    const previousRows = taskRows
+    const completedAt = new Date().toISOString()
+    setTaskRows((rows) => rows.map((task) => (selectedTaskSet.has(task.id) ? { ...task, completed: true } : task)))
+    const { error } = await supabase.from('tasks').update({ completed_at: completedAt }).in('id', selectedIds)
+    if (error) {
+      console.error('Failed to mark selected tasks complete', error)
+      setTaskRows(previousRows)
+      return
+    }
     clearSelection()
   }
 
@@ -576,29 +1317,28 @@ export function MyTasksPage() {
     setBulkAssignValue('')
   }
 
-  const moveSelectedTasks = () => {
+  const moveSelectedTasks = async () => {
     if (!bulkMoveTargetColumnId || selectedTaskSet.size === 0) return
-
-    setBoardColumns((columns) => {
-      const selectedItems = columns
-        .flatMap((column) => column.items)
-        .filter((item) => selectedTaskSet.has(item.id))
-        .map((item) => ({
-          ...item,
-          activity: [makeActivity('Moved via bulk action'), ...item.activity],
-        }))
-
-      return columns.map((column) => {
-        if (column.id === bulkMoveTargetColumnId) {
-          const dedupedExisting = column.items.filter((item) => !selectedTaskSet.has(item.id))
-          return { ...column, items: [...dedupedExisting, ...selectedItems] }
-        }
-        return {
-          ...column,
-          items: column.items.filter((item) => !selectedTaskSet.has(item.id)),
-        }
-      })
-    })
+    const selectedIds = Array.from(selectedTaskSet)
+    const previousRows = taskRows
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        selectedTaskSet.has(task.id)
+          ? { ...task, status: nextTaskStatusForBoardMove(bulkMoveTargetColumnId, task.status), boardColumn: bulkMoveTargetColumnId }
+          : task,
+      ),
+    )
+    const { error } = isStatusBackedBoardColumn(bulkMoveTargetColumnId)
+      ? await supabase
+          .from('tasks')
+          .update({ status: mapColumnIdToTaskStatus(bulkMoveTargetColumnId) === 'Planned' ? 'planned' : bulkMoveTargetColumnId, board_column: bulkMoveTargetColumnId })
+          .in('id', selectedIds)
+      : await supabase.from('tasks').update({ board_column: bulkMoveTargetColumnId }).in('id', selectedIds)
+    if (error) {
+      console.error('Failed to move selected tasks', error)
+      setTaskRows(previousRows)
+      return
+    }
 
     clearSelection()
   }
@@ -626,168 +1366,292 @@ export function MyTasksPage() {
     setDraggingTask({ taskId, fromColumnId })
   }
 
-  const handleBoardDrop = (toColumnId: string) => {
+  const handleBoardDrop = async (toColumnId: string) => {
     if (!draggingTask) return
-
-    setBoardColumns((columns) => {
-      const sourceColumn = columns.find((column) => column.id === draggingTask.fromColumnId)
-      const task = sourceColumn?.items.find((item) => item.id === draggingTask.taskId)
-
-      if (!sourceColumn || !task || draggingTask.fromColumnId === toColumnId) {
-        return columns
-      }
-
-      return columns.map((column) => {
-        if (column.id === draggingTask.fromColumnId) {
-          return {
-            ...column,
-            items: column.items.filter((item) => item.id !== draggingTask.taskId),
-          }
-        }
-        if (column.id === toColumnId) {
-          return {
-            ...column,
-            items: [...column.items, { ...task, activity: [makeActivity(`Moved to ${column.title}`), ...task.activity] }],
-          }
-        }
-        return column
-      })
-    })
-
-    setDraggingTask(null)
-  }
-
-  const handleAddBoardColumn = () => {
-    const trimmedName = newColumnName.trim()
-    if (!trimmedName) return
-
-    setBoardColumns((columns) => [
-      ...columns,
-      {
-        id: `col-${crypto.randomUUID()}`,
-        title: trimmedName,
-        items: [],
-      },
-    ])
-    setNewColumnName('')
-  }
-
-  const handleAddTaskToColumn = (columnId: string) => {
-    const draft = getColumnDraft(columnId)
-    const title = draft.title.trim()
-    if (!title) return
-
-    const nextTask: BoardTask = {
-      id: `task-${crypto.randomUUID()}`,
-      title,
-      due: draft.due.trim() || 'No due date',
-      assignee: draft.assignee.trim() || 'Unassigned',
-      description: draft.description.trim() || 'No description yet.',
-      completed: false,
-      comments: [],
-      activity: [makeActivity('Task added from board column')],
+    if (draggingTask.fromColumnId === toColumnId) {
+      setDraggingTask(null)
+      return
     }
 
-    setBoardColumns((columns) =>
-      columns.map((column) =>
-        column.id === columnId
-          ? {
-              ...column,
-              items: [...column.items, nextTask],
-            }
-          : column,
+    const taskId = draggingTask.taskId
+    const previousRows = taskRows
+    const currentTask = taskRows.find((task) => task.id === taskId)
+    if (!currentTask) {
+      setDraggingTask(null)
+      return
+    }
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        task.id === taskId ? { ...task, status: nextTaskStatusForBoardMove(toColumnId, task.status), boardColumn: toColumnId } : task,
       ),
     )
+    setDraggingTask(null)
 
-    setColumnTaskDrafts((drafts) => ({
-      ...drafts,
-      [columnId]: { title: '', due: '', assignee: '', description: '' },
-    }))
+    const { error } = isStatusBackedBoardColumn(toColumnId)
+      ? await supabase
+          .from('tasks')
+          .update({ status: mapTaskStatusToDatabaseStatus(nextTaskStatusForBoardMove(toColumnId, currentTask.status)), board_column: toColumnId })
+          .eq('id', taskId)
+      : await supabase.from('tasks').update({ board_column: toColumnId }).eq('id', taskId)
+    if (error) {
+      console.error('Failed to move task on board', error)
+      setTaskRows(previousRows)
+    }
   }
 
-  const toggleBoardTaskCompleted = (columnId: string, taskId: string) => {
-    setBoardColumns((columns) =>
-      columns.map((column) =>
-        column.id === columnId
-          ? {
-              ...column,
-              items: column.items.map((item) =>
-                item.id === taskId
-                  ? {
-                      ...item,
-                      completed: !item.completed,
-                      activity: [
-                        makeActivity(item.completed ? 'Marked incomplete' : 'Marked complete'),
-                        ...item.activity,
-                      ],
-                    }
-                  : item,
-              ),
-            }
-          : column,
+  const handleAddBoardColumn = async () => {
+    const trimmedName = newColumnName.trim()
+    if (!trimmedName) return
+    const newBoard = {
+      id: createBoardId(trimmedName),
+      name: trimmedName,
+      sort_order: boardDefinitions.length,
+      is_default: false,
+      created_by: currentUser?.id ?? null,
+    }
+    const previousDefinitions = boardDefinitions
+    setBoardDefinitions((definitions) => [
+      ...definitions,
+      { id: newBoard.id, title: newBoard.name, sortOrder: newBoard.sort_order, isDefault: false },
+    ])
+    setNewColumnName('')
+    const { error } = await supabase.from('boards').insert(newBoard)
+    if (error) {
+      console.error('Failed to create board column', error)
+      setBoardDefinitions(previousDefinitions)
+    }
+  }
+
+  const handleDeleteBoardColumn = async (columnId: string) => {
+    const column = boardDefinitions.find((item) => item.id === columnId)
+    if (!column || column.isDefault) return
+
+    const previousDefinitions = boardDefinitions
+    const previousRows = taskRows
+
+    setBoardDefinitions((definitions) => definitions.filter((item) => item.id !== columnId))
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        task.boardColumn === columnId
+          ? { ...task, boardColumn: 'planned', status: 'Planned' }
+          : task,
       ),
     )
+
+    const { error: moveError } = await supabase
+      .from('tasks')
+      .update({ board_column: 'planned', status: 'planned' })
+      .eq('board_column', columnId)
+
+    if (moveError) {
+      console.error('Failed to reassign tasks before deleting board column', moveError)
+      setBoardDefinitions(previousDefinitions)
+      setTaskRows(previousRows)
+      return
+    }
+
+    const { error: deleteError } = await supabase.from('boards').delete().eq('id', columnId)
+
+    if (deleteError) {
+      console.error('Failed to delete board column', deleteError)
+      setBoardDefinitions(previousDefinitions)
+      setTaskRows(previousRows)
+    }
+  }
+
+  const toggleBoardTaskCompleted = async (taskId: string) => {
+    const nextCompleted = !(taskRows.find((task) => task.id === taskId)?.completed ?? false)
+    const previousRows = taskRows
+    setTaskRows((rows) => rows.map((task) => (task.id === taskId ? { ...task, completed: nextCompleted } : task)))
+    const { error } = await supabase
+      .from('tasks')
+      .update({ completed_at: nextCompleted ? new Date().toISOString() : null })
+      .eq('id', taskId)
+    if (error) {
+      console.error('Failed to update task completion', error)
+      setTaskRows(previousRows)
+    }
+  }
+
+  const resetTaskDraft = () => ({
+    title: '',
+    projectId: '',
+    startDate: '',
+    endDate: '',
+    assigneeIds: [],
+    status: 'Planned' as TaskRow['status'],
+    priority: 'Low' as TaskRow['priority'],
+    description: '',
+    completed: false,
+  })
+
+  const persistTaskDraft = async (taskId: string, draft: BoardTaskDraft) => {
+    const existingTask = taskRows.find((task) => task.id === taskId)
+    if (!existingTask) return { ok: false as const, nextBoardColumn: '' }
+
+    const title = draft.title.trim()
+    if (!title) return { ok: false as const, nextBoardColumn: '' }
+
+    const normalizedSchedule = normalizeTaskScheduleDates(
+      draft.startDate,
+      draft.endDate,
+      existingTask.startDate,
+      existingTask.endDate,
+    )
+    if (!normalizedSchedule.valid) return { ok: false as const, nextBoardColumn: '' }
+
+    const nextAssigneeIds = draft.assigneeIds
+    const nextAssigneeNames = nextAssigneeIds
+      .map((id) => members.find((member) => member.id === id)?.name)
+      .filter((name): name is string => Boolean(name))
+    const nextAssignee = nextAssigneeNames.length > 0 ? nextAssigneeNames.join(', ') : 'Unassigned'
+    const nextDescription = draft.description.trim() || 'No description yet.'
+    const nextProject = projects.find((project) => project.id === draft.projectId)
+    const defaultStatusColumn = boardColumnIdFromStatus(draft.status)
+    const nextBoardColumn =
+      existingTask.boardColumn && !isStatusBackedBoardColumn(existingTask.boardColumn)
+        ? existingTask.boardColumn
+        : defaultStatusColumn
+    const startAtIso = `${normalizedSchedule.startDate}T00:00:00.000Z`
+    const dueAtIso = `${normalizedSchedule.endDate}T00:00:00.000Z`
+    const previousRows = taskRows
+
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        task.id === taskId
+          ? {
+              ...task,
+              title,
+              projectId: draft.projectId,
+              projectName: nextProject?.name ?? 'Unassigned project',
+              due: formatTaskDueLabel(dueAtIso),
+              owner: nextAssignee,
+              assigneeIds: nextAssigneeIds,
+              status: draft.status,
+              priority: draft.priority,
+              boardColumn: nextBoardColumn,
+              description: nextDescription,
+              startDate: normalizedSchedule.startDate,
+              endDate: normalizedSchedule.endDate,
+              completed: draft.completed,
+            }
+          : task,
+      ),
+    )
+
+    const { error } = await supabase
+      .from('tasks')
+      .update({
+        title,
+        description: nextDescription,
+        status: mapTaskStatusToDatabaseStatus(draft.status),
+        priority: mapTaskPriorityToDatabasePriority(draft.priority),
+        board_column: nextBoardColumn,
+        project_id: draft.projectId || null,
+        start_at: startAtIso,
+        due_at: dueAtIso,
+        assigned_to: nextAssigneeIds[0] ?? null,
+        completed_at: draft.completed ? new Date().toISOString() : null,
+      })
+      .eq('id', taskId)
+
+    if (error) {
+      console.error('Failed to save task details', error)
+      setTaskRows(previousRows)
+      return { ok: false as const, nextBoardColumn: '' }
+    }
+
+    const { error: clearError } = await supabase.from('task_assignees').delete().eq('task_id', taskId)
+    if (clearError) {
+      console.error('Failed to clear task assignees', clearError)
+      setTaskRows(previousRows)
+      return { ok: false as const, nextBoardColumn: '' }
+    }
+
+    if (nextAssigneeIds.length > 0) {
+      const { error: insertError } = await supabase
+        .from('task_assignees')
+        .insert(nextAssigneeIds.map((assigneeId) => ({ task_id: taskId, assignee_id: assigneeId })))
+      if (insertError) {
+        console.error('Failed to save task assignees', insertError)
+        setTaskRows(previousRows)
+        return { ok: false as const, nextBoardColumn: '' }
+      }
+    }
+
+    return { ok: true as const, nextBoardColumn }
   }
 
   const startEditingBoardTask = (columnId: string, task: BoardTask) => {
     setEditingTask({ columnId, taskId: task.id })
+    const taskRow = taskRows.find((item) => item.id === task.id)
     setEditingTaskDraft({
       title: task.title,
-      due: task.due,
-      assignee: task.assignee,
+      projectId: taskRow?.projectId ?? '',
+      startDate: taskRow?.startDate ?? '',
+      endDate: taskRow?.endDate ?? '',
+      assigneeIds: taskRow?.assigneeIds ?? [],
+      status: taskRow?.status ?? 'Planned',
+      priority: taskRow?.priority ?? 'Low',
       description: task.description,
+      completed: taskRow?.completed ?? false,
     })
   }
 
-  const saveEditingBoardTask = () => {
+  const saveEditingBoardTask = async () => {
     if (!editingTask) return
-    const nextTitle = editingTaskDraft.title.trim()
-    if (!nextTitle) return
+    const result = await persistTaskDraft(editingTask.taskId, editingTaskDraft)
+    if (!result.ok) return
 
-    setBoardColumns((columns) =>
-      columns.map((column) =>
-        column.id === editingTask.columnId
-          ? {
-              ...column,
-              items: column.items.map((item) =>
-                item.id === editingTask.taskId
-                  ? {
-                      ...item,
-                      title: nextTitle,
-                      due: editingTaskDraft.due.trim() || 'No due date',
-                      assignee: editingTaskDraft.assignee.trim() || 'Unassigned',
-                      description: editingTaskDraft.description.trim() || 'No description yet.',
-                      activity: [makeActivity('Task updated from inline edit'), ...item.activity],
-                    }
-                  : item,
-              ),
-            }
-          : column,
-      ),
-    )
     setEditingTask(null)
-    setEditingTaskDraft({ title: '', due: '', assignee: '', description: '' })
+    setEditingTaskDraft(resetTaskDraft())
   }
 
   const cancelEditingBoardTask = () => {
     setEditingTask(null)
-    setEditingTaskDraft({ title: '', due: '', assignee: '', description: '' })
+    setEditingTaskDraft(resetTaskDraft())
   }
 
   const openTaskDetails = (columnId: string, task: BoardTask) => {
+    const taskRow = taskRows.find((item) => item.id === task.id)
     setActiveTaskRef({ columnId, taskId: task.id })
     setDetailDraft({
       title: task.title,
-      due: task.due,
-      assignee: task.assignee,
+      projectId: taskRow?.projectId ?? '',
+      startDate: taskRow?.startDate ?? '',
+      endDate: taskRow?.endDate ?? '',
+      assigneeIds: taskRow?.assigneeIds ?? [],
+      status: taskRow?.status ?? 'Planned',
+      priority: taskRow?.priority ?? 'Low',
       description: task.description,
+      completed: taskRow?.completed ?? false,
     })
     setCommentDraft('')
+    setDetailAssigneeOpen(false)
+    setDetailAssigneeSearch('')
+    const nextDraft: BoardTaskDraft = {
+      title: task.title,
+      projectId: taskRow?.projectId ?? '',
+      startDate: taskRow?.startDate ?? '',
+      endDate: taskRow?.endDate ?? '',
+      assigneeIds: taskRow?.assigneeIds ?? [],
+      status: taskRow?.status ?? 'Planned',
+      priority: taskRow?.priority ?? 'Low',
+      description: task.description,
+      completed: taskRow?.completed ?? false,
+    }
+    detailLastPersistedRef.current = serializeDetailDraft(nextDraft)
+    setDetailSaveState('idle')
+    clearDetailSaveTimers()
   }
 
   const closeTaskDetails = () => {
     setActiveTaskRef(null)
     setCommentDraft('')
+    setDetailAssigneeOpen(false)
+    setDetailAssigneeSearch('')
+    setDetailSaveState('idle')
+    clearDetailSaveTimers()
   }
 
   const activeTaskData = useMemo(() => {
@@ -798,12 +1662,159 @@ export function MyTasksPage() {
     if (!task) return null
     return { column, task }
   }, [activeTaskRef, boardColumns])
+  const activeCommentAuthor = useMemo(() => {
+    const member = members.find((item) => item.id === currentUser?.id)
+    return {
+      id: currentUser?.id ?? '',
+      name: member?.name ?? BOARD_ME_ASSIGNEE,
+      avatarUrl: member?.avatarUrl,
+    }
+  }, [currentUser?.id, members])
 
-  const saveDetailTask = () => {
+  const detailTeammateOptions = useMemo(
+    () => members.filter((member) => member.id !== currentUser?.id),
+    [currentUser?.id, members],
+  )
+  const filteredDetailTeammates = useMemo(() => {
+    const query = detailAssigneeSearch.trim().toLowerCase()
+    if (!query) return detailTeammateOptions
+    return detailTeammateOptions.filter((member) => member.name.toLowerCase().includes(query))
+  }, [detailAssigneeSearch, detailTeammateOptions])
+  const descriptionMentionOptions = useMemo(() => {
+    if (!descriptionMentionDraft) return []
+    const query = descriptionMentionDraft.query.trim().toLowerCase()
+    const candidates = query
+      ? detailTeammateOptions.filter((member) => member.name.toLowerCase().includes(query))
+      : detailTeammateOptions
+    return candidates.slice(0, 6)
+  }, [descriptionMentionDraft, detailTeammateOptions])
+
+  useEffect(() => {
+    setReplyDraftByCommentId({})
+    setActiveReplyCommentId(null)
+  }, [activeTaskRef?.taskId])
+  useEffect(() => {
+    setDescriptionMentionDraft(null)
+    setDescriptionMentionActiveIndex(0)
+  }, [activeTaskRef?.taskId])
+  useEffect(() => {
+    setDescriptionMentionActiveIndex(0)
+  }, [descriptionMentionDraft?.query])
+
+  const serializeDetailDraft = (draft: BoardTaskDraft) =>
+    JSON.stringify({
+      ...draft,
+      assigneeIds: [...draft.assigneeIds].sort(),
+    })
+
+  const clearDetailSaveTimers = () => {
+    if (detailDescriptionDebounceRef.current !== null) {
+      window.clearTimeout(detailDescriptionDebounceRef.current)
+      detailDescriptionDebounceRef.current = null
+    }
+    if (detailSavedFlashRef.current !== null) {
+      window.clearTimeout(detailSavedFlashRef.current)
+      detailSavedFlashRef.current = null
+    }
+  }
+
+  const saveDetailTask = async (draft = detailDraft) => {
     if (!activeTaskRef) return
-    const title = detailDraft.title.trim()
-    if (!title) return
+    const nextSerialized = serializeDetailDraft(draft)
+    if (nextSerialized === detailLastPersistedRef.current) {
+      return
+    }
 
+    setDetailSaveState('saving')
+    const result = await persistTaskDraft(activeTaskRef.taskId, draft)
+    if (!result.ok) {
+      setDetailSaveState('error')
+      return
+    }
+
+    detailLastPersistedRef.current = nextSerialized
+    setActiveTaskRef({ columnId: result.nextBoardColumn, taskId: activeTaskRef.taskId })
+    setDetailSaveState('saved')
+    if (detailSavedFlashRef.current !== null) {
+      window.clearTimeout(detailSavedFlashRef.current)
+    }
+    detailSavedFlashRef.current = window.setTimeout(() => {
+      setDetailSaveState('idle')
+      detailSavedFlashRef.current = null
+    }, 1200)
+  }
+
+  const triggerDetailAutosave = () => {
+    clearDetailSaveTimers()
+    void saveDetailTask()
+  }
+
+  const triggerDetailAutosaveWithDraft = (nextDraft: BoardTaskDraft) => {
+    clearDetailSaveTimers()
+    void saveDetailTask(nextDraft)
+  }
+
+  const triggerDebouncedDescriptionAutosave = (nextDraft: BoardTaskDraft) => {
+    if (detailDescriptionDebounceRef.current !== null) {
+      window.clearTimeout(detailDescriptionDebounceRef.current)
+    }
+    detailDescriptionDebounceRef.current = window.setTimeout(() => {
+      void saveDetailTask(nextDraft)
+      detailDescriptionDebounceRef.current = null
+    }, 650)
+  }
+
+  const handleDeleteTask = async (taskId: string) => {
+    const previousRows = taskRows
+    setTaskRows((rows) => rows.filter((task) => task.id !== taskId))
+    setSelectedTaskIds((ids) => ids.filter((id) => id !== taskId))
+
+    const { error } = await supabase.from('tasks').delete().eq('id', taskId)
+    if (error) {
+      console.error('Failed to delete task', error)
+      setTaskRows(previousRows)
+    }
+  }
+
+  const addCommentToTask = async () => {
+    if (!activeTaskRef) return
+    if (!currentUser?.id) return
+    const content = commentDraft.trim()
+    if (!content) return
+
+    const { data, error } = await supabase
+      .from('task_comments')
+      .insert({
+        task_id: activeTaskRef.taskId,
+        author_id: currentUser.id,
+        content,
+        parent_comment_id: null,
+      })
+      .select('id, task_id, author_id, content, created_at')
+      .single()
+
+    if (error || !data) {
+      console.error('Failed to add comment', error)
+      return
+    }
+
+    const comment: BoardComment = {
+      id: data.id,
+      authorId: data.author_id ?? currentUser.id,
+      author: activeCommentAuthor.name,
+      authorAvatarUrl: activeCommentAuthor.avatarUrl,
+      content: data.content,
+      createdAt: dateTimeLabel(data.created_at),
+      likes: 0,
+      likedByMe: false,
+      replies: [],
+    }
+    setCommentsByTaskId((current) => ({
+      ...current,
+      [activeTaskRef.taskId]: [comment, ...(current[activeTaskRef.taskId] ?? [])],
+    }))
+
+    setCommentDraft('')
     setBoardColumns((columns) =>
       columns.map((column) =>
         column.id === activeTaskRef.columnId
@@ -813,11 +1824,7 @@ export function MyTasksPage() {
                 item.id === activeTaskRef.taskId
                   ? {
                       ...item,
-                      title,
-                      due: detailDraft.due.trim() || 'No due date',
-                      assignee: detailDraft.assignee.trim() || 'Unassigned',
-                      description: detailDraft.description.trim() || 'No description yet.',
-                      activity: [makeActivity('Task details updated'), ...item.activity],
+                      activity: [makeActivity('Comment added'), ...item.activity],
                     }
                   : item,
               ),
@@ -827,18 +1834,97 @@ export function MyTasksPage() {
     )
   }
 
-  const addCommentToTask = () => {
+  const toggleCommentLike = async (commentId: string) => {
     if (!activeTaskRef) return
-    const content = commentDraft.trim()
-    if (!content) return
+    if (!currentUser?.id) return
 
-    const comment: BoardComment = {
-      id: `comment-${crypto.randomUUID()}`,
-      author: BOARD_ME_ASSIGNEE,
-      content,
-      createdAt: nowTimeLabel(),
+    let wasLikedByMe = false
+    setCommentsByTaskId((current) => {
+      const taskComments = current[activeTaskRef.taskId] ?? []
+      return {
+        ...current,
+        [activeTaskRef.taskId]: taskComments.map((comment) => {
+          if (comment.id !== commentId) return comment
+          wasLikedByMe = comment.likedByMe
+          const likedByMe = !comment.likedByMe
+          const likes = Math.max(0, comment.likes + (likedByMe ? 1 : -1))
+          return { ...comment, likedByMe, likes }
+        }),
+      }
+    })
+
+    if (wasLikedByMe) {
+      const { error } = await supabase
+        .from('task_comment_reactions')
+        .delete()
+        .eq('comment_id', commentId)
+        .eq('user_id', currentUser.id)
+        .eq('reaction', 'like')
+      if (!error) return
+      console.error('Failed to remove like', error)
+    } else {
+      const { error } = await supabase.from('task_comment_reactions').insert({
+        comment_id: commentId,
+        user_id: currentUser.id,
+        reaction: 'like',
+      })
+      if (!error) return
+      console.error('Failed to add like', error)
     }
 
+    setCommentsByTaskId((current) => {
+      const taskComments = current[activeTaskRef.taskId] ?? []
+      return {
+        ...current,
+        [activeTaskRef.taskId]: taskComments.map((comment) => {
+          if (comment.id !== commentId) return comment
+          const likedByMe = !comment.likedByMe
+          const likes = Math.max(0, comment.likes + (likedByMe ? 1 : -1))
+          return { ...comment, likedByMe, likes }
+        }),
+      }
+    })
+  }
+
+  const addReplyToComment = async (commentId: string) => {
+    if (!activeTaskRef) return
+    if (!currentUser?.id) return
+    const content = (replyDraftByCommentId[commentId] ?? '').trim()
+    if (!content) return
+
+    const { data, error } = await supabase
+      .from('task_comments')
+      .insert({
+        task_id: activeTaskRef.taskId,
+        author_id: currentUser.id,
+        content,
+        parent_comment_id: commentId,
+      })
+      .select('id, author_id, content, created_at')
+      .single()
+    if (error || !data) {
+      console.error('Failed to add reply', error)
+      return
+    }
+
+    const reply = {
+      id: data.id,
+      authorId: data.author_id ?? currentUser.id,
+      author: activeCommentAuthor.name,
+      authorAvatarUrl: activeCommentAuthor.avatarUrl,
+      content: data.content,
+      createdAt: dateTimeLabel(data.created_at),
+    }
+
+    setCommentsByTaskId((current) => ({
+      ...current,
+      [activeTaskRef.taskId]: (current[activeTaskRef.taskId] ?? []).map((comment) =>
+        comment.id === commentId ? { ...comment, replies: [reply, ...comment.replies] } : comment,
+      ),
+    }))
+
+    setReplyDraftByCommentId((drafts) => ({ ...drafts, [commentId]: '' }))
+    setActiveReplyCommentId(null)
     setBoardColumns((columns) =>
       columns.map((column) =>
         column.id === activeTaskRef.columnId
@@ -848,8 +1934,7 @@ export function MyTasksPage() {
                 item.id === activeTaskRef.taskId
                   ? {
                       ...item,
-                      comments: [comment, ...item.comments],
-                      activity: [makeActivity('Comment added'), ...item.activity],
+                      activity: [makeActivity('Reply added'), ...item.activity],
                     }
                   : item,
               ),
@@ -857,8 +1942,27 @@ export function MyTasksPage() {
           : column,
       ),
     )
+  }
 
-    setCommentDraft('')
+  const insertDescriptionMention = (memberId: string) => {
+    const mention = descriptionMentionDraft
+    if (!mention) return
+    const teammate = detailTeammateOptions.find((member) => member.id === memberId)
+    if (!teammate) return
+
+    const mentionText = `@${teammate.name} `
+    const nextDescription = `${detailDraft.description.slice(0, mention.start)}${mentionText}${detailDraft.description.slice(mention.end)}`
+    const nextDraft = { ...detailDraft, description: nextDescription }
+    setDetailDraft(nextDraft)
+    triggerDebouncedDescriptionAutosave(nextDraft)
+    setDescriptionMentionDraft(null)
+    setDescriptionMentionActiveIndex(0)
+
+    const nextCursor = mention.start + mentionText.length
+    window.requestAnimationFrame(() => {
+      descriptionTextareaRef.current?.focus()
+      descriptionTextareaRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
   }
 
   const renderCalendarContent = () => {
@@ -883,8 +1987,14 @@ export function MyTasksPage() {
               dailyTasks.map((task) => (
                 <article key={task.id} className='rounded-md border bg-muted/15 p-3'>
                   <div className='flex items-center justify-between gap-2'>
-                    <p className='font-medium text-foreground'>{task.title}</p>
-                    <Badge variant='outline'>{task.status}</Badge>
+                    <button
+                      type='button'
+                      onClick={() => openTaskDetailsById(task.id)}
+                      className='font-medium text-foreground hover:underline'
+                    >
+                      {task.title}
+                    </button>
+                    <Badge variant='outline' className={statusBadgeTone(task.status)}>{task.status}</Badge>
                   </div>
                   <div className='mt-1 flex items-center gap-2 text-xs text-muted-foreground'>
                     <Link to={`/dashboard/projects/${task.projectId}`} className='font-medium text-primary hover:underline'>
@@ -918,7 +2028,7 @@ export function MyTasksPage() {
             <div className='grid grid-cols-7 gap-2'>
               {Array.from({ length: 7 }, (_, index) => {
                 const day = addDays(weekStart, index)
-                const dayTasks = TASK_ROWS.filter((task) => spansDate(task, day)).length
+                const dayTasks = taskRows.filter((task) => spansDate(task, day)).length
                 return (
                   <div key={day.toISOString()} className='rounded-md border bg-muted/15 p-2 text-center'>
                     <p className='text-[11px] font-semibold uppercase tracking-wide text-muted-foreground'>
@@ -949,20 +2059,28 @@ export function MyTasksPage() {
                   return (
                     <div key={task.id} className='space-y-1'>
                       <div className='flex items-center justify-between text-xs text-muted-foreground'>
-                        <span>{task.title}</span>
+                        <button
+                          type='button'
+                          onClick={() => openTaskDetailsById(task.id)}
+                          className='hover:text-foreground hover:underline'
+                        >
+                          {task.title}
+                        </button>
                         <span>{formatRange(task)}</span>
                       </div>
                       <div className='group relative h-7 rounded-md bg-muted/25'>
-                        <div
+                        <button
+                          type='button'
+                          onClick={() => openTaskDetailsById(task.id)}
                           className={cn('absolute top-1 h-5 rounded px-2 text-[11px] font-medium text-white', calendarBarTone(task.status))}
                           style={{
                             left: `${(startOffset / 7) * 100}%`,
                             width: `${(spanDays / 7) * 100}%`,
                           }}
                         >
-                          <div className='truncate leading-5'>{task.projectName}</div>
-                        </div>
-                        <TaskHoverCard task={task} align={hoverAlign} />
+                          <div className='truncate leading-5'>{task.title}</div>
+                        </button>
+                        <TaskHoverCard task={task} align={hoverAlign} onOpenTask={openTaskDetailsById} />
                       </div>
                     </div>
                   )
@@ -991,7 +2109,7 @@ export function MyTasksPage() {
             </div>
             <div className='grid grid-cols-7 gap-2'>
               {monthDays.map((day, index) => {
-                const dayTasks = TASK_ROWS.filter((task) => spansDate(task, day))
+                const dayTasks = taskRows.filter((task) => spansDate(task, day))
                 const outside = day.getMonth() !== calendarDate.getMonth()
                 const today = isSameDay(day, new Date())
                 const columnIndex = index % 7
@@ -1013,10 +2131,14 @@ export function MyTasksPage() {
                     <div className='space-y-1'>
                       {dayTasks.slice(0, 2).map((task) => (
                         <div key={`${task.id}-${day.toISOString()}`} className='group relative'>
-                          <div className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium text-white', calendarBarTone(task.status))}>
-                            <span className='truncate'>{task.projectName}</span>
-                          </div>
-                          <TaskHoverCard task={task} align={hoverAlign} />
+                          <button
+                            type='button'
+                            onClick={() => openTaskDetailsById(task.id)}
+                            className={cn('block w-full rounded px-1.5 py-0.5 text-left text-[10px] font-medium text-white', calendarBarTone(task.status))}
+                          >
+                            <span className='block truncate whitespace-nowrap'>{task.title}</span>
+                          </button>
+                          <TaskHoverCard task={task} align={hoverAlign} onOpenTask={openTaskDetailsById} />
                         </div>
                       ))}
                       {dayTasks.length > 2 ? (
@@ -1042,7 +2164,7 @@ export function MyTasksPage() {
           {yearMonths.map((monthDate) => {
             const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
             const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0)
-            const monthTasks = TASK_ROWS.filter((task) => intersectsRange(task, monthStart, monthEnd))
+            const monthTasks = taskRows.filter((task) => intersectsRange(task, monthStart, monthEnd))
 
             return (
               <div key={monthDate.toISOString()} className='rounded-md border bg-muted/10 p-3'>
@@ -1055,8 +2177,14 @@ export function MyTasksPage() {
                 <div className='space-y-1'>
                   {monthTasks.slice(0, 3).map((task) => (
                     <div key={`${monthDate.getMonth()}-${task.id}`} className='group relative'>
-                      <p className='truncate text-xs text-muted-foreground'>{task.title}</p>
-                      <TaskHoverCard task={task} align='right' />
+                      <button
+                        type='button'
+                        onClick={() => openTaskDetailsById(task.id)}
+                        className='truncate text-xs text-muted-foreground hover:text-foreground hover:underline'
+                      >
+                        {task.title}
+                      </button>
+                      <TaskHoverCard task={task} align='right' onOpenTask={openTaskDetailsById} />
                     </div>
                   ))}
                   {monthTasks.length === 0 ? <p className='text-xs text-muted-foreground'>No tasks</p> : null}
@@ -1208,13 +2336,25 @@ export function MyTasksPage() {
                   <CardHeader className='pb-3'>
                     <div className='flex items-center justify-between gap-2'>
                       <CardTitle className='text-sm'>{column.title}</CardTitle>
-                      <button
-                        type='button'
-                        onClick={() => selectVisibleTasksInColumn(column.id)}
-                        className='text-xs font-medium text-muted-foreground transition-colors hover:text-foreground'
-                      >
-                        {allVisibleSelected ? 'Clear' : 'Select all'}
-                      </button>
+                      <div className='flex items-center gap-2'>
+                        {!column.isDefault ? (
+                          <button
+                            type='button'
+                            onClick={() => void handleDeleteBoardColumn(column.id)}
+                            className='inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                            aria-label={`Delete ${column.title} column`}
+                          >
+                            <Trash2 className='h-3.5 w-3.5' aria-hidden='true' />
+                          </button>
+                        ) : null}
+                        <button
+                          type='button'
+                          onClick={() => selectVisibleTasksInColumn(column.id)}
+                          className='text-xs font-medium text-muted-foreground transition-colors hover:text-foreground'
+                        >
+                          {allVisibleSelected ? 'Clear' : 'Select all'}
+                        </button>
+                      </div>
                     </div>
                     <CardDescription>{column.items.length} shown</CardDescription>
                   </CardHeader>
@@ -1258,7 +2398,7 @@ export function MyTasksPage() {
                               data-no-hold='true'
                               onClick={(event) => {
                                 event.stopPropagation()
-                                toggleBoardTaskCompleted(column.id, item.id)
+                                toggleBoardTaskCompleted(item.id)
                               }}
                               className={cn(
                                 'mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border',
@@ -1294,31 +2434,101 @@ export function MyTasksPage() {
                                   />
                                   <div className='grid grid-cols-2 gap-2'>
                                     <DatePicker
-                                      value={parseBoardDueForPicker(editingTaskDraft.due)}
-                                      onChange={(date) =>
-                                        setEditingTaskDraft((draft) => ({ ...draft, due: formatBoardDueLabel(date) }))
-                                      }
-                                      placeholder='Due date'
-                                      withTime
+                                      value={dateFromInputValue(editingTaskDraft.startDate)}
+                                      onChange={(date) => setEditingTaskDraft((draft) => ({ ...draft, startDate: toDateInputValue(date) }))}
+                                      placeholder='Start date'
                                       className='h-8 text-xs'
                                     />
+                                    <DatePicker
+                                      value={dateFromInputValue(editingTaskDraft.endDate)}
+                                      onChange={(date) => setEditingTaskDraft((draft) => ({ ...draft, endDate: toDateInputValue(date) }))}
+                                      placeholder='End date'
+                                      className='h-8 text-xs'
+                                    />
+                                  </div>
+                                  <div className='grid grid-cols-2 gap-2'>
                                     <select
-                                      value={editingTaskDraft.assignee}
+                                      value={editingTaskDraft.projectId}
                                       onClick={(event) => event.stopPropagation()}
                                       onChange={(event) =>
-                                        setEditingTaskDraft((draft) => ({ ...draft, assignee: event.target.value }))
+                                        setEditingTaskDraft((draft) => ({
+                                          ...draft,
+                                          projectId: event.target.value,
+                                        }))
                                       }
                                       className='h-8 rounded-md border bg-background px-2 text-xs text-foreground'
                                     >
-                                      <option value=''>Assign member</option>
-                                      {boardMemberOptions.map((member) => (
-                                        <option key={member} value={member}>
-                                          {member}
+                                      <option value=''>Unassigned project</option>
+                                      {projects.map((project) => (
+                                        <option key={project.id} value={project.id}>
+                                          {project.name}
                                         </option>
                                       ))}
-                                      <option value='Unassigned'>Unassigned</option>
+                                    </select>
+                                    <select
+                                      value={editingTaskDraft.status}
+                                      onClick={(event) => event.stopPropagation()}
+                                      onChange={(event) =>
+                                        setEditingTaskDraft((draft) => ({
+                                          ...draft,
+                                          status: event.target.value as TaskRow['status'],
+                                        }))
+                                      }
+                                      className='h-8 rounded-md border bg-background px-2 text-xs text-foreground'
+                                    >
+                                      <option value='Planned'>Planned</option>
+                                      <option value='In Progress'>In Progress</option>
+                                      <option value='Review'>Review</option>
+                                      <option value='Blocked'>Blocked</option>
+                                      <option value='Done'>Done</option>
                                     </select>
                                   </div>
+                                  <select
+                                    value={editingTaskDraft.priority}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onChange={(event) =>
+                                      setEditingTaskDraft((draft) => ({
+                                        ...draft,
+                                        priority: event.target.value as TaskRow['priority'],
+                                      }))
+                                    }
+                                    className='h-8 rounded-md border bg-background px-2 text-xs text-foreground'
+                                  >
+                                    <option value='Low'>Low priority</option>
+                                    <option value='Medium'>Medium priority</option>
+                                    <option value='High'>High priority</option>
+                                    <option value='Urgent'>Urgent priority</option>
+                                  </select>
+                                  <div className='max-h-28 overflow-y-auto rounded-md border bg-background p-2 text-xs'>
+                                    {members.map((member) => (
+                                      <label key={member.id} className='flex items-center gap-2 py-1'>
+                                        <input
+                                          type='checkbox'
+                                          checked={editingTaskDraft.assigneeIds.includes(member.id)}
+                                          onChange={(event) =>
+                                            setEditingTaskDraft((draft) => ({
+                                              ...draft,
+                                              assigneeIds: event.target.checked
+                                                ? [...draft.assigneeIds, member.id]
+                                                : draft.assigneeIds.filter((id) => id !== member.id),
+                                            }))
+                                          }
+                                        />
+                                        <span>{member.name}</span>
+                                      </label>
+                                    ))}
+                                    {members.length === 0 ? <p className='text-muted-foreground'>No teammates available.</p> : null}
+                                  </div>
+                                  <label className='inline-flex items-center gap-2 text-xs text-muted-foreground'>
+                                    <input
+                                      type='checkbox'
+                                      checked={editingTaskDraft.completed}
+                                      onChange={(event) =>
+                                        setEditingTaskDraft((draft) => ({ ...draft, completed: event.target.checked }))
+                                      }
+                                    />
+                                    Completed
+                                  </label>
                                   <textarea
                                     rows={2}
                                     value={editingTaskDraft.description}
@@ -1330,7 +2540,12 @@ export function MyTasksPage() {
                                     className='w-full rounded-md border bg-background px-3 py-2 text-xs'
                                   />
                                   <div className='flex items-center gap-1'>
-                                    <Button type='button' size='sm' className='h-7 px-2 text-xs' onClick={saveEditingBoardTask}>
+                                    <Button
+                                      type='button'
+                                      size='sm'
+                                      className='h-7 px-2 text-xs'
+                                      onClick={() => void saveEditingBoardTask()}
+                                    >
                                       Save
                                     </Button>
                                     <Button
@@ -1405,80 +2620,9 @@ export function MyTasksPage() {
                       </article>
                     ))}
 
-                    <div className='space-y-2 border-t pt-2'>
-                      <Input
-                        value={getColumnDraft(column.id).title}
-                        onChange={(event) =>
-                          setColumnTaskDrafts((drafts) => ({
-                            ...drafts,
-                            [column.id]: {
-                              ...getColumnDraft(column.id),
-                              title: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder='Add a task...'
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            handleAddTaskToColumn(column.id)
-                          }
-                        }}
-                      />
-                      <div className='grid grid-cols-2 gap-2'>
-                        <DatePicker
-                          value={parseBoardDueForPicker(getColumnDraft(column.id).due)}
-                          onChange={(date) =>
-                            setColumnTaskDrafts((drafts) => ({
-                              ...drafts,
-                              [column.id]: {
-                                ...getColumnDraft(column.id),
-                                due: formatBoardDueLabel(date),
-                              },
-                            }))
-                          }
-                          placeholder='Due date'
-                          withTime
-                          className='text-xs'
-                        />
-                        <select
-                          value={getColumnDraft(column.id).assignee}
-                          onChange={(event) =>
-                            setColumnTaskDrafts((drafts) => ({
-                              ...drafts,
-                              [column.id]: {
-                                ...getColumnDraft(column.id),
-                                assignee: event.target.value,
-                              },
-                            }))
-                          }
-                          className='h-9 rounded-md border bg-background px-2 text-xs text-foreground'
-                        >
-                          <option value=''>Assign member</option>
-                          {boardMemberOptions.map((member) => (
-                            <option key={member} value={member}>
-                              {member}
-                            </option>
-                          ))}
-                          <option value='Unassigned'>Unassigned</option>
-                        </select>
-                      </div>
-                      <textarea
-                        rows={2}
-                        value={getColumnDraft(column.id).description}
-                        onChange={(event) =>
-                          setColumnTaskDrafts((drafts) => ({
-                            ...drafts,
-                            [column.id]: {
-                              ...getColumnDraft(column.id),
-                              description: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder='Description'
-                        className='w-full rounded-md border bg-background px-3 py-2 text-xs'
-                      />
-                      <Button type='button' variant='outline' className='w-full' onClick={() => handleAddTaskToColumn(column.id)}>
+                    <div className='border-t pt-2'>
+                      <Button type='button' variant='outline' className='w-full gap-2' onClick={() => openTaskDialogForColumn(column.id)}>
+                        <CirclePlus className='h-4 w-4' aria-hidden='true' />
                         Add Task
                       </Button>
                     </div>
@@ -1516,49 +2660,219 @@ export function MyTasksPage() {
   )
 
   const renderContent = () => {
+    if (loadingTasks) {
+      if (activeTab === 'list') return <TaskListSkeleton />
+      if (activeTab === 'board') return <TaskBoardSkeleton />
+      if (activeTab === 'calendar') return <TaskCalendarSkeleton />
+    }
+
     switch (activeTab) {
       case 'list':
         return (
           <Card className='flex h-full w-full min-h-0 flex-col overflow-hidden'>
             <CardHeader className='pb-3'>
-              <CardTitle className='text-base'>Task List</CardTitle>
-              <CardDescription>Compact table for quick tracking and updates.</CardDescription>
-            </CardHeader>
-            <CardContent className='min-h-0 flex-1 p-0'>
-              <div className='h-full overflow-auto'>
-                <table className='w-full text-sm'>
-                  <thead className='sticky top-0 z-10 border-y bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground'>
-                    <tr>
-                      <th className='px-4 py-2 font-medium'>Task</th>
-                      <th className='px-4 py-2 font-medium'>Project</th>
-                      <th className='px-4 py-2 font-medium'>Owner</th>
-                      <th className='px-4 py-2 font-medium'>Due</th>
-                      <th className='px-4 py-2 font-medium'>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {TASK_ROWS.map((task) => (
-                      <tr key={task.id} className='border-b last:border-b-0'>
-                        <td className='px-4 py-2.5'>
-                          <div>
-                            <p className='font-medium text-foreground'>{task.title}</p>
-                            <p className='text-xs text-muted-foreground'>{task.id}</p>
-                          </div>
-                        </td>
-                        <td className='px-4 py-2.5'>
-                          <Link to={`/dashboard/projects/${task.projectId}`} className='text-xs font-medium text-primary hover:underline'>
-                            {task.projectName}
-                          </Link>
-                        </td>
-                        <td className='px-4 py-2.5'>{task.owner}</td>
-                        <td className='px-4 py-2.5'>{task.due}</td>
-                        <td className='px-4 py-2.5'>
-                          <Badge variant='outline'>{task.status}</Badge>
-                        </td>
-                      </tr>
+              <div className='flex items-center justify-between gap-3'>
+                <div>
+                  <CardTitle className='text-base'>Task List</CardTitle>
+                  <CardDescription>Compact table for quick tracking and updates.</CardDescription>
+                </div>
+                <Button type='button' onClick={() => setTaskDialogOpen(true)}>Create Task</Button>
+              </div>
+              <div className='mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-5'>
+                <div className='relative md:col-span-2'>
+                  <Search className='pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
+                  <Input
+                    value={listSearch}
+                    onChange={(event) => setListSearch(event.target.value)}
+                    className='pl-8'
+                    placeholder='Search task, project, assignee'
+                  />
+                </div>
+
+                <select
+                  value={listScopeFilter}
+                  onChange={(event) => setListScopeFilter(event.target.value as ListScopeFilter)}
+                  className='h-9 rounded-md border bg-background px-3 text-sm'
+                  aria-label='Filter tasks by scope'
+                >
+                  <option value='all'>All tasks</option>
+                  <option value='assigned_to_me'>Assigned to me</option>
+                  <option value='created_by_me'>Created by me</option>
+                  <option value='due_soon'>Due soon</option>
+                  <option value='overdue'>Overdue</option>
+                </select>
+
+                <select
+                  value={listStatusFilter}
+                  onChange={(event) => setListStatusFilter(event.target.value as ListStatusFilter)}
+                  className='h-9 rounded-md border bg-background px-3 text-sm'
+                  aria-label='Filter tasks by status'
+                >
+                  <option value='all'>All statuses</option>
+                  <option value='Planned'>Planned</option>
+                  <option value='In Progress'>In Progress</option>
+                  <option value='Review'>Review</option>
+                  <option value='Blocked'>Blocked</option>
+                  <option value='Done'>Done</option>
+                </select>
+
+                <div className='grid grid-cols-2 gap-2 xl:grid-cols-2'>
+                  <select
+                    value={listCompletionFilter}
+                    onChange={(event) => setListCompletionFilter(event.target.value as ListCompletionFilter)}
+                    className='h-9 rounded-md border bg-background px-3 text-sm'
+                    aria-label='Filter tasks by completion'
+                  >
+                    <option value='all'>All</option>
+                    <option value='open'>Open</option>
+                    <option value='completed'>Completed</option>
+                  </select>
+                  <select
+                    value={listProjectFilter}
+                    onChange={(event) => setListProjectFilter(event.target.value)}
+                    className='h-9 rounded-md border bg-background px-3 text-sm'
+                    aria-label='Filter tasks by project'
+                  >
+                    <option value='all'>All projects</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
                     ))}
-                  </tbody>
-                </table>
+                  </select>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className='min-h-0 flex-1 p-3'>
+              <div className='h-full space-y-4 overflow-auto'>
+                {listSections.map((section) => (
+                  <section key={section.id} className='overflow-hidden rounded-md border'>
+                    <div className='flex items-center justify-between border-b bg-muted/25 px-4 py-2'>
+                      <h3 className='text-sm font-semibold text-foreground'>{section.title}</h3>
+                      <span className='text-xs text-muted-foreground'>{section.tasks.length} tasks</span>
+                    </div>
+                    {section.tasks.length === 0 ? (
+                      <p className='px-4 py-3 text-sm text-muted-foreground'>No tasks in this column.</p>
+                    ) : (
+                      <table className='w-full table-fixed text-sm'>
+                        <colgroup>
+                          <col className='w-12' />
+                          <col />
+                          <col className='w-44' />
+                          <col className='w-32' />
+                          <col className='w-28' />
+                          <col className='w-32' />
+                          <col className='w-24' />
+                        </colgroup>
+                        <thead className='border-b bg-muted/15 text-left text-xs uppercase tracking-wide text-muted-foreground'>
+                          <tr>
+                            <th className='w-12 px-4 py-2 font-medium' aria-label='Complete task' />
+                            <th className='px-4 py-2 font-medium'>Task</th>
+                            <th className='px-3 py-2 font-medium'>Project</th>
+                            <th className='px-3 py-2 font-medium'>Assignees</th>
+                            <th className='px-3 py-2 font-medium'>Due</th>
+                            <th className='px-3 py-2 font-medium'>Priority</th>
+                            <th className='px-4 py-2 font-medium text-right'>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {section.tasks.map((task) => (
+                            <tr
+                              key={task.id}
+                              className='cursor-pointer border-b transition-colors hover:bg-muted/10 last:border-b-0'
+                              onClick={() => openTaskDetailsById(task.id)}
+                            >
+                              <td className='px-4 py-2.5'>
+                                <button
+                                  type='button'
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    void toggleBoardTaskCompleted(task.id)
+                                  }}
+                                  className={cn(
+                                    'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                                    task.completed
+                                      ? 'border-emerald-500 bg-emerald-500 text-white'
+                                      : 'border-border bg-background text-transparent',
+                                  )}
+                                  aria-label={task.completed ? `Mark ${task.title} as incomplete` : `Mark ${task.title} as complete`}
+                                >
+                                  <Check className='h-3 w-3' aria-hidden='true' />
+                                </button>
+                              </td>
+                              <td className='px-4 py-2.5'>
+                                <span className={cn('font-medium text-foreground', task.completed && 'text-muted-foreground line-through')}>
+                                  {task.title}
+                                </span>
+                              </td>
+                              <td className='px-3 py-2.5'>
+                                <Link
+                                  to={`/dashboard/projects/${task.projectId}`}
+                                  onClick={(event) => event.stopPropagation()}
+                                  className='block truncate text-xs font-medium text-primary hover:underline'
+                                >
+                                  {task.projectName}
+                                </Link>
+                              </td>
+                              <td className='px-3 py-2.5'>
+                                {task.assigneeIds.length > 0 ? (
+                                  <div className='flex items-center'>
+                                    {task.assigneeIds.slice(0, 4).map((assigneeId, index) => {
+                                      const member = members.find((item) => item.id === assigneeId)
+                                      const label = member?.name ?? 'Unknown'
+                                      const initials = label
+                                        .split(/\s+/)
+                                        .filter(Boolean)
+                                        .slice(0, 2)
+                                        .map((part) => part[0]?.toUpperCase() ?? '')
+                                        .join('')
+                                      return (
+                                        <div key={assigneeId} className={cn('relative', index > 0 && '-ml-2')}>
+                                          <Avatar className='h-8 w-8 border-2 border-background' title={label}>
+                                            {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
+                                            <AvatarFallback className='text-[10px] font-semibold'>{initials || 'U'}</AvatarFallback>
+                                          </Avatar>
+                                        </div>
+                                      )
+                                    })}
+                                    {task.assigneeIds.length > 4 ? (
+                                      <div className='-ml-2 inline-flex h-8 w-8 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold text-muted-foreground'>
+                                        +{task.assigneeIds.length - 4}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <span className='text-sm text-muted-foreground'>-</span>
+                                )}
+                              </td>
+                              <td className='px-3 py-2.5 whitespace-nowrap'>{task.due}</td>
+                              <td className='px-3 py-2.5'>
+                                <Badge variant='outline' className={cn('whitespace-nowrap', priorityBadgeTone(task.priority))}>
+                                  {task.priority}
+                                </Badge>
+                              </td>
+                              <td className='px-4 py-2.5'>
+                                <div className='flex items-center justify-end gap-1'>
+                                  <button
+                                    type='button'
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      void handleDeleteTask(task.id)
+                                    }}
+                                    className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                    aria-label={`Delete ${task.title}`}
+                                  >
+                                    <Trash2 className='h-3.5 w-3.5' aria-hidden='true' />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </section>
+                ))}
               </div>
             </CardContent>
           </Card>
@@ -1679,107 +2993,462 @@ export function MyTasksPage() {
         </div>
       </div>
 
+      <CreateTaskDialog
+        open={taskDialogOpen}
+        onOpenChange={handleTaskDialogOpenChange}
+        onTaskCreated={handleTaskCreated}
+        initialBoardColumn={createTaskColumnId}
+      />
+
       <Dialog open={Boolean(activeTaskData)} onOpenChange={(open) => (!open ? closeTaskDetails() : undefined)}>
-        <DialogContent className='left-auto right-0 top-0 h-screen max-w-2xl translate-x-0 translate-y-0 rounded-none border-l p-0'>
+        <DialogContent className='max-h-[90vh] max-w-4xl overflow-hidden p-0'>
           {activeTaskData ? (
-            <div className='flex h-full flex-col'>
-              <DialogHeader className='border-b px-5 py-4'>
-                <DialogTitle>Task Details</DialogTitle>
-                <DialogDescription>
-                  {activeTaskData.column.title}
-                </DialogDescription>
+            <div className='flex max-h-[90vh] min-h-0 flex-col'>
+              <DialogHeader className='border-b px-4 py-3'>
+                <div className='flex items-center justify-between gap-3'>
+                  <div>
+                    <DialogTitle>Task Details</DialogTitle>
+                    <DialogDescription>{activeTaskData.column.title}</DialogDescription>
+                  </div>
+                  <div className='text-xs text-muted-foreground'>
+                    {detailSaveState === 'saving' ? (
+                      <span className='inline-flex items-center gap-1'>
+                        <Loader2 className='h-3.5 w-3.5 animate-spin' />
+                        Saving...
+                      </span>
+                    ) : null}
+                    {detailSaveState === 'saved' ? <span className='inline-flex items-center gap-1 text-emerald-300'><Check className='h-3.5 w-3.5' />Saved</span> : null}
+                    {detailSaveState === 'error' ? <span className='text-rose-300'>Save failed</span> : null}
+                  </div>
+                </div>
               </DialogHeader>
 
-              <div className='min-h-0 flex-1 overflow-y-auto'>
-                <div className='space-y-5 p-5'>
+              <div className='grid min-h-0 flex-1 lg:grid-cols-[minmax(0,2.1fr)_360px]'>
+                <div className='flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain border-r p-4'>
+                  <div className='flex flex-1 flex-col gap-4'>
                   <Input
                     value={detailDraft.title}
                     onChange={(event) => setDetailDraft((draft) => ({ ...draft, title: event.target.value }))}
+                    onBlur={triggerDetailAutosave}
                     placeholder='Task title'
-                  />
-                  <div className='grid grid-cols-2 gap-2'>
-                    <DatePicker
-                      value={parseBoardDueForPicker(detailDraft.due)}
-                      onChange={(date) => setDetailDraft((draft) => ({ ...draft, due: formatBoardDueLabel(date) }))}
-                      placeholder='Due date'
-                      withTime
-                    />
-                    <select
-                      value={detailDraft.assignee}
-                      onChange={(event) => setDetailDraft((draft) => ({ ...draft, assignee: event.target.value }))}
-                      className='h-9 rounded-md border bg-background px-2 text-sm text-foreground'
-                    >
-                      <option value=''>Assign member</option>
-                      {boardMemberOptions.map((member) => (
-                        <option key={member} value={member}>
-                          {member}
-                        </option>
-                      ))}
-                      <option value='Unassigned'>Unassigned</option>
-                    </select>
-                  </div>
-                  <textarea
-                    rows={8}
-                    value={detailDraft.description}
-                    onChange={(event) => setDetailDraft((draft) => ({ ...draft, description: event.target.value }))}
-                    placeholder='Description'
-                    className='w-full rounded-md border bg-background px-3 py-2 text-sm'
+                    className='h-11 text-lg font-semibold'
                   />
 
-                  <div className='flex items-center gap-2'>
-                    <Button type='button' onClick={saveDetailTask}>Save Changes</Button>
-                    <Button type='button' variant='outline' onClick={closeTaskDetails}>Close</Button>
-                  </div>
-
-                  <div className='space-y-3 border-t pt-4'>
-                    <div className='mb-2 inline-flex items-center gap-1 text-sm font-semibold'>
-                      <MessageSquare className='h-4 w-4' />
-                      Comments
-                    </div>
-                    <div className='flex items-start gap-2'>
-                      <textarea
-                        rows={2}
-                        value={commentDraft}
-                        onChange={(event) => setCommentDraft(event.target.value)}
-                        placeholder='Add a comment...'
-                        className='w-full rounded-md border bg-background px-3 py-2 text-sm'
+                  <div className='grid gap-3 md:grid-cols-2'>
+                    <div className='space-y-1.5'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Start Date</p>
+                      <DatePicker
+                        value={dateFromInputValue(detailDraft.startDate)}
+                        onChange={(date) => {
+                          const nextDraft = { ...detailDraft, startDate: toDateInputValue(date) }
+                          setDetailDraft(nextDraft)
+                          triggerDetailAutosaveWithDraft(nextDraft)
+                        }}
+                        placeholder='Start date'
+                        className='h-9'
                       />
-                      <Button type='button' size='sm' onClick={addCommentToTask}>Add</Button>
                     </div>
-                    <div className='space-y-3'>
-                      {activeTaskData.task.comments.length === 0 ? (
-                        <p className='text-xs text-muted-foreground'>No comments yet.</p>
+                    <div className='space-y-1.5'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Due Date</p>
+                      <DatePicker
+                        value={dateFromInputValue(detailDraft.endDate)}
+                        onChange={(date) => {
+                          const nextDraft = { ...detailDraft, endDate: toDateInputValue(date) }
+                          setDetailDraft(nextDraft)
+                          triggerDetailAutosaveWithDraft(nextDraft)
+                        }}
+                        placeholder='Due date'
+                        className='h-9'
+                      />
+                    </div>
+                    <div className='space-y-1.5'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Project</p>
+                      <select
+                        value={detailDraft.projectId}
+                        onChange={(event) => {
+                          const nextDraft = { ...detailDraft, projectId: event.target.value }
+                          setDetailDraft(nextDraft)
+                          triggerDetailAutosaveWithDraft(nextDraft)
+                        }}
+                        className='h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground'
+                      >
+                        <option value=''>Unassigned project</option>
+                        {projects.map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Status</p>
+                      <select
+                        value={detailDraft.status}
+                        onChange={(event) => {
+                          const nextDraft = { ...detailDraft, status: event.target.value as TaskRow['status'] }
+                          setDetailDraft(nextDraft)
+                          triggerDetailAutosaveWithDraft(nextDraft)
+                        }}
+                        className='h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground'
+                      >
+                        <option value='Planned'>Planned</option>
+                        <option value='In Progress'>In Progress</option>
+                        <option value='Review'>Review</option>
+                        <option value='Blocked'>Blocked</option>
+                        <option value='Done'>Done</option>
+                      </select>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Priority</p>
+                      <select
+                        value={detailDraft.priority}
+                        onChange={(event) => {
+                          const nextDraft = { ...detailDraft, priority: event.target.value as TaskRow['priority'] }
+                          setDetailDraft(nextDraft)
+                          triggerDetailAutosaveWithDraft(nextDraft)
+                        }}
+                        className='h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground'
+                      >
+                        <option value='Low'>Low priority</option>
+                        <option value='Medium'>Medium priority</option>
+                        <option value='High'>High priority</option>
+                        <option value='Urgent'>Urgent priority</option>
+                      </select>
+                    </div>
+                    <div className='space-y-1.5'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Completion</p>
+                      <button
+                        type='button'
+                        onClick={() => {
+                          const nextDraft = { ...detailDraft, completed: !detailDraft.completed }
+                          setDetailDraft(nextDraft)
+                          triggerDetailAutosaveWithDraft(nextDraft)
+                        }}
+                        className={cn(
+                          'inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm',
+                          detailDraft.completed ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200' : 'text-muted-foreground',
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            'inline-flex h-4 w-4 items-center justify-center rounded border text-[10px]',
+                            detailDraft.completed ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-border',
+                          )}
+                        >
+                          <Check className='h-3 w-3' />
+                        </span>
+                        {detailDraft.completed ? 'Completed' : 'Open'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className='space-y-2 rounded-md border bg-muted/10 p-3'>
+                    <div className='flex items-center justify-between gap-2'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Assignees</p>
+                      <Popover open={detailAssigneeOpen} onOpenChange={setDetailAssigneeOpen}>
+                        <PopoverTrigger asChild>
+                          <Button type='button' size='sm' variant='outline' className='h-8'>
+                            Add assignee
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className='w-72 p-2' align='end'>
+                          <Input
+                            value={detailAssigneeSearch}
+                            onChange={(event) => setDetailAssigneeSearch(event.target.value)}
+                            placeholder='Search teammates'
+                            className='h-8'
+                          />
+                          <div className='mt-2 max-h-48 space-y-1 overflow-y-auto'>
+                            {filteredDetailTeammates.length === 0 ? (
+                              <p className='px-2 py-3 text-xs text-muted-foreground'>No teammates found.</p>
+                            ) : (
+                              filteredDetailTeammates.map((member) => {
+                                const selected = detailDraft.assigneeIds.includes(member.id)
+                                return (
+                                  <button
+                                    key={member.id}
+                                    type='button'
+                                    onClick={() => {
+                                      const nextDraft = {
+                                        ...detailDraft,
+                                        assigneeIds: selected
+                                          ? detailDraft.assigneeIds.filter((id) => id !== member.id)
+                                          : [...detailDraft.assigneeIds, member.id],
+                                      }
+                                      setDetailDraft(nextDraft)
+                                      triggerDetailAutosaveWithDraft(nextDraft)
+                                    }}
+                                    className={cn(
+                                      'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors',
+                                      selected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60',
+                                    )}
+                                  >
+                                    <span className='truncate'>{member.name}</span>
+                                    {selected ? <Check className='h-4 w-4' /> : null}
+                                  </button>
+                                )
+                              })
+                            )}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div className='flex flex-wrap gap-2'>
+                      {detailDraft.assigneeIds.length === 0 ? (
+                        <p className='text-sm text-muted-foreground'>No assignees selected.</p>
                       ) : (
-                        activeTaskData.task.comments.map((comment) => (
-                          <article key={comment.id} className='rounded-md border p-2.5'>
-                            <div className='mb-1 flex items-center justify-between gap-2 text-xs'>
-                              <span className='font-medium'>{comment.author}</span>
-                              <span className='text-muted-foreground'>{comment.createdAt}</span>
-                            </div>
-                            <p className='text-sm text-foreground'>{comment.content}</p>
-                          </article>
-                        ))
+                        detailDraft.assigneeIds.map((assigneeId) => {
+                          const member = detailTeammateOptions.find((item) => item.id === assigneeId)
+                          const label = member?.name ?? 'Unknown user'
+                          return (
+                            <span key={assigneeId} className='inline-flex items-center gap-2 rounded-full border bg-background px-2.5 py-1 text-xs'>
+                              <Avatar className='h-5 w-5 border'>
+                                {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
+                                <AvatarFallback className='text-[9px] font-semibold'>{initialsForName(label)}</AvatarFallback>
+                              </Avatar>
+                              <span className='max-w-28 truncate'>{label}</span>
+                              <button
+                                type='button'
+                                onClick={() => {
+                                  const nextDraft = {
+                                    ...detailDraft,
+                                    assigneeIds: detailDraft.assigneeIds.filter((id) => id !== assigneeId),
+                                  }
+                                  setDetailDraft(nextDraft)
+                                  triggerDetailAutosaveWithDraft(nextDraft)
+                                }}
+                                className='inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
+                                aria-label={`Remove ${label}`}
+                              >
+                                <X className='h-3 w-3' />
+                              </button>
+                            </span>
+                          )
+                        })
                       )}
                     </div>
                   </div>
 
-                  <div className='border-t pt-4'>
-                    <div className='space-y-3'>
-                      <div className='mb-2 inline-flex items-center gap-1 text-sm font-semibold'>
-                        <Activity className='h-4 w-4' />
-                        Activity
-                      </div>
-                      <div className='space-y-2'>
-                        {activeTaskData.task.activity.slice(0, 12).map((log) => (
-                          <div key={log.id} className='rounded-md border bg-muted/20 p-2 text-xs'>
-                            <p className='text-foreground'>{log.message}</p>
-                            <p className='text-muted-foreground'>{log.createdAt}</p>
-                          </div>
+                  <div className='mt-auto flex min-h-[220px] flex-1 flex-col space-y-1.5'>
+                    <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Description</p>
+                    <div className='relative flex min-h-0 flex-1'>
+                    <textarea
+                      ref={descriptionTextareaRef}
+                      rows={6}
+                      value={detailDraft.description}
+                      onChange={(event) => {
+                        const nextDraft = { ...detailDraft, description: event.target.value }
+                        setDetailDraft(nextDraft)
+                        triggerDebouncedDescriptionAutosave(nextDraft)
+                        setDescriptionMentionDraft(getMentionDraft(event.target.value, event.target.selectionStart))
+                      }}
+                      onClick={(event) => setDescriptionMentionDraft(getMentionDraft(event.currentTarget.value, event.currentTarget.selectionStart))}
+                      onKeyUp={(event) =>
+                        setDescriptionMentionDraft(getMentionDraft(event.currentTarget.value, event.currentTarget.selectionStart))
+                      }
+                      onKeyDown={(event) => {
+                        if (!descriptionMentionDraft || descriptionMentionOptions.length === 0) return
+                        if (event.key === 'ArrowDown') {
+                          event.preventDefault()
+                          setDescriptionMentionActiveIndex((index) => (index + 1) % descriptionMentionOptions.length)
+                          return
+                        }
+                        if (event.key === 'ArrowUp') {
+                          event.preventDefault()
+                          setDescriptionMentionActiveIndex(
+                            (index) => (index - 1 + descriptionMentionOptions.length) % descriptionMentionOptions.length,
+                          )
+                          return
+                        }
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          const selected = descriptionMentionOptions[descriptionMentionActiveIndex]
+                          if (selected) insertDescriptionMention(selected.id)
+                          return
+                        }
+                        if (event.key === 'Escape') {
+                          event.preventDefault()
+                          setDescriptionMentionDraft(null)
+                        }
+                      }}
+                      onBlur={triggerDetailAutosave}
+                      placeholder='Describe the task...'
+                      className='h-full min-h-[180px] w-full resize-none rounded-md border bg-background px-3 py-2 text-sm'
+                    />
+                    {descriptionMentionDraft && descriptionMentionOptions.length > 0 ? (
+                      <div className='absolute bottom-2 left-2 z-20 w-[min(20rem,calc(100%-1rem))] rounded-md border bg-card p-1 shadow-lg'>
+                        {descriptionMentionOptions.map((member, index) => (
+                          <button
+                            key={member.id}
+                            type='button'
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => insertDescriptionMention(member.id)}
+                            className={cn(
+                              'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm',
+                              index === descriptionMentionActiveIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60',
+                            )}
+                          >
+                            <Avatar className='h-5 w-5 border'>
+                              {member.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={member.name} /> : null}
+                              <AvatarFallback className='text-[9px] font-semibold'>{initialsForName(member.name)}</AvatarFallback>
+                            </Avatar>
+                            <span className='truncate'>{member.name}</span>
+                          </button>
                         ))}
+                      </div>
+                    ) : null}
+                    </div>
+                  </div>
+
+                </div>
+                </div>
+
+                <aside className='flex min-h-0 flex-col bg-muted/15'>
+                  <div className='border-b px-3 py-3'>
+                    <div className='inline-flex items-center gap-1 text-sm font-semibold'>
+                      <MessageSquare className='h-4 w-4' />
+                      Comments
+                    </div>
+                  </div>
+                  <div className='min-h-0 flex-1'>
+                    <div className='h-full space-y-3 overflow-y-auto px-3 py-3'>
+                      <div className='space-y-3'>
+                        {activeTaskData.task.comments.length === 0 ? (
+                          <p className='text-xs text-muted-foreground'>No comments yet.</p>
+                        ) : (
+                          activeTaskData.task.comments.map((comment) => (
+                            <article key={comment.id} className='rounded-md px-1 py-1.5'>
+                              <div className='flex gap-2'>
+                                <Avatar className='mt-0.5 h-7 w-7 border'>
+                                  {comment.authorAvatarUrl ? <AvatarImage src={comment.authorAvatarUrl} alt={comment.author} /> : null}
+                                  <AvatarFallback className='text-[10px] font-semibold'>{initialsForName(comment.author)}</AvatarFallback>
+                                </Avatar>
+                                <div className='min-w-0 flex-1'>
+                                  <div className='flex items-center gap-1 text-xs'>
+                                    <span className='font-semibold text-foreground'>{comment.author}</span>
+                                    <span className='text-muted-foreground'>· {comment.createdAt}</span>
+                                  </div>
+                                  <p className='mt-1 whitespace-pre-wrap text-sm leading-5 text-foreground'>{comment.content}</p>
+                                  <div className='mt-2 flex items-center gap-1'>
+                                    <button
+                                      type='button'
+                                      onClick={() => toggleCommentLike(comment.id)}
+                                      className={cn(
+                                        'inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-300',
+                                        comment.likedByMe ? 'text-rose-300' : '',
+                                      )}
+                                    >
+                                      <Heart className={cn('h-3.5 w-3.5', comment.likedByMe ? 'fill-current' : '')} />
+                                      <span>{comment.likes > 0 ? comment.likes : 'Like'}</span>
+                                    </button>
+                                    <button
+                                      type='button'
+                                      onClick={() =>
+                                        setActiveReplyCommentId((current) => (current === comment.id ? null : comment.id))
+                                      }
+                                      className='inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-sky-500/10 hover:text-sky-300'
+                                    >
+                                      <MessageCircle className='h-3.5 w-3.5' />
+                                      <span>{comment.replies.length > 0 ? `Reply ${comment.replies.length}` : 'Reply'}</span>
+                                    </button>
+                                  </div>
+
+                                  {comment.replies.length > 0 ? (
+                                    <div className='mt-2 space-y-2 border-l border-border/70 pl-2.5'>
+                                      {comment.replies.map((reply) => (
+                                        <div key={reply.id} className='rounded-md bg-background/40 px-2 py-1.5'>
+                                          <div className='flex items-center gap-1 text-[11px]'>
+                                            <span className='font-medium text-foreground'>{reply.author}</span>
+                                            <span className='text-muted-foreground'>· {reply.createdAt}</span>
+                                          </div>
+                                          <p className='mt-0.5 whitespace-pre-wrap text-xs text-foreground'>{reply.content}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : null}
+
+                                  {activeReplyCommentId === comment.id ? (
+                                    <div className='mt-2 flex items-start gap-2'>
+                                      <Input
+                                        value={replyDraftByCommentId[comment.id] ?? ''}
+                                        onChange={(event) =>
+                                          setReplyDraftByCommentId((drafts) => ({ ...drafts, [comment.id]: event.target.value }))
+                                        }
+                                        onKeyDown={(event) => {
+                                          if (event.key === 'Enter') {
+                                            event.preventDefault()
+                                            addReplyToComment(comment.id)
+                                          }
+                                        }}
+                                        placeholder='Write a reply...'
+                                        className='h-8'
+                                      />
+                                      <Button
+                                        type='button'
+                                        size='sm'
+                                        variant='outline'
+                                        className='h-8 w-8 shrink-0 px-0'
+                                        onClick={() => addReplyToComment(comment.id)}
+                                        aria-label='Send reply'
+                                      >
+                                        <Send className='h-3.5 w-3.5' />
+                                      </Button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </article>
+                          ))
+                        )}
+                      </div>
+
+                      <div className='border-t pt-3'>
+                        <div className='inline-flex items-center gap-1 text-sm font-semibold'>
+                          <Activity className='h-4 w-4' />
+                          Activity
+                        </div>
+                        <div className='mt-2 space-y-2'>
+                          {activeTaskData.task.activity.slice(0, 40).map((log) => (
+                            <div key={log.id} className='relative border-l pl-3 text-xs'>
+                              <span className='absolute -left-[4px] top-1.5 h-1.5 w-1.5 rounded-full bg-muted-foreground/70' />
+                              <p className='text-foreground'>{log.message}</p>
+                              <p className='text-[11px] text-muted-foreground'>{log.createdAt}</p>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                  <div className='border-t px-3 py-3'>
+                    <div className='flex items-start gap-2'>
+                      <Avatar className='mt-0.5 h-7 w-7 border'>
+                        {activeCommentAuthor.avatarUrl ? <AvatarImage src={activeCommentAuthor.avatarUrl} alt={activeCommentAuthor.name} /> : null}
+                        <AvatarFallback className='text-[10px] font-semibold'>{initialsForName(activeCommentAuthor.name)}</AvatarFallback>
+                      </Avatar>
+                      <Input
+                        value={commentDraft}
+                        onChange={(event) => setCommentDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault()
+                            addCommentToTask()
+                          }
+                        }}
+                        placeholder='Add a comment...'
+                        className='h-9 w-full rounded-full border bg-background px-3 text-sm'
+                      />
+                      <Button
+                        type='button'
+                        size='sm'
+                        className='h-9 w-9 shrink-0 rounded-full px-0'
+                        onClick={addCommentToTask}
+                        aria-label='Send comment'
+                      >
+                        <Send className='h-4 w-4' />
+                      </Button>
+                    </div>
+                  </div>
+                </aside>
               </div>
             </div>
           ) : null}

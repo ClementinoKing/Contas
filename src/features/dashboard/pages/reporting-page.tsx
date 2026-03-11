@@ -1,24 +1,120 @@
 import { BarChart3, CalendarClock, Download, Filter, TrendingUp } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { supabase } from '@/lib/supabase'
 
-const KPI = [
-  { label: 'On-time Delivery', value: '82%', delta: '+6% vs last month' },
-  { label: 'Cycle Time', value: '4.1d', delta: '-0.7d improvement' },
-  { label: 'Blocked Tasks', value: '9', delta: '-3 this week' },
-  { label: 'Completed', value: '74', delta: '+12 this sprint' },
-] as const
+type ReportingTask = {
+  id: string
+  status: string | null
+  dueAt: string | null
+  completedAt: string | null
+}
 
-const teamVelocity = [
-  { team: 'Product', planned: 28, completed: 24 },
-  { team: 'Engineering', planned: 42, completed: 39 },
-  { team: 'Design', planned: 18, completed: 14 },
-  { team: 'Operations', planned: 22, completed: 19 },
-] as const
+type TeamVelocityRow = {
+  team: string
+  planned: number
+  completed: number
+}
+
+function isSameUtcDay(a: Date, b: Date) {
+  return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth() && a.getUTCDate() === b.getUTCDate()
+}
+
+function startOfTodayUtc() {
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+}
+
+function daysFromTodayUtc(value?: string | null) {
+  if (!value) return null
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return null
+  const start = startOfTodayUtc().getTime()
+  const target = Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate())
+  return Math.round((target - start) / (1000 * 60 * 60 * 24))
+}
 
 export function ReportingPage() {
+  const [tasks, setTasks] = useState<ReportingTask[]>([])
+  const [teamVelocity, setTeamVelocity] = useState<TeamVelocityRow[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void Promise.all([
+      supabase.from('tasks').select('id, status, due_at, completed_at'),
+      supabase.from('task_assignees').select('task_id, assignee_id'),
+      supabase.from('profiles').select('id, full_name, email'),
+    ]).then(([tasksResult, taskAssigneesResult, profilesResult]) => {
+      if (cancelled) return
+
+      const nextTasks = (tasksResult.data ?? []).map((task) => ({
+        id: task.id,
+        status: task.status,
+        dueAt: task.due_at,
+        completedAt: task.completed_at,
+      }))
+      setTasks(nextTasks)
+
+      const memberMap = new Map(
+        (profilesResult.data ?? []).map((profile) => [profile.id, profile.full_name ?? profile.email ?? 'Unknown user']),
+      )
+      const taskMap = new Map(nextTasks.map((task) => [task.id, task]))
+      const metrics = new Map<string, TeamVelocityRow>()
+      for (const assignment of taskAssigneesResult.data ?? []) {
+        const memberName = memberMap.get(assignment.assignee_id) ?? 'Unknown user'
+        const task = taskMap.get(assignment.task_id)
+        if (!task) continue
+        const row = metrics.get(memberName) ?? { team: memberName, planned: 0, completed: 0 }
+        row.planned += 1
+        if (task.completedAt || task.status === 'done' || task.status === 'review') {
+          row.completed += 1
+        }
+        metrics.set(memberName, row)
+      }
+      setTeamVelocity(Array.from(metrics.values()).sort((a, b) => b.planned - a.planned).slice(0, 6))
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const totalTasks = tasks.length
+  const completedTasks = tasks.filter((task) => Boolean(task.completedAt) || task.status === 'done').length
+  const blockedTasks = tasks.filter((task) => task.status === 'blocked').length
+  const cycleDays = useMemo(() => {
+    const doneThisWeek = tasks.filter((task) => {
+      if (!task.completedAt) return false
+      const completedDate = new Date(task.completedAt)
+      const delta = daysFromTodayUtc(task.completedAt)
+      return delta !== null && delta <= 7 && delta >= 0 && !Number.isNaN(completedDate.getTime())
+    }).length
+    if (doneThisWeek === 0) return 0
+    return Number((7 / doneThisWeek).toFixed(1))
+  }, [tasks])
+  const onTimeDelivery = useMemo(() => {
+    const dueTasks = tasks.filter((task) => task.dueAt)
+    if (dueTasks.length === 0) return 0
+    const onTime = dueTasks.filter((task) => {
+      if (!task.completedAt || !task.dueAt) return false
+      const completedAt = new Date(task.completedAt)
+      const dueAt = new Date(task.dueAt)
+      return completedAt.getTime() <= dueAt.getTime() || isSameUtcDay(completedAt, dueAt)
+    }).length
+    return Math.round((onTime / dueTasks.length) * 100)
+  }, [tasks])
+
+  const kpi = [
+    { label: 'On-time Delivery', value: `${onTimeDelivery}%`, delta: `${completedTasks}/${Math.max(tasks.filter((task) => task.dueAt).length, 1)} due tasks` },
+    { label: 'Cycle Time', value: cycleDays > 0 ? `${cycleDays}d` : 'N/A', delta: 'Average days per completion (last 7d)' },
+    { label: 'Blocked Tasks', value: String(blockedTasks), delta: 'Current blocked workload' },
+    { label: 'Completed', value: String(completedTasks), delta: `${totalTasks} total tasks` },
+  ]
+
   return (
     <div className='space-y-4'>
       <Card>
@@ -41,7 +137,7 @@ export function ReportingPage() {
       </Card>
 
       <section className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-        {KPI.map((item) => (
+        {kpi.map((item) => (
           <Card key={item.label}>
             <CardHeader className='pb-2'>
               <CardDescription className='text-xs uppercase tracking-wide'>{item.label}</CardDescription>
@@ -57,23 +153,27 @@ export function ReportingPage() {
       <section className='grid gap-4 xl:grid-cols-[1.35fr_1fr]'>
         <Card>
           <CardHeader className='pb-3'>
-            <CardTitle>Team Delivery (Planned vs Completed)</CardTitle>
-            <CardDescription>Execution signal by functional team</CardDescription>
+            <CardTitle>Assignee Throughput (Planned vs Completed)</CardTitle>
+            <CardDescription>Workload and completion using task assignee relations</CardDescription>
           </CardHeader>
           <CardContent className='space-y-3'>
-            {teamVelocity.map((row) => (
-              <div key={row.team} className='space-y-1.5'>
-                <div className='flex items-center justify-between text-sm'>
-                  <span className='font-medium text-foreground'>{row.team}</span>
-                  <span className='text-muted-foreground'>
-                    {row.completed}/{row.planned}
-                  </span>
+            {teamVelocity.length === 0 ? (
+              <div className='rounded-md border bg-muted/10 p-4 text-sm text-muted-foreground'>No assignment data yet.</div>
+            ) : (
+              teamVelocity.map((row) => (
+                <div key={row.team} className='space-y-1.5'>
+                  <div className='flex items-center justify-between text-sm'>
+                    <span className='font-medium text-foreground'>{row.team}</span>
+                    <span className='text-muted-foreground'>
+                      {row.completed}/{row.planned}
+                    </span>
+                  </div>
+                  <div className='h-2 overflow-hidden rounded-full bg-muted'>
+                    <div className='h-full rounded-full bg-primary' style={{ width: `${Math.round((row.completed / Math.max(row.planned, 1)) * 100)}%` }} />
+                  </div>
                 </div>
-                <div className='h-2 overflow-hidden rounded-full bg-muted'>
-                  <div className='h-full rounded-full bg-primary' style={{ width: `${Math.round((row.completed / row.planned) * 100)}%` }} />
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </CardContent>
         </Card>
 
@@ -84,24 +184,30 @@ export function ReportingPage() {
           </CardHeader>
           <CardContent className='space-y-3'>
             <article className='rounded-md border bg-muted/10 p-3'>
-              <p className='text-sm font-medium'>Velocity trend up this week</p>
-              <p className='mt-1 text-xs text-muted-foreground'>Completion pace improved in Engineering and Product.</p>
+              <p className='text-sm font-medium'>Completion signal</p>
+              <p className='mt-1 text-xs text-muted-foreground'>{completedTasks} tasks are currently completed.</p>
               <Badge variant='outline' className='mt-2 gap-1.5'>
                 <TrendingUp className='h-3.5 w-3.5' />
-                Positive
+                Delivery
               </Badge>
             </article>
             <article className='rounded-md border bg-muted/10 p-3'>
-              <p className='text-sm font-medium'>Leadership review scheduled</p>
-              <p className='mt-1 text-xs text-muted-foreground'>Quarterly reporting sync on Friday, 10:00 AM.</p>
+              <p className='text-sm font-medium'>Upcoming due load</p>
+              <p className='mt-1 text-xs text-muted-foreground'>
+                {tasks.filter((task) => {
+                  const delta = daysFromTodayUtc(task.dueAt)
+                  return delta !== null && delta >= 0 && delta <= 7
+                }).length}{' '}
+                tasks due in the next 7 days.
+              </p>
               <Badge variant='outline' className='mt-2 gap-1.5'>
                 <CalendarClock className='h-3.5 w-3.5' />
                 Upcoming
               </Badge>
             </article>
             <article className='rounded-md border bg-muted/10 p-3'>
-              <p className='text-sm font-medium'>Backlog health check due</p>
-              <p className='mt-1 text-xs text-muted-foreground'>Review stale tasks and remove blocked items.</p>
+              <p className='text-sm font-medium'>Blocked pressure</p>
+              <p className='mt-1 text-xs text-muted-foreground'>{blockedTasks} tasks currently blocked.</p>
               <Badge variant='outline' className='mt-2 gap-1.5'>
                 <BarChart3 className='h-3.5 w-3.5' />
                 Action

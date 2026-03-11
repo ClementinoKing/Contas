@@ -1,5 +1,6 @@
 export const STORAGE_KEYS = {
   authSession: 'contas.auth.session',
-  tenantId: 'contas.tenant.id',
+  supabaseAuthToken: 'contas.supabase.auth.token',
+  profileCache: 'contas.profile.cache',
   sidebarCollapsed: 'contas.ui.sidebar.collapsed',
 } as const

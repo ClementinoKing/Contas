@@ -44,7 +44,7 @@ const INITIAL_NOTIFICATIONS: NotificationItem[] = [
   },
   {
     id: 'n3',
-    title: 'Workspace security reminder',
+    title: 'Organization security reminder',
     message: 'Enable two-factor authentication for all admins before Friday.',
     time: '1 hour ago',
     type: 'system',
@@ -135,7 +135,7 @@ export function NotificationsPage() {
       <Card>
         <CardHeader className='pb-3'>
           <CardTitle>Notifications</CardTitle>
-          <CardDescription>Keep up with mentions, task updates, and workspace alerts.</CardDescription>
+          <CardDescription>Keep up with mentions, task updates, and organization alerts.</CardDescription>
         </CardHeader>
         <CardContent className='space-y-2'>
           {visibleItems.length === 0 ? (

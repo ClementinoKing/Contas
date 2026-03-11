@@ -1,4 +1,4 @@
-import { FolderKanban, Moon, Settings, Sun, UserPlus2 } from 'lucide-react'
+import { FolderKanban, LogOut, Moon, Settings, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 
@@ -7,10 +7,9 @@ import {
   DialogContent,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { USER_PROJECTS } from '@/features/projects/projects-data'
+import { useAuth } from '@/features/auth/context/auth-context'
+import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
-
-import { InvitePeopleDialog } from './invite-people-dialog'
 import { SIDEBAR_SECTIONS } from './navigation-items'
 
 const THEME_STORAGE_KEY = 'contas.ui.theme'
@@ -18,7 +17,8 @@ const THEME_TRANSITION_CLASS = 'theme-transition'
 
 function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const navigate = useNavigate()
-  const [inviteOpen, setInviteOpen] = useState(false)
+  const { currentUser, logout } = useAuth()
+  const [projects, setProjects] = useState<Array<{ id: string; name: string; key: string; color: string | null }>>([])
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
     if (storedTheme) {
@@ -30,6 +30,31 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode)
   }, [isDarkMode])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void supabase
+      .from('projects')
+      .select('id, name, key, color')
+      .order('name', { ascending: true })
+      .then(({ data, error }) => {
+        if (cancelled || error || !data) return
+
+        setProjects(
+          data.map((project, index) => ({
+            id: project.id,
+            name: project.name ?? `Project ${index + 1}`,
+            key: project.key ?? `P${index + 1}`,
+            color: project.color ?? 'bg-blue-500',
+          })),
+        )
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const toggleTheme = () => {
     const nextIsDark = !isDarkMode
@@ -45,6 +70,12 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
   const openSettings = () => {
     onNavigate?.()
     navigate('/dashboard/settings')
+  }
+
+  const handleLogout = async () => {
+    onNavigate?.()
+    await logout()
+    navigate('/login')
   }
 
   return (
@@ -113,7 +144,7 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
             <span className={cn('ml-3', collapsed && 'sr-only')}>Projects Hub</span>
           </NavLink>
 
-          {USER_PROJECTS.map((project) => (
+          {projects.map((project) => (
             <NavLink
               key={project.id}
               to={`/dashboard/projects/${project.id}`}
@@ -133,15 +164,18 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
               <span className={cn('text-[10px] font-semibold', !collapsed && 'hidden')}>{project.key}</span>
             </NavLink>
           ))}
+          {projects.length === 0 && !collapsed ? (
+            <p className='px-3 py-1 text-xs text-muted-foreground'>No projects in the system.</p>
+          ) : null}
         </section>
       </nav>
 
       <footer className='border-t bg-muted/40 p-3'>
         <div className={cn('rounded-lg border bg-card p-3', collapsed && 'p-2')}>
-          <p className={cn('text-xs font-semibold uppercase tracking-wide text-muted-foreground', collapsed && 'sr-only')}>
-            Sidebar Footer
-          </p>
-          <p className={cn('mt-1 text-sm font-medium text-foreground', collapsed && 'sr-only')}>Product Strategy</p>
+          <div className={cn('min-w-0', collapsed && 'sr-only')}>
+            <p className='truncate text-sm font-medium text-foreground'>{currentUser?.name ?? 'Organization User'}</p>
+            <p className='truncate text-xs text-muted-foreground'>{currentUser?.jobTitle ?? 'Team Member'}</p>
+          </div>
           <div
             className={cn(
               'mt-3 flex items-center justify-between gap-2',
@@ -150,15 +184,15 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
           >
             <button
               type='button'
-              aria-label='Invite'
-              onClick={() => setInviteOpen(true)}
+              aria-label='Logout'
+              onClick={() => void handleLogout()}
               className={cn(
                 'inline-flex h-9 items-center rounded-md border px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 collapsed && 'h-8 w-8 justify-center p-0',
               )}
             >
-              <UserPlus2 className='h-3.5 w-3.5' aria-hidden='true' />
-              <span className={cn('ml-1.5', collapsed && 'sr-only')}>Invite</span>
+              <LogOut className='h-3.5 w-3.5' aria-hidden='true' />
+              <span className={cn('ml-1.5', collapsed && 'sr-only')}>Logout</span>
             </button>
             <div className={cn('flex items-center gap-2', collapsed && 'contents')}>
               <button
@@ -203,7 +237,6 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
         </div>
       </footer>
       </div>
-      <InvitePeopleDialog open={inviteOpen} onOpenChange={setInviteOpen} />
     </>
   )
 }

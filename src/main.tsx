@@ -7,6 +7,18 @@ import { AppProviders } from '@/app/providers'
 
 import './index.css'
 
+const THEME_STORAGE_KEY = 'contas.ui.theme'
+
+function applyInitialTheme() {
+  const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+  const shouldUseDark = storedTheme ? storedTheme === 'dark' : prefersDark
+
+  document.documentElement.classList.toggle('dark', shouldUseDark)
+}
+
+applyInitialTheme()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AppProviders>

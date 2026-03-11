@@ -8,7 +8,6 @@ import { ReportingPage } from '@/features/dashboard/pages/reporting-page'
 import { PortfolioPage } from '@/features/dashboard/pages/portfolio-page'
 import { GoalsPage } from '@/features/dashboard/pages/goals-page'
 import { WorkspacePage } from '@/features/dashboard/pages/workspace-page'
-import { OnboardingInvitePage } from '@/features/onboarding/pages/onboarding-invite-page'
 import { OnboardingNamePage } from '@/features/onboarding/pages/onboarding-name-page'
 import { OnboardingToolsPage } from '@/features/onboarding/pages/onboarding-tools-page'
 import { OnboardingWorkPage } from '@/features/onboarding/pages/onboarding-work-page'
@@ -18,6 +17,13 @@ import { LoginPage } from '@/features/auth/pages/login-page'
 import { RegisterPage } from '@/features/auth/pages/register-page'
 import { AppShellLayout } from '@/features/layout/components/app-shell-layout'
 import { SettingsPage } from '@/features/settings/pages/settings-page'
+
+const LAST_DASHBOARD_PATH_KEY = 'contas.last-dashboard-path'
+
+function getLastDashboardPath() {
+  const savedPath = sessionStorage.getItem(LAST_DASHBOARD_PATH_KEY)
+  return savedPath && savedPath.startsWith('/dashboard/') ? savedPath : '/dashboard/home'
+}
 
 function NotFoundPage() {
   return (
@@ -33,7 +39,7 @@ function NotFoundPage() {
 export const router = createBrowserRouter([
   {
     path: '/',
-    element: <Navigate to='/dashboard' replace />,
+    element: <Navigate to={getLastDashboardPath()} replace />,
   },
   {
     element: <AuthRedirectRoute />,
@@ -48,12 +54,11 @@ export const router = createBrowserRouter([
       { path: '/onboarding/name', element: <OnboardingNamePage /> },
       { path: '/onboarding/work', element: <OnboardingWorkPage /> },
       { path: '/onboarding/tools', element: <OnboardingToolsPage /> },
-      { path: '/onboarding/invite', element: <OnboardingInvitePage /> },
       {
         path: '/dashboard',
         element: <AppShellLayout />,
         children: [
-          { index: true, element: <Navigate to='home' replace /> },
+          { index: true, element: <Navigate to={getLastDashboardPath()} replace /> },
           { path: 'home', element: <DashboardHomePage /> },
           { path: 'my-tasks', element: <MyTasksPage /> },
           { path: 'notifications', element: <NotificationsPage /> },

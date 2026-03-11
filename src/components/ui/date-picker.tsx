@@ -1,6 +1,6 @@
 import { format, isValid } from 'date-fns'
 import { Calendar as CalendarIcon } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -29,11 +29,6 @@ export function DatePicker({
   const [open, setOpen] = useState(false)
   const [draftDate, setDraftDate] = useState<Date | undefined>(value)
 
-  useEffect(() => {
-    if (!open) return
-    setDraftDate(value ?? new Date())
-  }, [open, value])
-
   const safeValue = value && isValid(value) ? value : undefined
   const safeDraftDate = draftDate && isValid(draftDate) ? draftDate : undefined
   const selectedDate = safeDraftDate ?? safeValue
@@ -49,7 +44,15 @@ export function DatePicker({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen)
+        if (nextOpen) {
+          setDraftDate(value ?? new Date())
+        }
+      }}
+    >
       <PopoverTrigger asChild>
         <Button
           type='button'

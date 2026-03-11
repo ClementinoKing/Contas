@@ -90,7 +90,7 @@ const TOOL_BRAND_COLORS: Record<(typeof TOOLS)[number], string> = {
 
 export function OnboardingToolsPage() {
   const navigate = useNavigate()
-  const { currentUser, updateOnboarding } = useAuth()
+  const { currentUser, completeOnboarding } = useAuth()
   const [selectedTools, setSelectedTools] = useState<string[]>(currentUser?.onboarding?.tools ?? [])
 
   const toggleTool = (tool: string) => {
@@ -102,7 +102,7 @@ export function OnboardingToolsPage() {
   return (
     <OnboardingShell
       title='What tools do you use?'
-      subtitle='We’ll personalize your workspace based on your existing workflow stack.'
+      subtitle='We’ll personalize your organization setup based on your existing workflow stack.'
       backTo='/onboarding/work'
     >
       <div className='space-y-5'>
@@ -130,12 +130,12 @@ export function OnboardingToolsPage() {
 
         <Button
           className='w-full'
-          onClick={() => {
-            updateOnboarding({ tools: selectedTools, currentStep: 'invite' })
-            navigate('/onboarding/invite')
+          onClick={async () => {
+            await completeOnboarding({ tools: selectedTools, currentStep: 'tools' })
+            navigate('/dashboard/home')
           }}
         >
-          Continue
+          Finish setup
         </Button>
       </div>
     </OnboardingShell>

@@ -1,8 +1,9 @@
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, LogOut } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
+import { useAuth } from '@/features/auth/context/auth-context'
 
 export function OnboardingShell({
   title,
@@ -15,8 +16,26 @@ export function OnboardingShell({
   children: ReactNode
   backTo?: string
 }) {
+  const navigate = useNavigate()
+  const { logout } = useAuth()
+
   return (
     <main className='min-h-screen bg-muted/35'>
+      <div className='fixed right-4 top-4 z-20 sm:right-6 sm:top-6'>
+        <Button
+          variant='outline'
+          size='sm'
+          className='gap-2 rounded-full bg-background/90 shadow-sm backdrop-blur'
+          onClick={async () => {
+            await logout()
+            navigate('/login')
+          }}
+        >
+          <LogOut className='h-4 w-4' />
+          Log out
+        </Button>
+      </div>
+
       <div className='grid min-h-screen lg:grid-cols-[minmax(0,560px)_1fr]'>
         <section className='flex flex-col px-5 py-6 sm:px-8 lg:px-10'>
           <div className='mb-8 flex items-center justify-between'>
@@ -48,13 +67,13 @@ export function OnboardingShell({
             <div className='rounded-xl border bg-background/70 p-5 backdrop-blur'>
               <p className='text-sm font-semibold text-foreground'>Build with your team from day one</p>
               <p className='mt-2 text-sm text-muted-foreground'>
-                Set up your workspace profile, connect tools, and invite collaborators so work starts with shared context.
+                Set up your organization profile, connect tools, and invite collaborators so work starts with shared context.
               </p>
             </div>
             <div className='rounded-xl border bg-background/70 p-5 backdrop-blur'>
               <p className='text-xs uppercase tracking-wide text-muted-foreground'>Productivity stack</p>
               <div className='mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
-                {['Tasks', 'Projects', 'Goals', 'Portfolio', 'Reports', 'Workspace'].map((item) => (
+                {['Tasks', 'Projects', 'Goals', 'Portfolio', 'Reports', 'Organization'].map((item) => (
                   <span key={item} className='rounded-md border bg-muted/30 px-2 py-1 text-center'>
                     {item}
                   </span>
@@ -67,4 +86,3 @@ export function OnboardingShell({
     </main>
   )
 }
-

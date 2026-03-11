@@ -1,17 +1,5 @@
-import {
-  AtSign,
-  Bell,
-  CirclePlus,
-  Goal,
-  HelpCircle,
-  Layers,
-  Menu,
-  MessageSquarePlus,
-  Paperclip,
-  Search,
-  UserPlus2,
-} from 'lucide-react'
-import { useRef, useState, type FormEvent } from 'react'
+import { Bell, CirclePlus, Goal, HelpCircle, Layers, Menu, MessageSquarePlus, Search, UserPlus2 } from 'lucide-react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -30,8 +18,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useAuth } from '@/features/auth/context/auth-context'
 import { Input } from '@/components/ui/input'
-import { USER_PROJECTS } from '@/features/projects/projects-data'
+import { CreateTaskDialog } from '@/features/tasks/components/create-task-dialog'
+import { supabase } from '@/lib/supabase'
 
 import { AccountMenu } from './account-menu'
 import { InvitePeopleDialog } from './invite-people-dialog'
@@ -63,6 +53,24 @@ type ProjectStep = 1 | 2 | 3
 
 type ProjectTemplateId = (typeof PROJECT_TEMPLATES)[number]['id']
 
+type ProjectOwnerOption = {
+  id: string
+  name: string
+}
+
+function generateProjectKey(name: string) {
+  const letters = name
+    .trim()
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part[0] ?? '')
+    .join('')
+    .slice(0, 4)
+  const suffix = Math.floor(100 + Math.random() * 900)
+  return `${letters || 'PRJ'}-${suffix}`
+}
+
 export function AppHeader({
   onDesktopToggle,
   onMobileToggle,
@@ -71,14 +79,11 @@ export function AppHeader({
   onMobileToggle: () => void
 }) {
   const navigate = useNavigate()
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { currentUser } = useAuth()
 
   const [createTaskOpen, setCreateTaskOpen] = useState(false)
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
-
-  const [selectedAttachment, setSelectedAttachment] = useState('')
-  const [descriptionDueDate, setDescriptionDueDate] = useState<Date | undefined>()
 
   const [projectStep, setProjectStep] = useState<ProjectStep>(1)
   const [projectTemplate, setProjectTemplate] = useState<ProjectTemplateId>('blank')
@@ -87,6 +92,9 @@ export function AppHeader({
   const [projectStartDate, setProjectStartDate] = useState<Date | undefined>()
   const [projectEndDate, setProjectEndDate] = useState<Date | undefined>()
   const [projectDescription, setProjectDescription] = useState('')
+  const [projectOwners, setProjectOwners] = useState<ProjectOwnerOption[]>([])
+  const [projectSubmitError, setProjectSubmitError] = useState<string | null>(null)
+  const [projectSubmitting, setProjectSubmitting] = useState(false)
 
   const resetProjectFlow = () => {
     setProjectStep(1)
@@ -96,10 +104,13 @@ export function AppHeader({
     setProjectStartDate(undefined)
     setProjectEndDate(undefined)
     setProjectDescription('')
+    setProjectSubmitError(null)
+    setProjectSubmitting(false)
   }
 
   const openCreateProjectModal = () => {
     resetProjectFlow()
+    setProjectOwner(currentUser?.id ?? '')
     setCreateProjectOpen(true)
   }
 
@@ -110,16 +121,85 @@ export function AppHeader({
     setCreateProjectOpen(open)
   }
 
-  const handleCreateTask = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setCreateTaskOpen(false)
-    navigate('/dashboard/my-tasks')
-  }
+  useEffect(() => {
+    if (!createProjectOpen || projectOwners.length > 0) return
 
-  const handleCreateProject = (event: FormEvent<HTMLFormElement>) => {
+    let cancelled = false
+
+    void supabase
+      .from('profiles')
+      .select('id, full_name, email')
+      .order('full_name', { ascending: true })
+      .then((result) => {
+        if (cancelled || result.error) return
+        const owners = (result.data ?? []).map((profile) => ({
+          id: profile.id,
+          name: profile.full_name ?? profile.email ?? 'Unknown user',
+        }))
+        setProjectOwners(owners)
+        if (!projectOwner && currentUser?.id && owners.some((owner) => owner.id === currentUser.id)) {
+          setProjectOwner(currentUser.id)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [createProjectOpen, currentUser?.id, projectOwner, projectOwners.length])
+
+  const selectedOwnerLabel = useMemo(
+    () => projectOwners.find((owner) => owner.id === projectOwner)?.name ?? projectOwner,
+    [projectOwner, projectOwners],
+  )
+
+  const handleCreateProject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    const trimmedName = projectName.trim()
+    const trimmedDescription = projectDescription.trim()
+
+    if (!trimmedName) {
+      setProjectSubmitError('Project name is required.')
+      return
+    }
+    if (!projectOwner) {
+      setProjectSubmitError('Project owner is required.')
+      return
+    }
+    if (projectStartDate && projectEndDate && projectStartDate.getTime() > projectEndDate.getTime()) {
+      setProjectSubmitError('Start date must be before or equal to target end date.')
+      return
+    }
+
+    setProjectSubmitting(true)
+    setProjectSubmitError(null)
+
+    const key = generateProjectKey(trimmedName)
+
+    const { data, error } = await supabase
+      .from('projects')
+      .insert({
+        name: trimmedName,
+        key,
+        status: 'planned',
+        template: projectTemplate,
+        owner_id: projectOwner || null,
+        created_by: currentUser?.id ?? null,
+        start_date: projectStartDate ? projectStartDate.toISOString().slice(0, 10) : null,
+        end_date: projectEndDate ? projectEndDate.toISOString().slice(0, 10) : null,
+        description: trimmedDescription || null,
+      })
+      .select('id')
+      .single()
+
+    if (error || !data) {
+      setProjectSubmitting(false)
+      setProjectSubmitError(error?.message ?? 'Project could not be created. Fix the error and try again.')
+      return
+    }
+
+    sessionStorage.setItem('contas.projects.last-created-id', data.id)
     handleProjectModalChange(false)
-    navigate('/dashboard/projects')
+    navigate(`/dashboard/projects/${data.id}`)
   }
 
   const canMoveToStepThree = Boolean(projectName.trim() && projectOwner)
@@ -197,115 +277,15 @@ export function AppHeader({
         </div>
       </header>
 
-      <Dialog open={createTaskOpen} onOpenChange={setCreateTaskOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create Task</DialogTitle>
-            <DialogDescription>
-              Add a task and link it to the right project and assignee.
-            </DialogDescription>
-          </DialogHeader>
-
-          <form onSubmit={handleCreateTask} className='space-y-4'>
-            <div className='space-y-2'>
-              <label className='text-sm font-medium text-foreground'>Task Name</label>
-              <Input required placeholder='Enter task title' />
-            </div>
-
-            <div className='grid gap-3 md:grid-cols-2'>
-              <div className='space-y-2'>
-                <label className='text-sm font-medium text-foreground'>Assigned To</label>
-                <select
-                  required
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
-                  defaultValue=''
-                >
-                  <option value='' disabled>
-                    Select teammate
-                  </option>
-                  <option>Lina</option>
-                  <option>James</option>
-                  <option>Maya</option>
-                  <option>Noah</option>
-                </select>
-              </div>
-
-              <div className='space-y-2'>
-                <label className='text-sm font-medium text-foreground'>Project</label>
-                <select
-                  required
-                  className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
-                  defaultValue=''
-                >
-                  <option value='' disabled>
-                    Select project
-                  </option>
-                  {USER_PROJECTS.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className='space-y-2'>
-              <div className='flex items-center justify-between'>
-                <label className='text-sm font-medium text-foreground'>Description</label>
-                <div className='flex items-center gap-1'>
-                  <button
-                    type='button'
-                    className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                    aria-label='Mention teammate'
-                  >
-                    <AtSign className='h-4 w-4' aria-hidden='true' />
-                  </button>
-                  <button
-                    type='button'
-                    onClick={() => fileInputRef.current?.click()}
-                    className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                    aria-label='Add attachment'
-                  >
-                    <Paperclip className='h-4 w-4' aria-hidden='true' />
-                  </button>
-                  <DatePicker
-                    value={descriptionDueDate}
-                    onChange={setDescriptionDueDate}
-                    placeholder='Due date'
-                    className='h-8 w-[170px] text-xs'
-                  />
-                </div>
-              </div>
-              <textarea
-                rows={5}
-                placeholder='Describe the task... use @ to mention teammates'
-                className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
-              />
-              <input
-                ref={fileInputRef}
-                type='file'
-                className='hidden'
-                onChange={(event) => setSelectedAttachment(event.target.files?.[0]?.name ?? '')}
-              />
-              <div className='flex items-center justify-between text-xs text-muted-foreground'>
-                <span>{selectedAttachment ? `Attachment: ${selectedAttachment}` : 'No attachment selected'}</span>
-                <span>{descriptionDueDate ? `Due: ${descriptionDueDate.toLocaleDateString()}` : 'No due date selected'}</span>
-              </div>
-            </div>
-
-            <DialogFooter>
-              <Button type='button' variant='outline' onClick={() => setCreateTaskOpen(false)}>
-                Cancel
-              </Button>
-              <Button type='submit'>Create Task</Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <CreateTaskDialog
+        open={createTaskOpen}
+        onOpenChange={setCreateTaskOpen}
+        onTaskCreated={() => navigate('/dashboard/my-tasks')}
+      />
 
       <Dialog open={createProjectOpen} onOpenChange={handleProjectModalChange}>
-        <DialogContent className='left-0 top-0 h-screen w-screen max-w-none translate-x-0 translate-y-0 rounded-none p-0'>
-          <div className='flex h-full flex-col'>
+        <DialogContent className='max-h-[88vh] max-w-4xl overflow-hidden p-0'>
+          <div className='flex max-h-[88vh] flex-col'>
             <DialogHeader className='border-b px-6 py-4'>
               <DialogTitle>Create Project</DialogTitle>
               <DialogDescription>
@@ -337,7 +317,7 @@ export function AppHeader({
               </div>
 
               <section className='min-h-0 flex-1 overflow-y-auto p-5 md:p-6'>
-                <div className='mx-auto flex min-h-full w-full max-w-4xl items-center'>
+                <div className='mx-auto w-full max-w-4xl'>
                 {projectStep === 1 ? (
                   <div className='w-full space-y-3'>
                     <p className='text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground'>Templates</p>
@@ -383,10 +363,11 @@ export function AppHeader({
                         <option value='' disabled>
                           Select owner
                         </option>
-                        <option>Lina</option>
-                        <option>James</option>
-                        <option>Maya</option>
-                        <option>Noah</option>
+                        {projectOwners.map((owner) => (
+                          <option key={owner.id} value={owner.id}>
+                            {owner.name}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div className='space-y-2'>
@@ -422,7 +403,7 @@ export function AppHeader({
                       <p className='text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground'>Project Details</p>
                       <div className='mt-3 grid gap-2 text-sm md:grid-cols-2'>
                         <p><span className='text-muted-foreground'>Name:</span> {projectName || '-'}</p>
-                        <p><span className='text-muted-foreground'>Owner:</span> {projectOwner || '-'}</p>
+                        <p><span className='text-muted-foreground'>Owner:</span> {selectedOwnerLabel || '-'}</p>
                         <p><span className='text-muted-foreground'>Start:</span> {projectStartDate ? projectStartDate.toLocaleDateString() : '-'}</p>
                         <p><span className='text-muted-foreground'>End:</span> {projectEndDate ? projectEndDate.toLocaleDateString() : '-'}</p>
                       </div>
@@ -434,6 +415,7 @@ export function AppHeader({
               </section>
 
               <DialogFooter className='border-t px-6 py-4'>
+                {projectSubmitError ? <p className='mr-auto text-sm text-destructive'>{projectSubmitError}</p> : null}
                 <Button
                   type='button'
                   variant='outline'
@@ -456,7 +438,9 @@ export function AppHeader({
                     Next
                   </Button>
                 ) : (
-                  <Button type='submit'>Create Project</Button>
+                  <Button type='submit' disabled={projectSubmitting}>
+                    {projectSubmitting ? 'Creating...' : 'Create Project'}
+                  </Button>
                 )}
               </DialogFooter>
             </form>

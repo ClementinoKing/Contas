@@ -23,7 +23,7 @@ export function OnboardingWorkPage() {
   return (
     <OnboardingShell
       title='Tell us about your work'
-      subtitle='This helps us tailor your workspace setup and recommendations.'
+      subtitle='This helps us tailor your organization setup and recommendations.'
       backTo='/onboarding/name'
     >
       <div className='space-y-4'>
@@ -89,4 +89,3 @@ export function OnboardingWorkPage() {
     </OnboardingShell>
   )
 }
-

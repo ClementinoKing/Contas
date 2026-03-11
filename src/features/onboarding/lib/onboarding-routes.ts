@@ -1,6 +1,6 @@
 import type { OnboardingState, OnboardingStep } from '@/types/auth'
 
-export const ONBOARDING_STEPS: OnboardingStep[] = ['name', 'work', 'tools', 'invite']
+export const ONBOARDING_STEPS: OnboardingStep[] = ['name', 'work', 'tools']
 
 export function getOnboardingPath(step: OnboardingStep) {
   return `/onboarding/${step}`
@@ -22,13 +22,11 @@ function hasWork(state: OnboardingState) {
 export function canAccessOnboardingStep(step: OnboardingStep, state: OnboardingState) {
   if (step === 'name') return true
   if (step === 'work') return hasName(state)
-  if (step === 'tools') return hasName(state) && hasWork(state)
   return hasName(state) && hasWork(state)
 }
 
 export function getFirstIncompleteOnboardingStep(state: OnboardingState): OnboardingStep {
   if (!hasName(state)) return 'name'
   if (!hasWork(state)) return 'work'
-  return state.currentStep ?? 'tools'
+  return 'tools'
 }
-

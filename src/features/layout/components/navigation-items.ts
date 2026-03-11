@@ -25,7 +25,7 @@ export const SIDEBAR_SECTIONS: NavSection[] = [
       { label: 'Reporting', path: '/dashboard/reporting', icon: ChartNoAxesColumn },
       { label: 'Portfolio', path: '/dashboard/portfolio', icon: Layers },
       { label: 'Goals', path: '/dashboard/goals', icon: Goal },
-      { label: 'Workspace', path: '/dashboard/workspace', icon: Workflow },
+      { label: 'Organization', path: '/dashboard/workspace', icon: Workflow },
     ],
   },
 ]
