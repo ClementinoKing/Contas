@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "db:check-drift": "./scripts/check-migration-drift.sh"
+    "db:check-drift": "./scripts/check-migration-drift.sh",
+    "functions:deploy:r2-avatar": "./scripts/deploy-r2-avatar.sh",
+    "functions:deploy:r2-avatar:skip-secrets": "./scripts/deploy-r2-avatar.sh --skip-secrets"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

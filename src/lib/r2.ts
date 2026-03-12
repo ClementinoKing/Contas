@@ -4,6 +4,10 @@ type UploadAvatarResult = {
   key: string
   url: string
 }
+type UploadVoiceResult = {
+  key: string
+  url: string
+}
 
 function getFunctionsBaseUrl() {
   return `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/r2-avatar`
@@ -39,12 +43,16 @@ async function getAuthHeaders() {
   }
 }
 
-function networkErrorMessage(action: 'upload' | 'resolve') {
+function networkErrorMessage(action: 'upload' | 'resolve', kind: 'avatar' | 'voice' = 'avatar') {
   if (action === 'upload') {
-    return 'Avatar upload could not reach the Supabase function. Deploy the r2-avatar Edge Function and verify its R2 secrets.'
+    return kind === 'voice'
+      ? 'Voice upload could not reach the Supabase function. Deploy the r2-avatar Edge Function and verify its R2 secrets.'
+      : 'Avatar upload could not reach the Supabase function. Deploy the r2-avatar Edge Function and verify its R2 secrets.'
   }
 
-  return 'Avatar URL could not be resolved because the Supabase function is unavailable.'
+  return kind === 'voice'
+    ? 'Voice URL could not be resolved because the Supabase function is unavailable.'
+    : 'Avatar URL could not be resolved because the Supabase function is unavailable.'
 }
 
 export async function uploadAvatarToR2(file: File): Promise<UploadAvatarResult> {
@@ -58,6 +66,7 @@ export async function uploadAvatarToR2(file: File): Promise<UploadAvatarResult> 
         ...headers,
         'x-file-name': encodeURIComponent(file.name),
         'x-content-type': file.type || 'application/octet-stream',
+        'x-upload-kind': 'avatar',
       },
       body: file,
     })
@@ -73,9 +82,36 @@ export async function uploadAvatarToR2(file: File): Promise<UploadAvatarResult> 
   return (await response.json()) as UploadAvatarResult
 }
 
-export async function resolveAvatarUrl(key: string): Promise<string> {
+export async function uploadVoiceToR2(file: File): Promise<UploadVoiceResult> {
+  const headers = await getAuthHeaders()
+  let response: Response
+
+  try {
+    response = await fetch(getFunctionsBaseUrl(), {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'x-file-name': encodeURIComponent(file.name),
+        'x-content-type': file.type || 'audio/webm',
+        'x-upload-kind': 'voice',
+      },
+      body: file,
+    })
+  } catch {
+    throw new Error(networkErrorMessage('upload', 'voice'))
+  }
+
+  if (!response.ok) {
+    const message = await response.text()
+    throw new Error(message || 'Voice upload failed.')
+  }
+
+  return (await response.json()) as UploadVoiceResult
+}
+
+export async function resolveR2ObjectUrl(key: string): Promise<string> {
   if (!key || key.startsWith('data:') || key.startsWith('http://') || key.startsWith('https://')) {
-    throw new Error('Invalid avatar key.')
+    throw new Error('Invalid R2 key.')
   }
 
   const headers = await getAuthHeaders()
@@ -87,14 +123,18 @@ export async function resolveAvatarUrl(key: string): Promise<string> {
       headers,
     })
   } catch {
-    throw new Error(networkErrorMessage('resolve'))
+    throw new Error(networkErrorMessage('resolve', key.startsWith('voice-comments/') ? 'voice' : 'avatar'))
   }
 
   if (!response.ok) {
     const message = await response.text()
-    throw new Error(message || 'Could not resolve avatar URL.')
+    throw new Error(message || 'Could not resolve file URL.')
   }
 
   const data = (await response.json()) as { url: string }
   return data.url
+}
+
+export async function resolveAvatarUrl(key: string): Promise<string> {
+  return resolveR2ObjectUrl(key)
 }

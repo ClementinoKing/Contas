@@ -4,7 +4,7 @@ import { createClient } from 'npm:@supabase/supabase-js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-file-name, x-content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-file-name, x-content-type, x-upload-kind',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 }
 
@@ -54,6 +54,11 @@ function fileExtension(fileName: string, fallbackType: string) {
   if (fallbackType === 'image/png') return 'png'
   if (fallbackType === 'image/webp') return 'webp'
   if (fallbackType === 'image/gif') return 'gif'
+  if (fallbackType === 'audio/mpeg') return 'mp3'
+  if (fallbackType === 'audio/mp4') return 'm4a'
+  if (fallbackType === 'audio/ogg') return 'ogg'
+  if (fallbackType === 'audio/wav') return 'wav'
+  if (fallbackType === 'audio/webm') return 'webm'
   return 'jpg'
 }
 
@@ -112,7 +117,7 @@ Deno.serve(async (req) => {
   if (req.method === 'GET') {
     const key = new URL(req.url).searchParams.get('key')
     if (!key) return json({ error: 'Missing key.' }, 400)
-    if (!key.startsWith(`avatars/${user.id}/`)) {
+    if (!key.startsWith('avatars/') && !key.startsWith('voice-comments/')) {
       return json({ error: 'Forbidden' }, 403)
     }
 
@@ -128,12 +133,12 @@ Deno.serve(async (req) => {
 
       return json({ url })
     } catch (error) {
-      log('error', 'avatar_url_sign_failed', {
+      log('error', 'file_url_sign_failed', {
         userId: user.id,
         key,
         message: error instanceof Error ? error.message : String(error),
       })
-      return json({ error: error instanceof Error ? error.message : 'Failed to sign avatar URL.' }, 500)
+      return json({ error: error instanceof Error ? error.message : 'Failed to sign file URL.' }, 500)
     }
   }
 
@@ -141,15 +146,20 @@ Deno.serve(async (req) => {
     return json({ error: 'Method not allowed.' }, 405)
   }
 
+  const uploadKind = req.headers.get('x-upload-kind')?.toLowerCase() === 'voice' ? 'voice' : 'avatar'
   const contentType = req.headers.get('x-content-type') ?? 'application/octet-stream'
-  if (!contentType.startsWith('image/')) {
-    return json({ error: 'Only image uploads are allowed.' }, 400)
+  if (uploadKind === 'avatar' && !contentType.startsWith('image/')) {
+    return json({ error: 'Only image uploads are allowed for avatar uploads.' }, 400)
+  }
+  if (uploadKind === 'voice' && !contentType.startsWith('audio/')) {
+    return json({ error: 'Only audio uploads are allowed for voice uploads.' }, 400)
   }
 
-  const rawFileName = decodeURIComponent(req.headers.get('x-file-name') ?? 'avatar')
+  const rawFileName = decodeURIComponent(req.headers.get('x-file-name') ?? (uploadKind === 'voice' ? 'voice' : 'avatar'))
   const safeFileName = sanitizeFileName(rawFileName)
   const ext = fileExtension(safeFileName, contentType)
-  const key = `avatars/${user.id}/${crypto.randomUUID()}.${ext}`
+  const keyPrefix = uploadKind === 'voice' ? 'voice-comments' : 'avatars'
+  const key = `${keyPrefix}/${user.id}/${crypto.randomUUID()}.${ext}`
   const body = new Uint8Array(await req.arrayBuffer())
 
   try {
@@ -167,21 +177,23 @@ Deno.serve(async (req) => {
       }),
     )
   } catch (error) {
-    log('error', 'avatar_upload_failed', {
+    log('error', 'file_upload_failed', {
       userId: user.id,
       key,
       bucket,
       endpoint,
+      uploadKind,
       contentType,
       size: body.byteLength,
       message: error instanceof Error ? error.message : String(error),
     })
-    return json({ error: error instanceof Error ? error.message : 'Failed to upload avatar to R2.' }, 500)
+    return json({ error: error instanceof Error ? error.message : 'Failed to upload file to R2.' }, 500)
   }
 
-  log('log', 'avatar_uploaded', {
+  log('log', 'file_uploaded', {
     userId: user.id,
     key,
+    uploadKind,
     contentType,
     size: body.byteLength,
   })
@@ -198,11 +210,11 @@ Deno.serve(async (req) => {
 
     return json({ key, url }, 201)
   } catch (error) {
-    log('error', 'avatar_sign_after_upload_failed', {
+    log('error', 'file_sign_after_upload_failed', {
       userId: user.id,
       key,
       message: error instanceof Error ? error.message : String(error),
     })
-    return json({ error: error instanceof Error ? error.message : 'Avatar uploaded but signing URL failed.' }, 500)
+    return json({ error: error instanceof Error ? error.message : 'File uploaded but signing URL failed.' }, 500)
   }
 })

@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router-dom'
 
-import { Badge } from '@/components/ui/badge'
-import { useOrganization } from '@/features/organization/context/organization-context'
 import { cn } from '@/lib/utils'
 
 import { useShell } from '../context/shell-context'
+import { useAppRealtime } from '../hooks/use-app-realtime'
 import { useSchemaHealth } from '../hooks/use-schema-health'
 import { AppHeader } from './app-header'
 import { DesktopSidebar, MobileSidebar } from './app-sidebar'
@@ -16,8 +15,8 @@ export function AppShellLayout() {
   const location = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
   const { sidebarCollapsed, toggleSidebar } = useShell()
-  const { currentOrganization } = useOrganization()
   const { loading: schemaLoading, hasIssues: hasSchemaIssues, issues: schemaIssues } = useSchemaHealth()
+  useAppRealtime()
 
   useEffect(() => {
     if (!location.pathname.startsWith('/dashboard/') || location.pathname === '/dashboard') return
@@ -60,10 +59,6 @@ export function AppShellLayout() {
               </ul>
             </div>
           ) : null}
-          <div className='mb-5 flex items-center gap-3'>
-            <h1 className='text-xl font-semibold text-foreground'>Organization Hub</h1>
-            <Badge variant='secondary'>{currentOrganization.name}</Badge>
-          </div>
           <div className='min-h-0 flex-1'>
             <Outlet />
           </div>

@@ -18,6 +18,9 @@ import {
   Search,
   Send,
   Heart,
+  Mic,
+  Smile,
+  Square,
   Trash2,
   UserRound,
   X,
@@ -36,7 +39,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useAuth } from '@/features/auth/context/auth-context'
 import { CreateTaskDialog, type CreatedTaskPayload } from '@/features/tasks/components/create-task-dialog'
 import type { TaskRow } from '@/features/tasks/tasks-data'
-import { resolveAvatarUrl } from '@/lib/r2'
+import { resolveAvatarUrl, resolveR2ObjectUrl, uploadVoiceToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -50,6 +53,14 @@ type ListCompletionFilter = 'all' | 'open' | 'completed'
 type ListStatusFilter = 'all' | TaskRow['status']
 
 const MY_TASKS_ACTIVE_TAB_KEY = 'contas.my-tasks.active-tab'
+const COMMENT_PAYLOAD_PREFIX = '__contas_comment_v1__:'
+const COMMENT_EMOJIS = ['😀', '😂', '😍', '👍', '🔥', '🎉', '🙏', '✅']
+
+type VoicePayload = {
+  file: File
+  previewUrl: string
+  durationMs: number
+}
 
 type BoardComment = {
   id: string
@@ -57,6 +68,8 @@ type BoardComment = {
   author: string
   authorAvatarUrl?: string
   content: string
+  voiceDataUrl?: string
+  voiceDurationMs?: number
   createdAt: string
   likes: number
   likedByMe: boolean
@@ -143,6 +156,63 @@ function dateTimeLabel(value: string | null | undefined) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return nowTimeLabel()
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(parsed)
+}
+
+function serializeCommentContent(
+  text: string,
+  voice?: { voiceDataUrl?: string; voiceStorageKey?: string; durationMs?: number } | null,
+) {
+  if (!voice) return text
+  const payload = JSON.stringify({
+    text,
+    voiceDataUrl: voice.voiceDataUrl,
+    voiceStorageKey: voice.voiceStorageKey,
+    voiceDurationMs: voice.durationMs,
+  })
+  const encoded = window.btoa(unescape(encodeURIComponent(payload)))
+  return `${COMMENT_PAYLOAD_PREFIX}${encoded}`
+}
+
+function parseCommentContent(content: string) {
+  if (!content.startsWith(COMMENT_PAYLOAD_PREFIX)) {
+    return {
+      text: content,
+      voiceDataUrl: undefined as string | undefined,
+      voiceStorageKey: undefined as string | undefined,
+      voiceDurationMs: undefined as number | undefined,
+    }
+  }
+  try {
+    const encoded = content.slice(COMMENT_PAYLOAD_PREFIX.length)
+    const decoded = decodeURIComponent(escape(window.atob(encoded)))
+    const payload = JSON.parse(decoded) as {
+      text?: string
+      voiceDataUrl?: string
+      voiceStorageKey?: string
+      voiceDurationMs?: number
+    }
+    return {
+      text: payload.text ?? '',
+      voiceDataUrl: payload.voiceDataUrl,
+      voiceStorageKey: payload.voiceStorageKey,
+      voiceDurationMs: payload.voiceDurationMs,
+    }
+  } catch {
+    return {
+      text: content,
+      voiceDataUrl: undefined as string | undefined,
+      voiceStorageKey: undefined as string | undefined,
+      voiceDurationMs: undefined as number | undefined,
+    }
+  }
+}
+
+function formatVoiceDuration(durationMs?: number) {
+  if (!durationMs) return '0:00'
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
 function getMentionDraft(value: string, cursor: number | null) {
@@ -608,43 +678,83 @@ function TaskListSkeleton() {
   return (
     <Card className='flex h-full w-full min-h-0 flex-col overflow-hidden'>
       <CardHeader className='pb-3'>
-        <div className='flex items-center justify-between gap-3'>
-          <div className='space-y-2'>
-            <SkeletonBlock className='h-5 w-24' />
-            <SkeletonBlock className='h-4 w-56' />
+        <div className='flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between'>
+          <div className='grid flex-1 gap-2 md:grid-cols-2 xl:grid-cols-[minmax(320px,1.5fr)_minmax(180px,0.8fr)_minmax(180px,0.8fr)_minmax(220px,1fr)]'>
+            <SkeletonBlock className='h-10' />
+            <SkeletonBlock className='h-10' />
+            <SkeletonBlock className='h-10' />
+            <div className='grid grid-cols-2 gap-2'>
+              <SkeletonBlock className='h-10' />
+              <SkeletonBlock className='h-10' />
+            </div>
           </div>
-          <SkeletonBlock className='h-9 w-28' />
+          <SkeletonBlock className='h-10 w-32 self-end xl:self-auto' />
         </div>
       </CardHeader>
-      <CardContent className='min-h-0 flex-1 p-0'>
-        <div className='h-full overflow-auto'>
-          <table className='w-full text-sm'>
-            <thead className='sticky top-0 z-10 border-y bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground'>
-              <tr>
-                <th className='px-4 py-2 font-medium'>Task</th>
-                <th className='px-4 py-2 font-medium'>Project</th>
-                <th className='px-4 py-2 font-medium'>Owner</th>
-                <th className='px-4 py-2 font-medium'>Due</th>
-                <th className='px-4 py-2 font-medium'>Priority</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: 6 }, (_, index) => (
-                <tr key={index} className='border-b last:border-b-0'>
-                  <td className='px-4 py-3'>
-                    <div className='space-y-2'>
-                      <SkeletonBlock className='h-4 w-40' />
-                      <SkeletonBlock className='h-3 w-16' />
-                    </div>
-                  </td>
-                  <td className='px-4 py-3'><SkeletonBlock className='h-4 w-24' /></td>
-                  <td className='px-4 py-3'><SkeletonBlock className='h-4 w-20' /></td>
-                  <td className='px-4 py-3'><SkeletonBlock className='h-4 w-16' /></td>
-                  <td className='px-4 py-3'><SkeletonBlock className='h-6 w-24' /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <CardContent className='min-h-0 flex-1 p-3'>
+        <div className='h-full space-y-4 overflow-auto'>
+          {Array.from({ length: 3 }, (_, sectionIndex) => (
+            <section key={sectionIndex} className='overflow-hidden rounded-md border'>
+              <div className='flex items-center justify-between border-b bg-muted/25 px-4 py-2'>
+                <SkeletonBlock className='h-4 w-20' />
+                <SkeletonBlock className='h-3 w-12' />
+              </div>
+              <table className='w-full table-fixed text-sm'>
+                <colgroup>
+                  <col className='w-12' />
+                  <col />
+                  <col className='w-44' />
+                  <col className='w-32' />
+                  <col className='w-28' />
+                  <col className='w-32' />
+                  <col className='w-24' />
+                </colgroup>
+                <thead className='border-b bg-muted/15 text-left text-xs uppercase tracking-wide text-muted-foreground'>
+                  <tr>
+                    <th className='px-4 py-2' />
+                    <th className='px-4 py-2'><SkeletonBlock className='h-3 w-10' /></th>
+                    <th className='px-3 py-2'><SkeletonBlock className='h-3 w-12' /></th>
+                    <th className='px-3 py-2'><SkeletonBlock className='h-3 w-16' /></th>
+                    <th className='px-3 py-2'><SkeletonBlock className='h-3 w-8' /></th>
+                    <th className='px-3 py-2'><SkeletonBlock className='h-3 w-12' /></th>
+                    <th className='px-3 py-2 text-right'><SkeletonBlock className='ml-auto h-3 w-10' /></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Array.from({ length: 2 }, (_, rowIndex) => (
+                    <tr key={rowIndex} className='border-b last:border-b-0'>
+                      <td className='px-4 py-3'>
+                        <SkeletonBlock className='h-5 w-5 rounded-md' />
+                      </td>
+                      <td className='px-4 py-3'>
+                        <SkeletonBlock className='h-4 w-40' />
+                      </td>
+                      <td className='px-3 py-3'>
+                        <SkeletonBlock className='h-4 w-28' />
+                      </td>
+                      <td className='px-3 py-3'>
+                        <div className='flex items-center gap-1.5'>
+                          <SkeletonBlock className='h-6 w-6 rounded-full' />
+                          <SkeletonBlock className='h-6 w-6 rounded-full' />
+                        </div>
+                      </td>
+                      <td className='px-3 py-3'>
+                        <SkeletonBlock className='h-4 w-14' />
+                      </td>
+                      <td className='px-3 py-3'>
+                        <SkeletonBlock className='h-6 w-16 rounded-full' />
+                      </td>
+                      <td className='px-3 py-3'>
+                        <div className='flex justify-end'>
+                          <SkeletonBlock className='h-9 w-9 rounded-xl' />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          ))}
         </div>
       </CardContent>
     </Card>
@@ -658,39 +768,57 @@ function TaskBoardSkeleton() {
         <CardContent className='space-y-3 p-3'>
           <div className='flex flex-wrap items-center gap-2'>
             {Array.from({ length: 3 }, (_, index) => (
-              <SkeletonBlock key={index} className='h-8 w-24' />
+              <SkeletonBlock key={index} className='h-8 w-24 rounded-md' />
             ))}
           </div>
           <div className='grid gap-2 md:grid-cols-2 xl:grid-cols-5'>
-            <SkeletonBlock className='h-9 md:col-span-2' />
-            <SkeletonBlock className='h-9' />
-            <SkeletonBlock className='h-9' />
-            <SkeletonBlock className='h-9' />
+            <SkeletonBlock className='h-10 md:col-span-2' />
+            <SkeletonBlock className='h-10' />
+            <SkeletonBlock className='h-10' />
+            <SkeletonBlock className='h-10' />
           </div>
         </CardContent>
       </Card>
       <section className='w-full max-w-full overflow-hidden rounded-lg border bg-muted/10 p-2'>
-        <div className='w-full max-w-full overflow-x-auto pb-1'>
+        <div className='w-full max-w-full overflow-x-auto overscroll-x-contain pb-1'>
           <div className='inline-flex min-w-full gap-3 pr-1'>
-            {Array.from({ length: 4 }, (_, index) => (
+            {Array.from({ length: 3 }, (_, index) => (
               <Card key={index} className='w-[320px] shrink-0'>
                 <CardHeader className='pb-3'>
-                  <SkeletonBlock className='h-4 w-24' />
-                  <SkeletonBlock className='h-3 w-16' />
+                  <div className='flex items-center justify-between gap-2'>
+                    <SkeletonBlock className='h-4 w-24' />
+                    <SkeletonBlock className='h-6 w-14' />
+                  </div>
                 </CardHeader>
                 <CardContent className='space-y-2'>
                   {Array.from({ length: 3 }, (_, itemIndex) => (
-                    <div key={itemIndex} className='rounded-md border bg-muted/20 p-3'>
-                      <div className='space-y-2'>
-                        <SkeletonBlock className='h-4 w-32' />
-                        <SkeletonBlock className='h-3 w-full' />
-                        <SkeletonBlock className='h-3 w-3/4' />
+                    <div key={itemIndex} className='rounded-md border bg-muted/20 p-2.5'>
+                      <div className='flex items-start justify-between gap-2'>
+                        <div className='flex min-w-0 items-start gap-2'>
+                          <SkeletonBlock className='mt-0.5 h-4 w-4 rounded' />
+                          <div className='space-y-2'>
+                            <SkeletonBlock className='h-4 w-32' />
+                            <SkeletonBlock className='h-3 w-20' />
+                          </div>
+                        </div>
+                        <SkeletonBlock className='h-7 w-7 rounded-md' />
                       </div>
                     </div>
                   ))}
+                  <SkeletonBlock className='h-9 w-full' />
                 </CardContent>
               </Card>
             ))}
+            <Card className='w-[320px] shrink-0'>
+              <CardHeader className='pb-3'>
+                <SkeletonBlock className='h-4 w-24' />
+                <SkeletonBlock className='h-3 w-40' />
+              </CardHeader>
+              <CardContent className='space-y-2'>
+                <SkeletonBlock className='h-10 w-full' />
+                <SkeletonBlock className='h-9 w-full' />
+              </CardContent>
+            </Card>
           </div>
         </div>
       </section>
@@ -717,20 +845,26 @@ function TaskCalendarSkeleton() {
       </Card>
       <Card>
         <CardHeader className='pb-3'>
-          <SkeletonBlock className='h-5 w-32' />
-          <SkeletonBlock className='h-4 w-48' />
+          <SkeletonBlock className='h-5 w-36' />
+          <SkeletonBlock className='h-4 w-56' />
         </CardHeader>
-        <CardContent className='grid gap-3 md:grid-cols-2 xl:grid-cols-3'>
-          {Array.from({ length: 6 }, (_, index) => (
-            <div key={index} className='rounded-md border bg-muted/10 p-3'>
-              <SkeletonBlock className='h-4 w-24' />
-              <div className='mt-3 space-y-2'>
-                <SkeletonBlock className='h-3 w-full' />
-                <SkeletonBlock className='h-3 w-4/5' />
-                <SkeletonBlock className='h-3 w-2/3' />
+        <CardContent>
+          <div className='grid grid-cols-7 gap-2 pb-2'>
+            {Array.from({ length: 7 }, (_, index) => (
+              <SkeletonBlock key={index} className='mx-auto h-3 w-10' />
+            ))}
+          </div>
+          <div className='grid grid-cols-7 gap-2'>
+            {Array.from({ length: 35 }, (_, index) => (
+              <div key={index} className='min-h-[90px] rounded-md border bg-card p-1.5'>
+                <SkeletonBlock className='mb-2 h-6 w-6 rounded-full' />
+                <div className='space-y-1'>
+                  <SkeletonBlock className='h-4 w-full rounded-sm' />
+                  <SkeletonBlock className='h-4 w-4/5 rounded-sm' />
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -752,6 +886,7 @@ export function MyTasksPage() {
   const [members, setMembers] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([])
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const [createTaskColumnId, setCreateTaskColumnId] = useState('planned')
+  const [realtimeReloadToken, setRealtimeReloadToken] = useState(0)
 
   const [boardDefinitions, setBoardDefinitions] = useState<BoardDefinition[]>(INITIAL_BOARD_DEFINITIONS)
   const [boardColumns, setBoardColumns] = useState<BoardColumn[]>(() =>
@@ -796,6 +931,10 @@ export function MyTasksPage() {
     completed: false,
   })
   const [commentDraft, setCommentDraft] = useState('')
+  const [commentEmojiOpen, setCommentEmojiOpen] = useState(false)
+  const [pendingVoiceComment, setPendingVoiceComment] = useState<VoicePayload | null>(null)
+  const [isRecordingVoiceComment, setIsRecordingVoiceComment] = useState(false)
+  const [voiceCommentError, setVoiceCommentError] = useState<string | null>(null)
   const [replyDraftByCommentId, setReplyDraftByCommentId] = useState<Record<string, string>>({})
   const [activeReplyCommentId, setActiveReplyCommentId] = useState<string | null>(null)
   const [descriptionMentionDraft, setDescriptionMentionDraft] = useState<{ start: number; end: number; query: string } | null>(null)
@@ -807,11 +946,20 @@ export function MyTasksPage() {
   const detailDescriptionDebounceRef = useRef<number | null>(null)
   const detailSavedFlashRef = useRef<number | null>(null)
   const detailLastPersistedRef = useRef('')
+  const commentMediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const commentVoiceChunksRef = useRef<BlobPart[]>([])
+  const commentVoiceStartAtRef = useRef(0)
   const [listSearch, setListSearch] = useState('')
   const [listScopeFilter, setListScopeFilter] = useState<ListScopeFilter>('all')
   const [listCompletionFilter, setListCompletionFilter] = useState<ListCompletionFilter>('all')
   const [listStatusFilter, setListStatusFilter] = useState<ListStatusFilter>('all')
   const [listProjectFilter, setListProjectFilter] = useState('all')
+  const clearPendingVoiceComment = useCallback(() => {
+    setPendingVoiceComment((current) => {
+      if (current) URL.revokeObjectURL(current.previewUrl)
+      return null
+    })
+  }, [])
 
   const weekStart = useMemo(() => getWeekStart(calendarDate), [calendarDate])
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart])
@@ -825,6 +973,21 @@ export function MyTasksPage() {
     () => Array.from({ length: 12 }, (_, index) => new Date(calendarDate.getFullYear(), index, 1)),
     [calendarDate],
   )
+
+  useEffect(() => {
+    const onRealtimeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ table?: string }>).detail
+      const table = detail?.table
+      if (!table) return
+      if (!['tasks', 'projects', 'task_assignees', 'task_comments', 'boards', 'notifications'].includes(table)) return
+      setRealtimeReloadToken((value) => value + 1)
+    }
+
+    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+    return () => {
+      window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -926,17 +1089,46 @@ export function MyTasksPage() {
         }
       }
       if (!taskCommentsResult.error && taskCommentsResult.data) {
+        const parsedCommentContentById = new Map<
+          string,
+          { text: string; voiceDataUrl?: string; voiceDurationMs?: number; voiceStorageKey?: string }
+        >()
+        await Promise.all(
+          taskCommentsResult.data.map(async (row) => {
+            const parsedContent = parseCommentContent(row.content)
+            let resolvedVoiceUrl = parsedContent.voiceDataUrl
+
+            if (parsedContent.voiceStorageKey) {
+              try {
+                resolvedVoiceUrl = await resolveR2ObjectUrl(parsedContent.voiceStorageKey)
+              } catch {
+                resolvedVoiceUrl = parsedContent.voiceDataUrl
+              }
+            }
+
+            parsedCommentContentById.set(row.id, {
+              text: parsedContent.text,
+              voiceDataUrl: resolvedVoiceUrl,
+              voiceDurationMs: parsedContent.voiceDurationMs,
+              voiceStorageKey: parsedContent.voiceStorageKey,
+            })
+          }),
+        )
+
         const rootsById = new Map<string, BoardComment>()
         for (const row of taskCommentsResult.data) {
           if (row.parent_comment_id) continue
           const taskComments = commentsByTask.get(row.task_id) ?? []
           const authorName = row.author_id ? memberMap.get(row.author_id) : undefined
+          const parsedContent = parsedCommentContentById.get(row.id) ?? parseCommentContent(row.content)
           const root: BoardComment = {
             id: row.id,
             authorId: row.author_id ?? '',
             author: authorName ?? BOARD_ME_ASSIGNEE,
             authorAvatarUrl: row.author_id ? avatarMap.get(row.author_id) : undefined,
-            content: row.content,
+            content: parsedContent.text,
+            voiceDataUrl: parsedContent.voiceDataUrl,
+            voiceDurationMs: parsedContent.voiceDurationMs,
             createdAt: dateTimeLabel(row.created_at),
             likes: likeCountByCommentId.get(row.id) ?? 0,
             likedByMe: likedByMeCommentIds.has(row.id),
@@ -951,12 +1143,13 @@ export function MyTasksPage() {
           const parent = rootsById.get(row.parent_comment_id)
           if (!parent) continue
           const authorName = row.author_id ? memberMap.get(row.author_id) : undefined
+          const parsedContent = parsedCommentContentById.get(row.id) ?? parseCommentContent(row.content)
           parent.replies.push({
             id: row.id,
             authorId: row.author_id ?? '',
             author: authorName ?? BOARD_ME_ASSIGNEE,
             authorAvatarUrl: row.author_id ? avatarMap.get(row.author_id) : undefined,
-            content: row.content,
+            content: parsedContent.text,
             createdAt: dateTimeLabel(row.created_at),
           })
         }
@@ -997,7 +1190,7 @@ export function MyTasksPage() {
     return () => {
       cancelled = true
     }
-  }, [currentUser?.id])
+  }, [currentUser?.id, realtimeReloadToken])
 
   useEffect(() => {
     setBoardColumns(createBoardColumnsFromTasks(taskRows, boardDefinitions, commentsByTaskId))
@@ -1140,6 +1333,15 @@ export function MyTasksPage() {
 
     return sections
   }, [listFilteredTasks, boardDefinitions])
+
+  const canEditTaskById = useCallback(
+    (taskId: string) => {
+      const task = taskRows.find((item) => item.id === taskId)
+      if (!task) return false
+      return Boolean(currentUser?.id && task.createdById === currentUser.id)
+    },
+    [currentUser?.id, taskRows],
+  )
 
   const openTaskDetailsById = (taskId: string) => {
     for (const column of boardColumns) {
@@ -1292,10 +1494,12 @@ export function MyTasksPage() {
 
   const markSelectedCompleted = async () => {
     if (selectedTaskSet.size === 0) return
-    const selectedIds = Array.from(selectedTaskSet)
+    const selectedIds = Array.from(selectedTaskSet).filter((taskId) => canEditTaskById(taskId))
+    if (selectedIds.length === 0) return
+    const selectedEditableSet = new Set(selectedIds)
     const previousRows = taskRows
     const completedAt = new Date().toISOString()
-    setTaskRows((rows) => rows.map((task) => (selectedTaskSet.has(task.id) ? { ...task, completed: true } : task)))
+    setTaskRows((rows) => rows.map((task) => (selectedEditableSet.has(task.id) ? { ...task, completed: true } : task)))
     const { error } = await supabase.from('tasks').update({ completed_at: completedAt }).in('id', selectedIds)
     if (error) {
       console.error('Failed to mark selected tasks complete', error)
@@ -1319,11 +1523,13 @@ export function MyTasksPage() {
 
   const moveSelectedTasks = async () => {
     if (!bulkMoveTargetColumnId || selectedTaskSet.size === 0) return
-    const selectedIds = Array.from(selectedTaskSet)
+    const selectedIds = Array.from(selectedTaskSet).filter((taskId) => canEditTaskById(taskId))
+    if (selectedIds.length === 0) return
+    const selectedEditableSet = new Set(selectedIds)
     const previousRows = taskRows
     setTaskRows((rows) =>
       rows.map((task) =>
-        selectedTaskSet.has(task.id)
+        selectedEditableSet.has(task.id)
           ? { ...task, status: nextTaskStatusForBoardMove(bulkMoveTargetColumnId, task.status), boardColumn: bulkMoveTargetColumnId }
           : task,
       ),
@@ -1374,6 +1580,10 @@ export function MyTasksPage() {
     }
 
     const taskId = draggingTask.taskId
+    if (!canEditTaskById(taskId)) {
+      setDraggingTask(null)
+      return
+    }
     const previousRows = taskRows
     const currentTask = taskRows.find((task) => task.id === taskId)
     if (!currentTask) {
@@ -1460,6 +1670,7 @@ export function MyTasksPage() {
   }
 
   const toggleBoardTaskCompleted = async (taskId: string) => {
+    if (!canEditTaskById(taskId)) return
     const nextCompleted = !(taskRows.find((task) => task.id === taskId)?.completed ?? false)
     const previousRows = taskRows
     setTaskRows((rows) => rows.map((task) => (task.id === taskId ? { ...task, completed: nextCompleted } : task)))
@@ -1488,6 +1699,7 @@ export function MyTasksPage() {
   const persistTaskDraft = async (taskId: string, draft: BoardTaskDraft) => {
     const existingTask = taskRows.find((task) => task.id === taskId)
     if (!existingTask) return { ok: false as const, nextBoardColumn: '' }
+    if (!currentUser?.id || existingTask.createdById !== currentUser.id) return { ok: false as const, nextBoardColumn: '' }
 
     const title = draft.title.trim()
     if (!title) return { ok: false as const, nextBoardColumn: '' }
@@ -1501,6 +1713,7 @@ export function MyTasksPage() {
     if (!normalizedSchedule.valid) return { ok: false as const, nextBoardColumn: '' }
 
     const nextAssigneeIds = draft.assigneeIds
+    const previousAssigneeIds = existingTask.assigneeIds
     const nextAssigneeNames = nextAssigneeIds
       .map((id) => members.find((member) => member.id === id)?.name)
       .filter((name): name is string => Boolean(name))
@@ -1579,10 +1792,32 @@ export function MyTasksPage() {
       }
     }
 
+    if (currentUser?.id) {
+      const addedAssigneeIds = nextAssigneeIds.filter(
+        (assigneeId) => !previousAssigneeIds.includes(assigneeId) && assigneeId !== currentUser.id,
+      )
+      if (addedAssigneeIds.length > 0) {
+        const notifications = addedAssigneeIds.map((recipientId) => ({
+          recipient_id: recipientId,
+          actor_id: currentUser.id,
+          task_id: taskId,
+          type: 'task' as const,
+          title: 'Task assigned to you',
+          message: `You were assigned "${title}".`,
+          metadata: { event: 'task_assigned', source: 'task_edit' },
+        }))
+        const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+        if (notificationsError) {
+          console.error('Failed to create assignment notifications', notificationsError)
+        }
+      }
+    }
+
     return { ok: true as const, nextBoardColumn }
   }
 
   const startEditingBoardTask = (columnId: string, task: BoardTask) => {
+    if (!canEditTaskById(task.id)) return
     setEditingTask({ columnId, taskId: task.id })
     const taskRow = taskRows.find((item) => item.id === task.id)
     setEditingTaskDraft({
@@ -1662,6 +1897,12 @@ export function MyTasksPage() {
     if (!task) return null
     return { column, task }
   }, [activeTaskRef, boardColumns])
+  const activeTaskRow = useMemo(() => {
+    const taskId = activeTaskData?.task.id
+    if (!taskId) return null
+    return taskRows.find((task) => task.id === taskId) ?? null
+  }, [activeTaskData?.task.id, taskRows])
+  const canEditActiveTask = Boolean(currentUser?.id && activeTaskRow?.createdById === currentUser.id)
   const activeCommentAuthor = useMemo(() => {
     const member = members.find((item) => item.id === currentUser?.id)
     return {
@@ -1692,7 +1933,13 @@ export function MyTasksPage() {
   useEffect(() => {
     setReplyDraftByCommentId({})
     setActiveReplyCommentId(null)
-  }, [activeTaskRef?.taskId])
+    setCommentDraft('')
+    clearPendingVoiceComment()
+    setVoiceCommentError(null)
+    setCommentEmojiOpen(false)
+    const recorder = commentMediaRecorderRef.current
+    if (recorder && recorder.state !== 'inactive') recorder.stop()
+  }, [activeTaskRef?.taskId, clearPendingVoiceComment])
   useEffect(() => {
     setDescriptionMentionDraft(null)
     setDescriptionMentionActiveIndex(0)
@@ -1700,6 +1947,13 @@ export function MyTasksPage() {
   useEffect(() => {
     setDescriptionMentionActiveIndex(0)
   }, [descriptionMentionDraft?.query])
+  useEffect(() => {
+    return () => {
+      clearPendingVoiceComment()
+      const recorder = commentMediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') recorder.stop()
+    }
+  }, [clearPendingVoiceComment])
 
   const serializeDetailDraft = (draft: BoardTaskDraft) =>
     JSON.stringify({
@@ -1720,6 +1974,7 @@ export function MyTasksPage() {
 
   const saveDetailTask = async (draft = detailDraft) => {
     if (!activeTaskRef) return
+    if (!canEditActiveTask) return
     const nextSerialized = serializeDetailDraft(draft)
     if (nextSerialized === detailLastPersistedRef.current) {
       return
@@ -1765,6 +2020,7 @@ export function MyTasksPage() {
   }
 
   const handleDeleteTask = async (taskId: string) => {
+    if (!canEditTaskById(taskId)) return
     const previousRows = taskRows
     setTaskRows((rows) => rows.filter((task) => task.id !== taskId))
     setSelectedTaskIds((ids) => ids.filter((id) => id !== taskId))
@@ -1776,11 +2032,83 @@ export function MyTasksPage() {
     }
   }
 
+  function stopVoiceCommentRecording() {
+    const recorder = commentMediaRecorderRef.current
+    if (!recorder) return
+    if (recorder.state !== 'inactive') recorder.stop()
+  }
+
+  const startVoiceCommentRecording = async () => {
+    if (isRecordingVoiceComment) return
+    setVoiceCommentError(null)
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setVoiceCommentError('Voice recording is not supported in this browser.')
+      return
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      commentVoiceChunksRef.current = []
+      commentVoiceStartAtRef.current = Date.now()
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          commentVoiceChunksRef.current.push(event.data)
+        }
+      }
+
+      recorder.onstop = () => {
+        const durationMs = Date.now() - commentVoiceStartAtRef.current
+        const mimeType = recorder.mimeType || 'audio/webm'
+        const fileExt = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('wav') ? 'wav' : mimeType.includes('mp4') ? 'm4a' : 'webm'
+        const file = new File([new Blob(commentVoiceChunksRef.current, { type: mimeType })], `voice-${Date.now()}.${fileExt}`, {
+          type: mimeType,
+        })
+        const previewUrl = URL.createObjectURL(file)
+        setPendingVoiceComment((current) => {
+          if (current) URL.revokeObjectURL(current.previewUrl)
+          return { file, previewUrl, durationMs }
+        })
+        stream.getTracks().forEach((track) => track.stop())
+        commentMediaRecorderRef.current = null
+        setIsRecordingVoiceComment(false)
+      }
+
+      commentMediaRecorderRef.current = recorder
+      recorder.start()
+      setIsRecordingVoiceComment(true)
+    } catch (error) {
+      console.error('Failed to start voice recording', error)
+      setVoiceCommentError('Microphone permission is required to record voice.')
+      setIsRecordingVoiceComment(false)
+      commentMediaRecorderRef.current = null
+    }
+  }
+
   const addCommentToTask = async () => {
     if (!activeTaskRef) return
     if (!currentUser?.id) return
-    const content = commentDraft.trim()
-    if (!content) return
+    const contentText = commentDraft.trim()
+    if (!contentText && !pendingVoiceComment) return
+    let uploadedVoice: { key: string; url: string } | null = null
+    if (pendingVoiceComment) {
+      try {
+        uploadedVoice = await uploadVoiceToR2(pendingVoiceComment.file)
+      } catch (error) {
+        setVoiceCommentError(error instanceof Error ? error.message : 'Voice upload failed.')
+        return
+      }
+    }
+    const content =
+      uploadedVoice || pendingVoiceComment
+        ? serializeCommentContent(contentText, {
+            voiceDataUrl: uploadedVoice?.url,
+            voiceStorageKey: uploadedVoice?.key,
+            durationMs: pendingVoiceComment?.durationMs,
+          })
+        : contentText
 
     const { data, error } = await supabase
       .from('task_comments')
@@ -1803,7 +2131,9 @@ export function MyTasksPage() {
       authorId: data.author_id ?? currentUser.id,
       author: activeCommentAuthor.name,
       authorAvatarUrl: activeCommentAuthor.avatarUrl,
-      content: data.content,
+      content: contentText,
+      voiceDataUrl: uploadedVoice?.url,
+      voiceDurationMs: pendingVoiceComment?.durationMs,
       createdAt: dateTimeLabel(data.created_at),
       likes: 0,
       likedByMe: false,
@@ -1815,6 +2145,10 @@ export function MyTasksPage() {
     }))
 
     setCommentDraft('')
+    setPendingVoiceComment((current) => {
+      if (current) URL.revokeObjectURL(current.previewUrl)
+      return null
+    })
     setBoardColumns((columns) =>
       columns.map((column) =>
         column.id === activeTaskRef.columnId
@@ -1969,18 +2303,7 @@ export function MyTasksPage() {
     if (calendarView === 'daily') {
       return (
         <Card>
-          <CardHeader className='pb-3'>
-            <CardTitle className='text-base'>Daily Agenda</CardTitle>
-            <CardDescription>
-              {new Intl.DateTimeFormat('en-US', {
-                weekday: 'long',
-                month: 'long',
-                day: 'numeric',
-                year: 'numeric',
-              }).format(calendarDate)}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='space-y-2'>
+          <CardContent className='space-y-2 p-4 md:p-5'>
             {dailyTasks.length === 0 ? (
               <p className='text-sm text-muted-foreground'>No tasks scheduled for this day.</p>
             ) : (
@@ -2016,15 +2339,7 @@ export function MyTasksPage() {
     if (calendarView === 'weekly') {
       return (
         <Card>
-          <CardHeader className='pb-3'>
-            <CardTitle className='text-base'>Weekly Timeline</CardTitle>
-            <CardDescription>
-              {new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(weekStart)}
-              {' - '}
-              {new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(weekEnd)}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className='space-y-3'>
+          <CardContent className='space-y-3 p-4 md:p-5'>
             <div className='grid grid-cols-7 gap-2'>
               {Array.from({ length: 7 }, (_, index) => {
                 const day = addDays(weekStart, index)
@@ -2095,11 +2410,7 @@ export function MyTasksPage() {
     if (calendarView === 'monthly') {
       return (
         <Card>
-          <CardHeader className='pb-3'>
-            <CardTitle className='text-base'>Monthly Calendar</CardTitle>
-            <CardDescription>Task bars continue through all active dates.</CardDescription>
-          </CardHeader>
-          <CardContent>
+          <CardContent className='p-4 md:p-5'>
             <div className='grid grid-cols-7 gap-2 pb-2'>
               {WEEKDAY_LABELS.map((label) => (
                 <p key={label} className='text-center text-[11px] font-semibold uppercase tracking-wide text-muted-foreground'>
@@ -2118,11 +2429,15 @@ export function MyTasksPage() {
                 return (
                   <div
                     key={day.toISOString()}
-                    className={cn('min-h-[90px] rounded-md border bg-card p-1.5', outside && 'bg-muted/15 text-muted-foreground')}
+                    className={cn(
+                      'min-h-[90px] rounded-md border bg-card p-1.5',
+                      outside && 'border-dashed border-muted-foreground/30 bg-muted/45 text-muted-foreground/80',
+                    )}
                   >
                     <p
                       className={cn(
                         'mb-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold',
+                        outside && 'opacity-75',
                         today && 'bg-primary text-primary-foreground',
                       )}
                     >
@@ -2156,11 +2471,7 @@ export function MyTasksPage() {
 
     return (
       <Card>
-        <CardHeader className='pb-3'>
-          <CardTitle className='text-base'>Yearly Overview</CardTitle>
-          <CardDescription>{calendarDate.getFullYear()} workload by month.</CardDescription>
-        </CardHeader>
-        <CardContent className='grid gap-3 md:grid-cols-2 xl:grid-cols-3'>
+        <CardContent className='grid gap-3 p-4 md:grid-cols-2 md:p-5 xl:grid-cols-3'>
           {yearMonths.map((monthDate) => {
             const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
             const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0)
@@ -2366,11 +2677,16 @@ export function MyTasksPage() {
                       </div>
                     ) : null}
 
-                    {column.items.map((item) => (
+                    {column.items.map((item) => {
+                      const canEditBoardTask = canEditTaskById(item.id)
+                      return (
                       <article
                         key={item.id}
-                        draggable
-                        onDragStart={() => handleBoardDragStart(item.id, column.id)}
+                        draggable={canEditBoardTask}
+                        onDragStart={() => {
+                          if (!canEditBoardTask) return
+                          handleBoardDragStart(item.id, column.id)
+                        }}
                         onPointerDown={(event) => {
                           if (shouldIgnoreHoldTarget(event.target)) return
                           beginHoldSelect(item.id)
@@ -2393,13 +2709,15 @@ export function MyTasksPage() {
                       >
                         <div className='flex items-start justify-between gap-2'>
                           <div className='flex min-w-0 items-start gap-2'>
-                            <button
-                              type='button'
-                              data-no-hold='true'
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                toggleBoardTaskCompleted(item.id)
-                              }}
+                              <button
+                                type='button'
+                                data-no-hold='true'
+                                disabled={!canEditBoardTask}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  if (!canEditBoardTask) return
+                                  toggleBoardTaskCompleted(item.id)
+                                }}
                               className={cn(
                                 'mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border',
                                 item.completed
@@ -2589,7 +2907,20 @@ export function MyTasksPage() {
                             </div>
                           </div>
 
-                          {!(editingTask?.columnId === column.id && editingTask?.taskId === item.id) ? (
+                          {editingTask?.columnId === column.id && editingTask?.taskId === item.id ? (
+                            <button
+                              type='button'
+                              data-no-hold='true'
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                cancelEditingBoardTask()
+                              }}
+                              className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                              aria-label='Cancel edit'
+                            >
+                              <X className='h-3.5 w-3.5' aria-hidden='true' />
+                            </button>
+                          ) : canEditBoardTask ? (
                             <button
                               type='button'
                               data-no-hold='true'
@@ -2603,22 +2934,11 @@ export function MyTasksPage() {
                               <Pencil className='h-3.5 w-3.5' aria-hidden='true' />
                             </button>
                           ) : (
-                            <button
-                              type='button'
-                              data-no-hold='true'
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                cancelEditingBoardTask()
-                              }}
-                              className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                              aria-label='Cancel edit'
-                            >
-                              <X className='h-3.5 w-3.5' aria-hidden='true' />
-                            </button>
+                            <span className='inline-flex h-7 w-7 shrink-0' />
                           )}
                         </div>
                       </article>
-                    ))}
+                    )})}
 
                     <div className='border-t pt-2'>
                       <Button type='button' variant='outline' className='w-full gap-2' onClick={() => openTaskDialogForColumn(column.id)}>
@@ -2671,20 +2991,14 @@ export function MyTasksPage() {
         return (
           <Card className='flex h-full w-full min-h-0 flex-col overflow-hidden'>
             <CardHeader className='pb-3'>
-              <div className='flex items-center justify-between gap-3'>
-                <div>
-                  <CardTitle className='text-base'>Task List</CardTitle>
-                  <CardDescription>Compact table for quick tracking and updates.</CardDescription>
-                </div>
-                <Button type='button' onClick={() => setTaskDialogOpen(true)}>Create Task</Button>
-              </div>
-              <div className='mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-5'>
-                <div className='relative md:col-span-2'>
+              <div className='flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between'>
+                <div className='grid flex-1 gap-2 md:grid-cols-2 xl:grid-cols-[minmax(320px,1.5fr)_minmax(180px,0.8fr)_minmax(180px,0.8fr)_minmax(220px,1fr)]'>
+                  <div className='relative'>
                   <Search className='pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
                   <Input
                     value={listSearch}
                     onChange={(event) => setListSearch(event.target.value)}
-                    className='pl-8'
+                    className='h-10 pl-8'
                     placeholder='Search task, project, assignee'
                   />
                 </div>
@@ -2692,7 +3006,7 @@ export function MyTasksPage() {
                 <select
                   value={listScopeFilter}
                   onChange={(event) => setListScopeFilter(event.target.value as ListScopeFilter)}
-                  className='h-9 rounded-md border bg-background px-3 text-sm'
+                  className='h-10 rounded-md border bg-background px-3 text-sm'
                   aria-label='Filter tasks by scope'
                 >
                   <option value='all'>All tasks</option>
@@ -2705,7 +3019,7 @@ export function MyTasksPage() {
                 <select
                   value={listStatusFilter}
                   onChange={(event) => setListStatusFilter(event.target.value as ListStatusFilter)}
-                  className='h-9 rounded-md border bg-background px-3 text-sm'
+                  className='h-10 rounded-md border bg-background px-3 text-sm'
                   aria-label='Filter tasks by status'
                 >
                   <option value='all'>All statuses</option>
@@ -2716,11 +3030,11 @@ export function MyTasksPage() {
                   <option value='Done'>Done</option>
                 </select>
 
-                <div className='grid grid-cols-2 gap-2 xl:grid-cols-2'>
+                <div className='grid grid-cols-2 gap-2'>
                   <select
                     value={listCompletionFilter}
                     onChange={(event) => setListCompletionFilter(event.target.value as ListCompletionFilter)}
-                    className='h-9 rounded-md border bg-background px-3 text-sm'
+                    className='h-10 rounded-md border bg-background px-3 text-sm'
                     aria-label='Filter tasks by completion'
                   >
                     <option value='all'>All</option>
@@ -2730,7 +3044,7 @@ export function MyTasksPage() {
                   <select
                     value={listProjectFilter}
                     onChange={(event) => setListProjectFilter(event.target.value)}
-                    className='h-9 rounded-md border bg-background px-3 text-sm'
+                    className='h-10 rounded-md border bg-background px-3 text-sm'
                     aria-label='Filter tasks by project'
                   >
                     <option value='all'>All projects</option>
@@ -2741,6 +3055,11 @@ export function MyTasksPage() {
                     ))}
                   </select>
                 </div>
+                </div>
+                <Button type='button' onClick={() => setTaskDialogOpen(true)} className='h-10 shrink-0 gap-2 self-end px-3 xl:self-auto'>
+                  <CirclePlus className='h-4 w-4' aria-hidden='true' />
+                  Create Task
+                </Button>
               </div>
             </CardHeader>
             <CardContent className='min-h-0 flex-1 p-3'>
@@ -2776,7 +3095,9 @@ export function MyTasksPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {section.tasks.map((task) => (
+                          {section.tasks.map((task) => {
+                            const canEditTaskRow = canEditTaskById(task.id)
+                            return (
                             <tr
                               key={task.id}
                               className='cursor-pointer border-b transition-colors hover:bg-muted/10 last:border-b-0'
@@ -2785,8 +3106,10 @@ export function MyTasksPage() {
                               <td className='px-4 py-2.5'>
                                 <button
                                   type='button'
+                                  disabled={!canEditTaskRow}
                                   onClick={(event) => {
                                     event.stopPropagation()
+                                    if (!canEditTaskRow) return
                                     void toggleBoardTaskCompleted(task.id)
                                   }}
                                   className={cn(
@@ -2827,16 +3150,16 @@ export function MyTasksPage() {
                                         .map((part) => part[0]?.toUpperCase() ?? '')
                                         .join('')
                                       return (
-                                        <div key={assigneeId} className={cn('relative', index > 0 && '-ml-2')}>
-                                          <Avatar className='h-8 w-8 border-2 border-background' title={label}>
+                                        <div key={assigneeId} className={cn('relative', index > 0 && '-ml-1')}>
+                                          <Avatar className='h-5 w-5 border border-background' title={label}>
                                             {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
-                                            <AvatarFallback className='text-[10px] font-semibold'>{initials || 'U'}</AvatarFallback>
+                                            <AvatarFallback className='text-[8px] font-semibold'>{initials || 'U'}</AvatarFallback>
                                           </Avatar>
                                         </div>
                                       )
                                     })}
                                     {task.assigneeIds.length > 4 ? (
-                                      <div className='-ml-2 inline-flex h-8 w-8 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold text-muted-foreground'>
+                                      <div className='-ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-background bg-muted text-[7px] font-semibold text-muted-foreground'>
                                         +{task.assigneeIds.length - 4}
                                       </div>
                                     ) : null}
@@ -2853,21 +3176,23 @@ export function MyTasksPage() {
                               </td>
                               <td className='px-4 py-2.5'>
                                 <div className='flex items-center justify-end gap-1'>
-                                  <button
-                                    type='button'
-                                    onClick={(event) => {
-                                      event.stopPropagation()
-                                      void handleDeleteTask(task.id)
-                                    }}
-                                    className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                                    aria-label={`Delete ${task.title}`}
-                                  >
-                                    <Trash2 className='h-3.5 w-3.5' aria-hidden='true' />
-                                  </button>
+                                  {canEditTaskRow ? (
+                                    <button
+                                      type='button'
+                                      onClick={(event) => {
+                                        event.stopPropagation()
+                                        void handleDeleteTask(task.id)
+                                      }}
+                                      className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                      aria-label={`Delete ${task.title}`}
+                                    >
+                                      <Trash2 className='h-3.5 w-3.5' aria-hidden='true' />
+                                    </button>
+                                  ) : null}
                                 </div>
                               </td>
                             </tr>
-                          ))}
+                          )})}
                         </tbody>
                       </table>
                     )}
@@ -3009,6 +3334,9 @@ export function MyTasksPage() {
                   <div>
                     <DialogTitle>Task Details</DialogTitle>
                     <DialogDescription>{activeTaskData.column.title}</DialogDescription>
+                    {!canEditActiveTask ? (
+                      <p className='mt-1 text-xs text-amber-300'>Only the task creator can edit details. You can still add comments.</p>
+                    ) : null}
                   </div>
                   <div className='text-xs text-muted-foreground'>
                     {detailSaveState === 'saving' ? (
@@ -3026,19 +3354,21 @@ export function MyTasksPage() {
               <div className='grid min-h-0 flex-1 lg:grid-cols-[minmax(0,2.1fr)_360px]'>
                 <div className='flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain border-r p-4'>
                   <div className='flex flex-1 flex-col gap-4'>
-                  <Input
-                    value={detailDraft.title}
-                    onChange={(event) => setDetailDraft((draft) => ({ ...draft, title: event.target.value }))}
-                    onBlur={triggerDetailAutosave}
-                    placeholder='Task title'
-                    className='h-11 text-lg font-semibold'
-                  />
+                    <Input
+                      value={detailDraft.title}
+                      onChange={(event) => setDetailDraft((draft) => ({ ...draft, title: event.target.value }))}
+                      onBlur={triggerDetailAutosave}
+                      placeholder='Task title'
+                      className='h-11 text-lg font-semibold'
+                      readOnly={!canEditActiveTask}
+                    />
 
                   <div className='grid gap-3 md:grid-cols-2'>
                     <div className='space-y-1.5'>
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Start Date</p>
                       <DatePicker
                         value={dateFromInputValue(detailDraft.startDate)}
+                        disabled={!canEditActiveTask}
                         onChange={(date) => {
                           const nextDraft = { ...detailDraft, startDate: toDateInputValue(date) }
                           setDetailDraft(nextDraft)
@@ -3052,6 +3382,7 @@ export function MyTasksPage() {
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Due Date</p>
                       <DatePicker
                         value={dateFromInputValue(detailDraft.endDate)}
+                        disabled={!canEditActiveTask}
                         onChange={(date) => {
                           const nextDraft = { ...detailDraft, endDate: toDateInputValue(date) }
                           setDetailDraft(nextDraft)
@@ -3065,6 +3396,7 @@ export function MyTasksPage() {
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Project</p>
                       <select
                         value={detailDraft.projectId}
+                        disabled={!canEditActiveTask}
                         onChange={(event) => {
                           const nextDraft = { ...detailDraft, projectId: event.target.value }
                           setDetailDraft(nextDraft)
@@ -3084,6 +3416,7 @@ export function MyTasksPage() {
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Status</p>
                       <select
                         value={detailDraft.status}
+                        disabled={!canEditActiveTask}
                         onChange={(event) => {
                           const nextDraft = { ...detailDraft, status: event.target.value as TaskRow['status'] }
                           setDetailDraft(nextDraft)
@@ -3102,6 +3435,7 @@ export function MyTasksPage() {
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Priority</p>
                       <select
                         value={detailDraft.priority}
+                        disabled={!canEditActiveTask}
                         onChange={(event) => {
                           const nextDraft = { ...detailDraft, priority: event.target.value as TaskRow['priority'] }
                           setDetailDraft(nextDraft)
@@ -3119,6 +3453,7 @@ export function MyTasksPage() {
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Completion</p>
                       <button
                         type='button'
+                        disabled={!canEditActiveTask}
                         onClick={() => {
                           const nextDraft = { ...detailDraft, completed: !detailDraft.completed }
                           setDetailDraft(nextDraft)
@@ -3147,7 +3482,7 @@ export function MyTasksPage() {
                       <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Assignees</p>
                       <Popover open={detailAssigneeOpen} onOpenChange={setDetailAssigneeOpen}>
                         <PopoverTrigger asChild>
-                          <Button type='button' size='sm' variant='outline' className='h-8'>
+                          <Button type='button' size='sm' variant='outline' className='h-8' disabled={!canEditActiveTask}>
                             Add assignee
                           </Button>
                         </PopoverTrigger>
@@ -3168,6 +3503,7 @@ export function MyTasksPage() {
                                   <button
                                     key={member.id}
                                     type='button'
+                                    disabled={!canEditActiveTask}
                                     onClick={() => {
                                       const nextDraft = {
                                         ...detailDraft,
@@ -3209,6 +3545,7 @@ export function MyTasksPage() {
                               <span className='max-w-28 truncate'>{label}</span>
                               <button
                                 type='button'
+                                disabled={!canEditActiveTask}
                                 onClick={() => {
                                   const nextDraft = {
                                     ...detailDraft,
@@ -3236,6 +3573,7 @@ export function MyTasksPage() {
                       ref={descriptionTextareaRef}
                       rows={6}
                       value={detailDraft.description}
+                      readOnly={!canEditActiveTask}
                       onChange={(event) => {
                         const nextDraft = { ...detailDraft, description: event.target.value }
                         setDetailDraft(nextDraft)
@@ -3328,7 +3666,13 @@ export function MyTasksPage() {
                                     <span className='font-semibold text-foreground'>{comment.author}</span>
                                     <span className='text-muted-foreground'>· {comment.createdAt}</span>
                                   </div>
-                                  <p className='mt-1 whitespace-pre-wrap text-sm leading-5 text-foreground'>{comment.content}</p>
+                                  {comment.content ? <p className='mt-1 whitespace-pre-wrap text-sm leading-5 text-foreground'>{comment.content}</p> : null}
+                                  {comment.voiceDataUrl ? (
+                                    <div className='mt-2 space-y-1'>
+                                      <audio controls src={comment.voiceDataUrl} className='h-8 w-full' />
+                                      <p className='text-[11px] text-muted-foreground'>Voice message · {formatVoiceDuration(comment.voiceDurationMs)}</p>
+                                    </div>
+                                  ) : null}
                                   <div className='mt-2 flex items-center gap-1'>
                                     <button
                                       type='button'
@@ -3420,7 +3764,30 @@ export function MyTasksPage() {
                     </div>
                   </div>
                   <div className='border-t px-3 py-3'>
-                    <div className='flex items-start gap-2'>
+                    <div className='space-y-2'>
+                      {pendingVoiceComment ? (
+                        <div className='rounded-md border bg-background/70 p-2'>
+                          <div className='flex items-center justify-between gap-2'>
+                            <p className='text-xs text-muted-foreground'>Voice message ready · {formatVoiceDuration(pendingVoiceComment.durationMs)}</p>
+                            <button
+                              type='button'
+                              onClick={() =>
+                                setPendingVoiceComment((current) => {
+                                  if (current) URL.revokeObjectURL(current.previewUrl)
+                                  return null
+                                })
+                              }
+                              className='inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground'
+                              aria-label='Remove voice message'
+                            >
+                              <X className='h-3.5 w-3.5' />
+                            </button>
+                          </div>
+                          <audio controls src={pendingVoiceComment.previewUrl} className='mt-1 h-8 w-full' />
+                        </div>
+                      ) : null}
+                      {voiceCommentError ? <p className='text-xs text-rose-300'>{voiceCommentError}</p> : null}
+                    <div className='flex items-center gap-2'>
                       <Avatar className='mt-0.5 h-7 w-7 border'>
                         {activeCommentAuthor.avatarUrl ? <AvatarImage src={activeCommentAuthor.avatarUrl} alt={activeCommentAuthor.name} /> : null}
                         <AvatarFallback className='text-[10px] font-semibold'>{initialsForName(activeCommentAuthor.name)}</AvatarFallback>
@@ -3437,15 +3804,55 @@ export function MyTasksPage() {
                         placeholder='Add a comment...'
                         className='h-9 w-full rounded-full border bg-background px-3 text-sm'
                       />
+                      <Popover open={commentEmojiOpen} onOpenChange={setCommentEmojiOpen}>
+                        <PopoverTrigger asChild>
+                          <Button type='button' size='sm' variant='outline' className='h-9 w-9 shrink-0 rounded-full px-0' aria-label='Add emoji'>
+                            <Smile className='h-4 w-4' />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className='w-auto p-1.5' align='end'>
+                          <div className='flex items-center gap-1'>
+                            {COMMENT_EMOJIS.map((emoji) => (
+                              <button
+                                key={emoji}
+                                type='button'
+                                onClick={() => {
+                                  setCommentDraft((value) => `${value}${emoji}`)
+                                  setCommentEmojiOpen(false)
+                                }}
+                                className='inline-flex h-8 w-8 items-center justify-center rounded-md text-base hover:bg-accent'
+                                aria-label={`Insert ${emoji}`}
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                      <Button
+                        type='button'
+                        size='sm'
+                        variant='outline'
+                        className={cn(
+                          'h-9 w-9 shrink-0 rounded-full px-0',
+                          isRecordingVoiceComment && 'border-rose-500/60 bg-rose-500/10 text-rose-300',
+                        )}
+                        onClick={isRecordingVoiceComment ? stopVoiceCommentRecording : () => void startVoiceCommentRecording()}
+                        aria-label={isRecordingVoiceComment ? 'Stop recording' : 'Record voice message'}
+                      >
+                        {isRecordingVoiceComment ? <Square className='h-4 w-4' /> : <Mic className='h-4 w-4' />}
+                      </Button>
                       <Button
                         type='button'
                         size='sm'
                         className='h-9 w-9 shrink-0 rounded-full px-0'
                         onClick={addCommentToTask}
+                        disabled={!commentDraft.trim() && !pendingVoiceComment}
                         aria-label='Send comment'
                       >
                         <Send className='h-4 w-4' />
                       </Button>
+                    </div>
                     </div>
                   </div>
                 </aside>

@@ -55,6 +55,35 @@ body {
   @apply min-h-screen;
 }
 
+@layer base {
+  select {
+    @apply h-10 w-full rounded-md border border-input bg-background px-3 pr-9 text-sm text-foreground shadow-sm outline-none transition-colors;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-position: right 0.75rem center;
+    background-repeat: no-repeat;
+    background-size: 1rem;
+  }
+
+  select:hover:not(:disabled) {
+    @apply border-ring/40;
+  }
+
+  select:focus-visible {
+    @apply border-ring ring-2 ring-ring/30;
+  }
+
+  select:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  select[multiple] {
+    @apply h-auto pr-3;
+    background-image: none;
+  }
+}
+
 html.theme-transition *,
 html.theme-transition *::before,
 html.theme-transition *::after {

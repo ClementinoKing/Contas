@@ -13,10 +13,11 @@ export function ProjectsPage() {
   useEffect(() => {
     let cancelled = false
 
-    void Promise.all([
-      supabase.from('projects').select('id, name, key, color').order('name', { ascending: true }),
-      supabase.from('tasks').select('id, project_id'),
-    ]).then(([projectsResult, tasksResult]) => {
+    const loadProjects = async () => {
+      const [projectsResult, tasksResult] = await Promise.all([
+        supabase.from('projects').select('id, name, key, color').order('name', { ascending: true }),
+        supabase.from('tasks').select('id, project_id'),
+      ])
       if (cancelled) return
       if (!projectsResult.error && projectsResult.data) {
         setProjects(projectsResult.data)
@@ -29,10 +30,21 @@ export function ProjectsPage() {
         }, {})
         setTaskCounts(counts)
       }
-    })
+    }
+
+    void loadProjects()
+
+    const onRealtimeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ table?: string }>).detail
+      if (!detail?.table) return
+      if (detail.table !== 'projects' && detail.table !== 'tasks') return
+      void loadProjects()
+    }
+    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
 
     return () => {
       cancelled = true
+      window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
     }
   }, [])
 

@@ -7,18 +7,41 @@ import {
   DialogContent,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { useUnreadNotifications } from '@/features/layout/hooks/use-unread-notifications'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { SIDEBAR_SECTIONS } from './navigation-items'
 
 const THEME_STORAGE_KEY = 'contas.ui.theme'
 const THEME_TRANSITION_CLASS = 'theme-transition'
+const SIDEBAR_PROJECTS_CACHE_KEY_PREFIX = 'contas.sidebar.projects.cache.v1'
+
+type SidebarProject = { id: string; name: string; key: string; color: string | null }
+
+function mapSidebarProjects(data: Array<{ id: string; name: string | null; key: string | null; color: string | null }>) {
+  return data.map((project, index) => ({
+    id: project.id,
+    name: project.name ?? `Project ${index + 1}`,
+    key: project.key ?? `P${index + 1}`,
+    color: project.color ?? 'bg-blue-500',
+  }))
+}
 
 function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const navigate = useNavigate()
   const { currentUser, logout } = useAuth()
-  const [projects, setProjects] = useState<Array<{ id: string; name: string; key: string; color: string | null }>>([])
+  const { unreadCount } = useUnreadNotifications()
+  const projectsCacheKey = `${SIDEBAR_PROJECTS_CACHE_KEY_PREFIX}:${currentUser?.id ?? 'anon'}`
+  const [projects, setProjects] = useState<SidebarProject[]>([])
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
     if (storedTheme) {
@@ -34,27 +57,49 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
   useEffect(() => {
     let cancelled = false
 
-    void supabase
-      .from('projects')
-      .select('id, name, key, color')
-      .order('name', { ascending: true })
-      .then(({ data, error }) => {
-        if (cancelled || error || !data) return
+    try {
+      const cached = localStorage.getItem(projectsCacheKey)
+      if (cached) {
+        const parsed = JSON.parse(cached) as SidebarProject[]
+        if (Array.isArray(parsed)) {
+          setProjects(parsed)
+        }
+      }
+    } catch {
+      // Ignore cache parsing errors and continue with live fetch.
+    }
 
-        setProjects(
-          data.map((project, index) => ({
-            id: project.id,
-            name: project.name ?? `Project ${index + 1}`,
-            key: project.key ?? `P${index + 1}`,
-            color: project.color ?? 'bg-blue-500',
-          })),
-        )
-      })
+    const loadProjects = async () => {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('id, name, key, color')
+        .order('name', { ascending: true })
+      if (cancelled || error || !data) return
+
+      const mapped = mapSidebarProjects(data)
+      setProjects(mapped)
+      localStorage.setItem(projectsCacheKey, JSON.stringify(mapped))
+    }
+
+    void loadProjects()
+
+    const onRealtimeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ table?: string }>).detail
+      if (detail?.table !== 'projects') return
+      void loadProjects()
+    }
+    const onProjectCreated = () => {
+      void loadProjects()
+    }
+    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+    window.addEventListener('contas:project-created', onProjectCreated as EventListener)
 
     return () => {
       cancelled = true
+      window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+      window.removeEventListener('contas:project-created', onProjectCreated as EventListener)
     }
-  }, [])
+  }, [projectsCacheKey])
 
   const toggleTheme = () => {
     const nextIsDark = !isDarkMode
@@ -109,6 +154,16 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
               >
                 <item.icon className='h-4 w-4 shrink-0' aria-hidden='true' />
                 <span className={cn('ml-3', collapsed && 'sr-only')}>{item.label}</span>
+                {item.path === '/dashboard/notifications' && unreadCount > 0 ? (
+                  <span
+                    className={cn(
+                      'ml-auto inline-flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold leading-none text-white',
+                      collapsed && 'absolute right-2 top-1.5',
+                    )}
+                  >
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                ) : null}
               </NavLink>
             ))}
           </section>
@@ -128,45 +183,93 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
             </button>
           </div>
 
-          <NavLink
-            to='/dashboard/projects'
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'group flex h-9 items-center rounded-md px-3 text-sm font-medium transition-colors',
-                isActive ? 'bg-primary/10 text-primary' : 'text-foreground/90 hover:bg-accent hover:text-accent-foreground',
-                collapsed && 'justify-center px-0',
-              )
-            }
-            title={collapsed ? 'Projects Hub' : undefined}
-          >
-            <FolderKanban className='h-4 w-4 shrink-0' aria-hidden='true' />
-            <span className={cn('ml-3', collapsed && 'sr-only')}>Projects Hub</span>
-          </NavLink>
-
-          {projects.map((project) => (
+          {collapsed ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type='button'
+                  className='group flex h-9 w-full items-center justify-center rounded-md px-0 text-sm font-medium text-foreground/90 transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                  aria-label='Projects Hub'
+                  title='Projects Hub'
+                >
+                  <FolderKanban className='h-4 w-4 shrink-0' aria-hidden='true' />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side='right' align='start' className='w-72'>
+                <div className='flex items-center justify-between px-1 pb-1'>
+                  <DropdownMenuLabel className='p-0 text-xs uppercase tracking-[0.14em] text-muted-foreground'>Projects</DropdownMenuLabel>
+                  <button
+                    type='button'
+                    onClick={() => {
+                      onNavigate?.()
+                      navigate('/dashboard/projects')
+                    }}
+                    className='text-xs font-medium text-muted-foreground transition-colors hover:text-foreground'
+                  >
+                    View all
+                  </button>
+                </div>
+                <DropdownMenuSeparator />
+                <div className='max-h-72 space-y-1 overflow-auto pr-1'>
+                  {projects.length === 0 ? (
+                    <p className='px-2 py-2 text-xs text-muted-foreground'>No projects in the system.</p>
+                  ) : (
+                    projects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        onSelect={() => {
+                          onNavigate?.()
+                          navigate(`/dashboard/projects/${project.id}`)
+                        }}
+                        className='h-9 px-2.5'
+                      >
+                        <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} aria-hidden='true' />
+                        <span className='ml-2.5 truncate'>{project.name}</span>
+                        <span className='ml-auto text-[10px] text-muted-foreground'>{project.key}</span>
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
             <NavLink
-              key={project.id}
-              to={`/dashboard/projects/${project.id}`}
+              to='/dashboard/projects'
               onClick={onNavigate}
               className={({ isActive }) =>
                 cn(
                   'group flex h-9 items-center rounded-md px-3 text-sm font-medium transition-colors',
                   isActive ? 'bg-primary/10 text-primary' : 'text-foreground/90 hover:bg-accent hover:text-accent-foreground',
-                  collapsed && 'justify-center px-0',
                 )
               }
-              title={collapsed ? project.name : undefined}
+              title='Projects Hub'
             >
-              <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} aria-hidden='true' />
-              <span className={cn('ml-3 truncate', collapsed && 'sr-only')}>{project.name}</span>
-              <span className={cn('ml-auto text-[10px] text-muted-foreground', collapsed && 'sr-only')}>{project.key}</span>
-              <span className={cn('text-[10px] font-semibold', !collapsed && 'hidden')}>{project.key}</span>
+              <FolderKanban className='h-4 w-4 shrink-0' aria-hidden='true' />
+              <span className='ml-3'>Projects Hub</span>
             </NavLink>
-          ))}
-          {projects.length === 0 && !collapsed ? (
-            <p className='px-3 py-1 text-xs text-muted-foreground'>No projects in the system.</p>
-          ) : null}
+          )}
+
+          {!collapsed
+            ? projects.map((project) => (
+                <NavLink
+                  key={project.id}
+                  to={`/dashboard/projects/${project.id}`}
+                  onClick={onNavigate}
+                  className={({ isActive }) =>
+                    cn(
+                      'group flex h-9 items-center rounded-md px-3 text-sm font-medium transition-colors',
+                      isActive ? 'bg-primary/10 text-primary' : 'text-foreground/90 hover:bg-accent hover:text-accent-foreground',
+                    )
+                  }
+                  title={project.name}
+                >
+                  <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} aria-hidden='true' />
+                  <span className='ml-3 truncate'>{project.name}</span>
+                  <span className='ml-auto text-[10px] text-muted-foreground'>{project.key}</span>
+                </NavLink>
+              ))
+            : null}
+          {projects.length === 0 && !collapsed ? <p className='px-3 py-1 text-xs text-muted-foreground'>No projects in the system.</p> : null}
         </section>
       </nav>
 

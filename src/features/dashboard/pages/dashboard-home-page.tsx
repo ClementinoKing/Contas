@@ -22,6 +22,13 @@ type DashboardTask = {
   createdAt: string
 }
 type DashboardProject = { id: string; name: string }
+type DashboardCachePayload = {
+  tasks: DashboardTask[]
+  projects: DashboardProject[]
+  cachedAt: string
+}
+
+const DASHBOARD_HOME_CACHE_KEY_PREFIX = 'contas.dashboard.home.cache.v1'
 
 const TREND_RANGE_OPTIONS: Array<{ key: TrendRange; label: string; days: number }> = [
   { key: '7d', label: '7D', days: 7 },
@@ -36,6 +43,12 @@ function startOfLocalDay(date: Date) {
 function subtractDays(date: Date, days: number) {
   const next = new Date(date)
   next.setDate(next.getDate() - days)
+  return next
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
   return next
 }
 
@@ -65,9 +78,11 @@ function mapTaskStatus(value?: string | null): StatusLabel {
 
 function buildTrendSeries(days: number, range: TrendRange, tasks: DashboardTask[]): TrendPoint[] {
   const today = startOfLocalDay(new Date())
+  const daysBeforeToday = Math.floor(days / 2)
+  const rangeStart = subtractDays(today, daysBeforeToday)
 
   return Array.from({ length: days }, (_, index) => {
-    const date = subtractDays(today, days - index - 1)
+    const date = addDays(rangeStart, index)
     const created = tasks.filter((task) => isSameDay(new Date(task.createdAt), date)).length
     const review = tasks.filter((task) => task.status === 'Review' && task.dueAt && isSameDay(new Date(task.dueAt), date)).length
     const overdue = tasks.filter((task) => {
@@ -102,21 +117,131 @@ function formatDueLabel(value: string | null) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(parsed)
 }
 
+function readDashboardCache(cacheKey: string): DashboardCachePayload | null {
+  try {
+    const raw = localStorage.getItem(cacheKey)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as DashboardCachePayload
+    if (!Array.isArray(parsed.tasks) || !Array.isArray(parsed.projects)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function DashboardHomeSkeleton() {
+  return (
+    <div className='space-y-5'>
+      <section className='grid gap-4 md:grid-cols-2 xl:grid-cols-4' aria-label='Loading key metrics'>
+        {Array.from({ length: 4 }, (_, index) => (
+          <Card key={index} className='rounded-xl'>
+            <CardHeader className='pb-2'>
+              <div className='h-3 w-24 animate-pulse rounded bg-muted/60' />
+              <div className='mt-2 h-8 w-16 animate-pulse rounded bg-muted/60' />
+            </CardHeader>
+            <CardContent className='flex items-center justify-between pt-0'>
+              <div className='h-3 w-40 animate-pulse rounded bg-muted/60' />
+              <div className='h-4 w-4 animate-pulse rounded bg-muted/60' />
+            </CardContent>
+          </Card>
+        ))}
+      </section>
+
+      <section className='grid gap-5 xl:grid-cols-[1.35fr_1fr]'>
+        <Card className='rounded-xl'>
+          <CardHeader className='pb-3'>
+            <div className='h-5 w-32 animate-pulse rounded bg-muted/60' />
+            <div className='mt-2 h-4 w-72 animate-pulse rounded bg-muted/60' />
+          </CardHeader>
+          <CardContent className='space-y-4'>
+            <div className='grid gap-2 sm:grid-cols-3'>
+              {Array.from({ length: 3 }, (_, index) => (
+                <div key={index} className='rounded-md border px-3 py-2'>
+                  <div className='h-3 w-14 animate-pulse rounded bg-muted/60' />
+                  <div className='mt-2 h-6 w-10 animate-pulse rounded bg-muted/60' />
+                </div>
+              ))}
+            </div>
+            <div className='grid h-56 grid-cols-12 items-end gap-2 rounded-lg border bg-muted/10 p-3'>
+              {Array.from({ length: 12 }, (_, index) => (
+                <div key={index} className='flex h-full items-end gap-1'>
+                  <div className='w-2 animate-pulse rounded-sm bg-muted/60' style={{ height: `${30 + ((index * 7) % 50)}%` }} />
+                  <div className='w-2 animate-pulse rounded-sm bg-muted/50' style={{ height: `${20 + ((index * 5) % 45)}%` }} />
+                  <div className='w-2 animate-pulse rounded-sm bg-muted/40' style={{ height: `${15 + ((index * 9) % 40)}%` }} />
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className='rounded-xl'>
+          <CardHeader className='pb-3'>
+            <div className='h-5 w-36 animate-pulse rounded bg-muted/60' />
+            <div className='mt-2 h-4 w-48 animate-pulse rounded bg-muted/60' />
+          </CardHeader>
+          <CardContent className='space-y-4'>
+            <div className='mx-auto h-52 w-52 animate-pulse rounded-full border bg-muted/30' />
+            <div className='space-y-2'>
+              {Array.from({ length: 4 }, (_, index) => (
+                <div key={index} className='h-9 animate-pulse rounded-md border bg-muted/40' />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className='grid gap-5 xl:grid-cols-[1.35fr_1fr]'>
+        <Card className='rounded-xl'>
+          <CardHeader className='pb-3'>
+            <div className='h-5 w-44 animate-pulse rounded bg-muted/60' />
+            <div className='mt-2 h-4 w-64 animate-pulse rounded bg-muted/60' />
+          </CardHeader>
+          <CardContent className='space-y-2'>
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className='h-14 animate-pulse rounded-md border bg-muted/30' />
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card className='rounded-xl'>
+          <CardHeader className='pb-3'>
+            <div className='h-5 w-28 animate-pulse rounded bg-muted/60' />
+            <div className='mt-2 h-4 w-56 animate-pulse rounded bg-muted/60' />
+          </CardHeader>
+          <CardContent className='space-y-2'>
+            <div className='h-10 animate-pulse rounded-md border bg-muted/40' />
+            <div className='h-10 animate-pulse rounded-md border bg-muted/40' />
+          </CardContent>
+        </Card>
+      </section>
+    </div>
+  )
+}
+
 export function DashboardHomePage() {
   const { currentOrganization } = useOrganization()
   const [trendRange, setTrendRange] = useState<TrendRange>('30d')
-  const [tasks, setTasks] = useState<DashboardTask[]>([])
-  const [projects, setProjects] = useState<DashboardProject[]>([])
+  const cacheKey = `${DASHBOARD_HOME_CACHE_KEY_PREFIX}:${currentOrganization.id}`
+  const [tasks, setTasks] = useState<DashboardTask[]>(() => {
+    const cached = readDashboardCache(cacheKey)
+    return cached?.tasks ?? []
+  })
+  const [projects, setProjects] = useState<DashboardProject[]>(() => {
+    const cached = readDashboardCache(cacheKey)
+    return cached?.projects ?? []
+  })
+  const [loading, setLoading] = useState(() => tasks.length === 0 && projects.length === 0)
 
   useEffect(() => {
     let cancelled = false
 
-    void Promise.all([
-      supabase.from('projects').select('id, name').order('name', { ascending: true }),
-      supabase.from('profiles').select('id, full_name, email'),
-      supabase.from('tasks').select('id, title, status, project_id, assigned_to, due_at, created_at').order('created_at', { ascending: false }),
-      supabase.from('task_assignees').select('task_id, assignee_id'),
-    ]).then(([projectsResult, profilesResult, tasksResult, taskAssigneesResult]) => {
+    const loadDashboard = async () => {
+      const [projectsResult, profilesResult, tasksResult, taskAssigneesResult] = await Promise.all([
+        supabase.from('projects').select('id, name').order('name', { ascending: true }),
+        supabase.from('profiles').select('id, full_name, email'),
+        supabase.from('tasks').select('id, title, status, project_id, assigned_to, due_at, created_at').order('created_at', { ascending: false }),
+        supabase.from('task_assignees').select('task_id, assignee_id'),
+      ])
       if (cancelled) return
 
       const nextProjects = (projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
@@ -131,27 +256,50 @@ export function DashboardHomePage() {
         assigneeIdsByTaskId.set(row.task_id, current)
       }
 
+      const nextTasks: DashboardTask[] = (tasksResult.data ?? []).map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: mapTaskStatus(task.status),
+        projectId: task.project_id ?? '',
+        projectName: projectMap.get(task.project_id ?? '') ?? 'Unassigned project',
+        owners: (assigneeIdsByTaskId.get(task.id) ?? (task.assigned_to ? [task.assigned_to] : []))
+          .map((assigneeId) => profileMap.get(assigneeId))
+          .filter((owner): owner is string => Boolean(owner)),
+        dueAt: task.due_at ?? null,
+        createdAt: task.created_at ?? new Date().toISOString(),
+      }))
+
       setProjects(nextProjects)
-      setTasks(
-        (tasksResult.data ?? []).map((task) => ({
-          id: task.id,
-          title: task.title,
-          status: mapTaskStatus(task.status),
-          projectId: task.project_id ?? '',
-          projectName: projectMap.get(task.project_id ?? '') ?? 'Unassigned project',
-          owners: (assigneeIdsByTaskId.get(task.id) ?? (task.assigned_to ? [task.assigned_to] : []))
-            .map((assigneeId) => profileMap.get(assigneeId))
-            .filter((owner): owner is string => Boolean(owner)),
-          dueAt: task.due_at ?? null,
-          createdAt: task.created_at ?? new Date().toISOString(),
-        })),
+      setTasks(nextTasks)
+      localStorage.setItem(
+        cacheKey,
+        JSON.stringify({
+          projects: nextProjects,
+          tasks: nextTasks,
+          cachedAt: new Date().toISOString(),
+        } satisfies DashboardCachePayload),
       )
-    })
+      setLoading(false)
+    }
+
+    void loadDashboard()
+
+    const onRealtimeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ table?: string }>).detail
+      if (!detail?.table || !['tasks', 'task_assignees', 'projects', 'profiles'].includes(detail.table)) return
+      void loadDashboard()
+    }
+    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
 
     return () => {
       cancelled = true
+      window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
     }
-  }, [])
+  }, [cacheKey])
+
+  if (loading) {
+    return <DashboardHomeSkeleton />
+  }
 
   const totalTasks = tasks.length
   const totalProjects = projects.length
@@ -229,6 +377,22 @@ export function DashboardHomePage() {
   const reviewTotal = trendSeries.reduce((sum, point) => sum + point.review, 0)
   const overdueTotal = trendSeries.reduce((sum, point) => sum + point.overdue, 0)
   const trendMax = Math.max(...trendSeries.map((point) => Math.max(point.created, point.review, point.overdue)), 1)
+  const trendLabelStep = trendRange === '90d' ? 7 : 1
+  const trendPeak = trendSeries.reduce<{ label: string; total: number }>(
+    (peak, point) => {
+      const total = point.created + point.review + point.overdue
+      if (total > peak.total) return { label: point.label, total }
+      return peak
+    },
+    { label: trendSeries[0]?.label ?? '-', total: 0 },
+  )
+  const perPointWidth = trendRange === '30d' ? 42 : trendRange === '7d' ? 52 : 26
+  const trendChartMinWidth = Math.max(680, trendSeries.length * perPointWidth)
+  const trendChartHeight = 224
+  const trendChartPaddingX = 20
+  const trendChartPaddingTop = 16
+  const trendChartPaddingBottom = 32
+  const trendChartUsableHeight = trendChartHeight - trendChartPaddingTop - trendChartPaddingBottom
 
   return (
     <div className='space-y-5'>
@@ -279,23 +443,25 @@ export function DashboardHomePage() {
       </section>
 
       <section className='grid gap-5 xl:grid-cols-[1.35fr_1fr]'>
-        <Card className='rounded-xl'>
-          <CardHeader className='pb-3'>
+        <Card className='overflow-hidden rounded-xl border-border/70 bg-card/95'>
+          <CardHeader className='pb-4'>
             <div className='flex flex-wrap items-center justify-between gap-3'>
               <div>
-                <CardTitle>Task Trend</CardTitle>
-                <CardDescription>Created, review-stage, and overdue tasks from the database</CardDescription>
+                <CardTitle className='text-xl'>Task Trend</CardTitle>
+                <CardDescription className='mt-1'>
+                  Created, review-stage, and overdue flow across the selected window
+                </CardDescription>
               </div>
-              <div className='inline-flex rounded-md border bg-muted/20 p-1'>
+              <div className='inline-flex rounded-lg border bg-muted/20 p-1'>
                 {TREND_RANGE_OPTIONS.map((option) => (
                   <button
                     key={option.key}
                     type='button'
                     onClick={() => setTrendRange(option.key)}
                     className={cn(
-                      'rounded-sm px-3 py-1 text-xs font-medium transition-colors',
+                      'rounded-md px-3 py-1.5 text-xs font-semibold tracking-wide transition-all',
                       trendRange === option.key
-                        ? 'bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                        ? 'bg-background text-foreground shadow-sm'
                         : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                     )}
                   >
@@ -305,45 +471,120 @@ export function DashboardHomePage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className='space-y-4'>
-            <div className='grid gap-2 sm:grid-cols-3'>
-              <div className='rounded-md border px-3 py-2'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>Created</p>
-                <p className='text-lg font-semibold text-foreground'>{createdTotal}</p>
+          <CardContent className='space-y-5'>
+            <div className='grid gap-2.5 sm:grid-cols-3'>
+              <div className='rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2.5'>
+                <p className='text-[11px] uppercase tracking-wide text-muted-foreground'>Created</p>
+                <p className='mt-1 text-xl font-semibold text-foreground'>{createdTotal}</p>
               </div>
-              <div className='rounded-md border px-3 py-2'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>Review</p>
-                <p className='text-lg font-semibold text-foreground'>{reviewTotal}</p>
+              <div className='rounded-lg border border-emerald-400/20 bg-emerald-400/5 px-3 py-2.5'>
+                <p className='text-[11px] uppercase tracking-wide text-muted-foreground'>Review</p>
+                <p className='mt-1 text-xl font-semibold text-foreground'>{reviewTotal}</p>
               </div>
-              <div className='rounded-md border px-3 py-2'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>Overdue</p>
-                <p className='text-lg font-semibold text-foreground'>{overdueTotal}</p>
+              <div className='rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2.5'>
+                <p className='text-[11px] uppercase tracking-wide text-muted-foreground'>Overdue</p>
+                <p className='mt-1 text-xl font-semibold text-foreground'>{overdueTotal}</p>
               </div>
             </div>
 
-            <div className='grid h-56 grid-cols-12 items-end gap-2 rounded-lg border bg-muted/10 p-3'>
-              {trendSeries.map((point) => (
-                <div key={point.label} className='flex h-full min-w-0 flex-col items-center justify-end gap-1'>
-                  <div className='flex h-full items-end gap-1'>
-                    <div className='w-2 rounded-sm bg-[#60A5FA]' style={{ height: `${(point.created / trendMax) * 100}%` }} />
-                    <div className='w-2 rounded-sm bg-[#34D399]' style={{ height: `${(point.review / trendMax) * 100}%` }} />
-                    <div className='w-2 rounded-sm bg-[#FB7185]' style={{ height: `${(point.overdue / trendMax) * 100}%` }} />
-                  </div>
-                  <span className='text-[10px] text-muted-foreground'>{point.label}</span>
-                </div>
-              ))}
+            <div className='rounded-xl border bg-gradient-to-b from-muted/20 to-transparent p-3'>
+              <div className='mb-3 flex items-center justify-between'>
+                <p className='text-xs text-muted-foreground'>Peak activity: {trendPeak.label}</p>
+                <Badge variant='outline' className='rounded-full text-[11px] font-medium'>
+                  {trendPeak.total} tasks
+                </Badge>
+              </div>
+              <div className='overflow-x-auto'>
+                <svg
+                  className='h-56 w-full min-w-[680px]'
+                  style={{ minWidth: `${trendChartMinWidth}px` }}
+                  viewBox={`0 0 ${trendChartMinWidth} ${trendChartHeight}`}
+                  role='img'
+                  aria-label='Grouped bar chart for created, review, and overdue tasks'
+                >
+                  {Array.from({ length: 4 }, (_, index) => {
+                    const y = trendChartPaddingTop + (trendChartUsableHeight / 3) * index
+                    return (
+                      <line
+                        key={`grid-${index}`}
+                        x1={trendChartPaddingX}
+                        y1={y}
+                        x2={trendChartMinWidth - trendChartPaddingX}
+                        y2={y}
+                        stroke='hsl(var(--border))'
+                        strokeOpacity='0.4'
+                      />
+                    )
+                  })}
+
+                  {trendSeries.map((point, index) => {
+                    const count = trendSeries.length
+                    const plotWidth = trendChartMinWidth - trendChartPaddingX * 2
+                    const groupWidth = plotWidth / count
+                    const barWidth = Math.max(2, Math.min(4, groupWidth / 5))
+                    const gap = 1.5
+                    const groupStartX = trendChartPaddingX + index * groupWidth + (groupWidth - (barWidth * 3 + gap * 2)) / 2
+
+                    const createdHeight = (point.created / trendMax) * trendChartUsableHeight
+                    const reviewHeight = (point.review / trendMax) * trendChartUsableHeight
+                    const overdueHeight = (point.overdue / trendMax) * trendChartUsableHeight
+
+                    return (
+                      <g key={`${point.label}-${index}`}>
+                        <rect
+                          x={groupStartX}
+                          y={trendChartPaddingTop + (trendChartUsableHeight - createdHeight)}
+                          width={barWidth}
+                          height={createdHeight}
+                          rx={1.5}
+                          fill='#60A5FA'
+                        />
+                        <rect
+                          x={groupStartX + barWidth + gap}
+                          y={trendChartPaddingTop + (trendChartUsableHeight - reviewHeight)}
+                          width={barWidth}
+                          height={reviewHeight}
+                          rx={1.5}
+                          fill='#34D399'
+                        />
+                        <rect
+                          x={groupStartX + (barWidth + gap) * 2}
+                          y={trendChartPaddingTop + (trendChartUsableHeight - overdueHeight)}
+                          width={barWidth}
+                          height={overdueHeight}
+                          rx={1.5}
+                          fill='#FB7185'
+                        />
+                        {(index % trendLabelStep === 0 || index === trendSeries.length - 1) && (
+                          <text
+                            x={trendChartPaddingX + index * groupWidth + groupWidth / 2}
+                            y={trendChartHeight - 8}
+                            textAnchor='middle'
+                            fontSize='9'
+                            fill='hsl(var(--muted-foreground))'
+                          >
+                            {trendRange === '30d'
+                              ? new Intl.DateTimeFormat('en-US', { day: 'numeric' }).format(point.date)
+                              : point.label}
+                          </text>
+                        )}
+                      </g>
+                    )
+                  })}
+                </svg>
+              </div>
             </div>
 
-            <div className='mt-2 flex flex-wrap items-center gap-4 text-xs text-muted-foreground'>
-              <span className='inline-flex items-center gap-2'>
+            <div className='mt-1 flex flex-wrap items-center gap-3 text-xs text-muted-foreground'>
+              <span className='inline-flex items-center gap-2 rounded-full border bg-muted/20 px-2 py-1'>
                 <span className='h-2.5 w-2.5 rounded-full bg-[#60A5FA]' />
                 Created
               </span>
-              <span className='inline-flex items-center gap-2'>
+              <span className='inline-flex items-center gap-2 rounded-full border bg-muted/20 px-2 py-1'>
                 <span className='h-2.5 w-2.5 rounded-full bg-[#34D399]' />
                 Review
               </span>
-              <span className='inline-flex items-center gap-2'>
+              <span className='inline-flex items-center gap-2 rounded-full border bg-muted/20 px-2 py-1'>
                 <span className='h-2.5 w-2.5 rounded-full bg-[#FB7185]' />
                 Overdue
               </span>

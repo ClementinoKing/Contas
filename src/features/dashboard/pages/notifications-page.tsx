@@ -1,13 +1,16 @@
 import { Bell, CheckCheck, Filter, MessageSquareText, ShieldAlert, UserRound } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useAuth } from '@/features/auth/context/auth-context'
+import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 type NotificationType = 'mention' | 'task' | 'system'
 type NotificationFilter = 'all' | 'unread' | 'mentions' | 'system'
+const NOTIFICATIONS_CACHE_KEY = 'contas.notifications.cache.v1'
 
 type NotificationItem = {
   id: string
@@ -25,48 +28,19 @@ const FILTERS: Array<{ key: NotificationFilter; label: string }> = [
   { key: 'system', label: 'System' },
 ]
 
-const INITIAL_NOTIFICATIONS: NotificationItem[] = [
-  {
-    id: 'n1',
-    title: 'Lina mentioned you in Atlas Revamp',
-    message: '@Clement please review the updated API milestones before standup.',
-    time: '2 min ago',
-    type: 'mention',
-    read: false,
-  },
-  {
-    id: 'n2',
-    title: 'Task moved to Review',
-    message: 'Review API contract updates was moved to Review by James.',
-    time: '18 min ago',
-    type: 'task',
-    read: false,
-  },
-  {
-    id: 'n3',
-    title: 'Organization security reminder',
-    message: 'Enable two-factor authentication for all admins before Friday.',
-    time: '1 hour ago',
-    type: 'system',
-    read: true,
-  },
-  {
-    id: 'n4',
-    title: 'Task due tomorrow',
-    message: 'Update onboarding checklist is due tomorrow.',
-    time: '3 hours ago',
-    type: 'task',
-    read: true,
-  },
-  {
-    id: 'n5',
-    title: 'Noah mentioned you in Sprint Notes',
-    message: 'Can you confirm release scope changes in today’s recap?',
-    time: 'Yesterday',
-    type: 'mention',
-    read: false,
-  },
-]
+function relativeTimeLabel(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Just now'
+  const diffMs = Date.now() - date.getTime()
+  const diffMinutes = Math.floor(diffMs / (1000 * 60))
+  if (diffMinutes < 1) return 'Just now'
+  if (diffMinutes < 60) return `${diffMinutes} min ago`
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date)
+}
 
 function NotificationIcon({ type }: { type: NotificationType }) {
   if (type === 'mention') return <UserRound className='h-4 w-4 text-blue-400' aria-hidden='true' />
@@ -75,8 +49,61 @@ function NotificationIcon({ type }: { type: NotificationType }) {
 }
 
 export function NotificationsPage() {
+  const { currentUser } = useAuth()
   const [filter, setFilter] = useState<NotificationFilter>('all')
-  const [items, setItems] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS)
+  const [items, setItems] = useState<NotificationItem[]>(() => {
+    const raw = localStorage.getItem(NOTIFICATIONS_CACHE_KEY)
+    if (!raw) return []
+    try {
+      return JSON.parse(raw) as NotificationItem[]
+    } catch {
+      return []
+    }
+  })
+  const [loading, setLoading] = useState(() => items.length === 0)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const fetchNotifications = async () => {
+      const { data, error } = await supabase
+      .from('notifications')
+      .select('id, title, message, type, read_at, created_at')
+      .order('created_at', { ascending: false })
+      if (cancelled) return
+      if (error) {
+        console.error('Failed to load notifications', error)
+        setLoading(false)
+        return
+      }
+
+      const mapped: NotificationItem[] = (data ?? []).map((row) => ({
+        id: row.id,
+        title: row.title,
+        message: row.message,
+        time: relativeTimeLabel(row.created_at),
+        type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
+        read: Boolean(row.read_at),
+      }))
+      setItems(mapped)
+      localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(mapped))
+      setLoading(false)
+    }
+
+    void fetchNotifications()
+
+    const onRealtimeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ table?: string }>).detail
+      if (detail?.table !== 'notifications') return
+      void fetchNotifications()
+    }
+    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+    }
+  }, [currentUser?.id])
 
   const unreadCount = useMemo(() => items.filter((item) => !item.read).length, [items])
 
@@ -87,14 +114,50 @@ export function NotificationsPage() {
     return items.filter((item) => item.type === 'system')
   }, [filter, items])
 
-  const markAllRead = () => {
-    setItems((current) => current.map((item) => ({ ...item, read: true })))
+  const markAllRead = async () => {
+    const now = new Date().toISOString()
+    const unreadIds = items.filter((item) => !item.read).map((item) => item.id)
+    if (unreadIds.length === 0) return
+
+    setItems((current) => {
+      const next = current.map((item) => ({ ...item, read: true }))
+      localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+      return next
+    })
+    const { error } = await supabase.from('notifications').update({ read_at: now }).in('id', unreadIds)
+    if (error) {
+      console.error('Failed to mark all notifications as read', error)
+      setItems((current) => {
+        const next = current.map((item) => (unreadIds.includes(item.id) ? { ...item, read: false } : item))
+        localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+        return next
+      })
+    }
   }
 
-  const toggleRead = (id: string) => {
-    setItems((current) =>
-      current.map((item) => (item.id === id ? { ...item, read: !item.read } : item)),
-    )
+  const toggleRead = async (id: string) => {
+    const currentItem = items.find((item) => item.id === id)
+    if (!currentItem) return
+    const nextRead = !currentItem.read
+
+    setItems((current) => {
+      const next = current.map((item) => (item.id === id ? { ...item, read: nextRead } : item))
+      localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+      return next
+    })
+    const { error } = await supabase
+      .from('notifications')
+      .update({ read_at: nextRead ? new Date().toISOString() : null })
+      .eq('id', id)
+
+    if (error) {
+      console.error('Failed to toggle notification read state', error)
+      setItems((current) => {
+        const next = current.map((item) => (item.id === id ? { ...item, read: currentItem.read } : item))
+        localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+        return next
+      })
+    }
   }
 
   return (
@@ -138,11 +201,17 @@ export function NotificationsPage() {
           <CardDescription>Keep up with mentions, task updates, and organization alerts.</CardDescription>
         </CardHeader>
         <CardContent className='space-y-2'>
-          {visibleItems.length === 0 ? (
+          {loading ? (
+            <div className='rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground'>
+              Loading notifications...
+            </div>
+          ) : null}
+          {!loading && visibleItems.length === 0 ? (
             <div className='rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground'>
               No notifications in this filter.
             </div>
-          ) : (
+          ) : null}
+          {!loading ? (
             visibleItems.map((item) => (
               <article
                 key={item.id}
@@ -179,7 +248,7 @@ export function NotificationsPage() {
                 </div>
               </article>
             ))
-          )}
+          ) : null}
         </CardContent>
       </Card>
 

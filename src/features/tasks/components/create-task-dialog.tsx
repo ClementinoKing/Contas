@@ -196,6 +196,26 @@ export function CreateTaskDialog({
         if (assigneesError) {
           throw assigneesError
         }
+
+        if (currentUser?.id) {
+          const recipients = assigneeIds.filter((assigneeId) => assigneeId !== currentUser.id)
+          if (recipients.length > 0) {
+            const notifications = recipients.map((recipientId) => ({
+              recipient_id: recipientId,
+              actor_id: currentUser.id,
+              task_id: data.id,
+              type: 'task' as const,
+              title: 'New task assigned to you',
+              message: `You were assigned "${data.title}".`,
+              metadata: { event: 'task_assigned', source: 'task_create' },
+            }))
+
+            const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+            if (notificationsError) {
+              console.error('Failed to create assignment notifications', notificationsError)
+            }
+          }
+        }
       }
 
       const selectedAssigneeNames = assigneeIds

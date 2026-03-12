@@ -1,5 +1,5 @@
-import { Bell, CirclePlus, Goal, HelpCircle, Layers, Menu, MessageSquarePlus, Search, UserPlus2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { Bell, CheckCheck, CirclePlus, Goal, HelpCircle, Layers, Menu, MessageSquarePlus, Search, ShieldAlert, UserPlus2, UserRound } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -16,9 +16,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { useUnreadNotifications } from '@/features/layout/hooks/use-unread-notifications'
 import { Input } from '@/components/ui/input'
 import { CreateTaskDialog } from '@/features/tasks/components/create-task-dialog'
 import { supabase } from '@/lib/supabase'
@@ -58,6 +61,37 @@ type ProjectOwnerOption = {
   name: string
 }
 
+type HeaderNotificationType = 'mention' | 'task' | 'system'
+
+type HeaderNotificationItem = {
+  id: string
+  title: string
+  message: string
+  createdAt: string
+  type: HeaderNotificationType
+  read: boolean
+}
+
+function notificationTimeLabel(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Just now'
+  const diffMs = Date.now() - date.getTime()
+  const diffMinutes = Math.floor(diffMs / (1000 * 60))
+  if (diffMinutes < 1) return 'Just now'
+  if (diffMinutes < 60) return `${diffMinutes}m`
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours}h`
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) return `${diffDays}d`
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date)
+}
+
+function HeaderNotificationTypeIcon({ type }: { type: HeaderNotificationType }) {
+  if (type === 'mention') return <UserRound className='h-3.5 w-3.5 text-blue-400' aria-hidden='true' />
+  if (type === 'system') return <ShieldAlert className='h-3.5 w-3.5 text-amber-400' aria-hidden='true' />
+  return <Bell className='h-3.5 w-3.5 text-emerald-400' aria-hidden='true' />
+}
+
 function generateProjectKey(name: string) {
   const letters = name
     .trim()
@@ -80,6 +114,7 @@ export function AppHeader({
 }) {
   const navigate = useNavigate()
   const { currentUser } = useAuth()
+  const { unreadCount } = useUnreadNotifications()
 
   const [createTaskOpen, setCreateTaskOpen] = useState(false)
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
@@ -95,6 +130,38 @@ export function AppHeader({
   const [projectOwners, setProjectOwners] = useState<ProjectOwnerOption[]>([])
   const [projectSubmitError, setProjectSubmitError] = useState<string | null>(null)
   const [projectSubmitting, setProjectSubmitting] = useState(false)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [notificationsLoading, setNotificationsLoading] = useState(false)
+  const [notificationItems, setNotificationItems] = useState<HeaderNotificationItem[]>([])
+
+  const fetchNotificationItems = useCallback(async () => {
+    if (!currentUser?.id) return
+
+    setNotificationsLoading(true)
+    const { data, error } = await supabase
+      .from('notifications')
+      .select('id, title, message, type, read_at, created_at')
+      .order('created_at', { ascending: false })
+      .limit(8)
+
+    if (error) {
+      console.error('Failed to load header notifications', error)
+      setNotificationsLoading(false)
+      return
+    }
+
+    setNotificationItems(
+      (data ?? []).map((row) => ({
+        id: row.id,
+        title: row.title,
+        message: row.message,
+        createdAt: row.created_at,
+        type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
+        read: Boolean(row.read_at),
+      })),
+    )
+    setNotificationsLoading(false)
+  }, [currentUser?.id])
 
   const resetProjectFlow = () => {
     setProjectStep(1)
@@ -147,10 +214,56 @@ export function AppHeader({
     }
   }, [createProjectOpen, currentUser?.id, projectOwner, projectOwners.length])
 
+  useEffect(() => {
+    if (!currentUser?.id) return
+    void fetchNotificationItems()
+  }, [currentUser?.id, fetchNotificationItems])
+
+  useEffect(() => {
+    const onRealtimeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ table?: string }>).detail
+      if (detail?.table !== 'notifications') return
+      void fetchNotificationItems()
+    }
+    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+
+    return () => {
+      window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+    }
+  }, [fetchNotificationItems])
+
   const selectedOwnerLabel = useMemo(
     () => projectOwners.find((owner) => owner.id === projectOwner)?.name ?? projectOwner,
     [projectOwner, projectOwners],
   )
+
+  const unreadPreviewCount = useMemo(() => notificationItems.filter((item) => !item.read).length, [notificationItems])
+
+  const markNotificationRead = async (id: string, read: boolean) => {
+    setNotificationItems((current) => current.map((item) => (item.id === id ? { ...item, read } : item)))
+    const { error } = await supabase
+      .from('notifications')
+      .update({ read_at: read ? new Date().toISOString() : null })
+      .eq('id', id)
+
+    if (error) {
+      console.error('Failed to update notification state', error)
+      setNotificationItems((current) => current.map((item) => (item.id === id ? { ...item, read: !read } : item)))
+    }
+  }
+
+  const markAllNotificationsRead = async () => {
+    const unreadIds = notificationItems.filter((item) => !item.read).map((item) => item.id)
+    if (unreadIds.length === 0) return
+
+    const nowIso = new Date().toISOString()
+    setNotificationItems((current) => current.map((item) => ({ ...item, read: true })))
+    const { error } = await supabase.from('notifications').update({ read_at: nowIso }).in('id', unreadIds)
+    if (error) {
+      console.error('Failed to mark all notifications read', error)
+      setNotificationItems((current) => current.map((item) => (unreadIds.includes(item.id) ? { ...item, read: false } : item)))
+    }
+  }
 
   const handleCreateProject = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -198,6 +311,7 @@ export function AppHeader({
     }
 
     sessionStorage.setItem('contas.projects.last-created-id', data.id)
+    window.dispatchEvent(new CustomEvent('contas:project-created', { detail: { projectId: data.id } }))
     handleProjectModalChange(false)
     navigate(`/dashboard/projects/${data.id}`)
   }
@@ -263,9 +377,89 @@ export function AppHeader({
             <Button variant='ghost' size='icon' aria-label='Help center'>
               <HelpCircle className='h-5 w-5' aria-hidden='true' />
             </Button>
-            <Button variant='ghost' size='icon' aria-label='Notifications'>
-              <Bell className='h-5 w-5' aria-hidden='true' />
-            </Button>
+            <DropdownMenu open={notificationsOpen} onOpenChange={setNotificationsOpen}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant='ghost'
+                  size='icon'
+                  aria-label={unreadCount > 0 ? `${unreadCount} unread notifications` : 'Notifications'}
+                  className='relative'
+                >
+                  <Bell className='h-5 w-5' aria-hidden='true' />
+                  {unreadCount > 0 ? (
+                    <span className='absolute right-1 top-1 inline-flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold leading-none text-white'>
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
+                  ) : null}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end' className='w-[360px] p-0'>
+                <div className='flex items-center justify-between border-b px-3 py-2'>
+                  <DropdownMenuLabel className='p-0'>Notifications</DropdownMenuLabel>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='sm'
+                    className='h-7 px-2 text-xs'
+                    onClick={() => void markAllNotificationsRead()}
+                    disabled={unreadPreviewCount === 0}
+                  >
+                    <CheckCheck className='mr-1 h-3.5 w-3.5' aria-hidden='true' />
+                    Mark all read
+                  </Button>
+                </div>
+                <div className='max-h-[420px] space-y-1 overflow-y-auto p-1'>
+                  {notificationsLoading ? (
+                    <div className='px-2 py-6 text-center text-sm text-muted-foreground'>Loading notifications...</div>
+                  ) : null}
+                  {!notificationsLoading && notificationItems.length === 0 ? (
+                    <div className='px-2 py-6 text-center text-sm text-muted-foreground'>No notifications yet.</div>
+                  ) : null}
+                  {!notificationsLoading
+                    ? notificationItems.map((item) => (
+                        <button
+                          key={item.id}
+                          type='button'
+                          onClick={() => {
+                            if (!item.read) {
+                              void markNotificationRead(item.id, true)
+                            }
+                            setNotificationsOpen(false)
+                            navigate('/dashboard/notifications')
+                          }}
+                          className={`w-full rounded-md border px-2.5 py-2 text-left transition-colors ${item.read ? 'bg-muted/10 hover:bg-muted/20' : 'border-primary/30 bg-primary/5 hover:bg-primary/10'}`}
+                        >
+                          <div className='flex items-start gap-2'>
+                            <div className='mt-0.5 rounded-md border bg-background p-1'>
+                              <HeaderNotificationTypeIcon type={item.type} />
+                            </div>
+                            <div className='min-w-0 flex-1 space-y-0.5'>
+                              <div className='flex items-start justify-between gap-2'>
+                                <p className='truncate text-sm font-semibold text-foreground'>{item.title}</p>
+                                <span className='shrink-0 text-[11px] text-muted-foreground'>{notificationTimeLabel(item.createdAt)}</span>
+                              </div>
+                              <p className='line-clamp-2 text-xs text-muted-foreground'>{item.message}</p>
+                            </div>
+                          </div>
+                        </button>
+                      ))
+                    : null}
+                </div>
+                <DropdownMenuSeparator className='my-0' />
+                <div className='p-1'>
+                  <DropdownMenuItem
+                    onSelect={(event) => {
+                      event.preventDefault()
+                      setNotificationsOpen(false)
+                      navigate('/dashboard/notifications')
+                    }}
+                    className='justify-center text-sm font-medium'
+                  >
+                    View all notifications
+                  </DropdownMenuItem>
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <AccountMenu />
           </div>
         </div>
