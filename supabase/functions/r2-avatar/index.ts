@@ -79,7 +79,18 @@ Deno.serve(async (req) => {
     return json({ error: 'Missing bearer token.' }, 401)
   }
 
-  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  const requestApiKey = req.headers.get('apikey')?.trim()
+  const supabaseKey = requestApiKey || supabaseAnonKey
+  if (!supabaseKey) {
+    log('error', 'auth_missing_supabase_key', {
+      method: req.method,
+      hasRequestApiKey: Boolean(requestApiKey),
+      hasEnvAnonKey: Boolean(supabaseAnonKey),
+    })
+    return json({ error: 'Missing Supabase API key for auth validation.' }, 500)
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseKey, {
     global: {
       headers: {
         Authorization: `Bearer ${accessToken}`,

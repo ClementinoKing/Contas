@@ -1,10 +1,12 @@
-import { Bell, CheckCheck, Filter, MessageSquareText, ShieldAlert, UserRound } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { AtSign, Bell, CheckCheck, Filter, MessageSquareText, ShieldAlert } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { openTaskDetailsModal } from '@/features/tasks/lib/open-task-details-modal'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -16,6 +18,7 @@ type NotificationItem = {
   id: string
   title: string
   message: string
+  taskId?: string
   time: string
   type: NotificationType
   read: boolean
@@ -43,12 +46,14 @@ function relativeTimeLabel(value: string) {
 }
 
 function NotificationIcon({ type }: { type: NotificationType }) {
-  if (type === 'mention') return <UserRound className='h-4 w-4 text-blue-400' aria-hidden='true' />
+  if (type === 'mention') return <AtSign className='h-4 w-4 text-blue-400' aria-hidden='true' />
   if (type === 'system') return <ShieldAlert className='h-4 w-4 text-amber-400' aria-hidden='true' />
   return <MessageSquareText className='h-4 w-4 text-emerald-400' aria-hidden='true' />
 }
 
 export function NotificationsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const handledNotificationRedirectRef = useRef<string | null>(null)
   const { currentUser } = useAuth()
   const [filter, setFilter] = useState<NotificationFilter>('all')
   const [items, setItems] = useState<NotificationItem[]>(() => {
@@ -68,7 +73,7 @@ export function NotificationsPage() {
     const fetchNotifications = async () => {
       const { data, error } = await supabase
       .from('notifications')
-      .select('id, title, message, type, read_at, created_at')
+      .select('id, title, message, task_id, type, read_at, created_at')
       .order('created_at', { ascending: false })
       if (cancelled) return
       if (error) {
@@ -81,6 +86,7 @@ export function NotificationsPage() {
         id: row.id,
         title: row.title,
         message: row.message,
+        taskId: row.task_id ?? undefined,
         time: relativeTimeLabel(row.created_at),
         type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
         read: Boolean(row.read_at),
@@ -160,6 +166,84 @@ export function NotificationsPage() {
     }
   }
 
+  const cacheNotificationItems = (next: NotificationItem[]) => {
+    localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+  }
+
+  const markReadInBackground = (id: string) => {
+    setItems((current) => {
+      const next = current.map((item) => (item.id === id ? { ...item, read: true } : item))
+      cacheNotificationItems(next)
+      return next
+    })
+    void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id)
+  }
+
+  const resolveTaskId = async (item: NotificationItem) => {
+    if (item.taskId) return item.taskId
+    const { data, error } = await supabase.from('notifications').select('task_id').eq('id', item.id).single()
+    if (error) {
+      console.error('Failed to resolve notification task id', error)
+      return null
+    }
+    const resolvedTaskId = data?.task_id ?? null
+    if (!resolvedTaskId) return null
+
+    setItems((current) => {
+      const next = current.map((entry) => (entry.id === item.id ? { ...entry, taskId: resolvedTaskId } : entry))
+      cacheNotificationItems(next)
+      return next
+    })
+    return resolvedTaskId
+  }
+
+  const openNotificationTask = async (item: NotificationItem) => {
+    if (!item.read) {
+      markReadInBackground(item.id)
+    }
+    const taskId = item.taskId ?? (await resolveTaskId(item))
+    if (!taskId) return
+    openTaskDetailsModal(taskId)
+  }
+
+  useEffect(() => {
+    const redirectNotificationId = searchParams.get('openNotificationId')
+    const redirectTaskId = searchParams.get('openTaskId')
+    if (!redirectNotificationId && !redirectTaskId) {
+      handledNotificationRedirectRef.current = null
+      return
+    }
+    const redirectKey = `${redirectNotificationId ?? 'none'}:${redirectTaskId ?? 'none'}`
+    if (handledNotificationRedirectRef.current === redirectKey) return
+
+    if (redirectTaskId) {
+      handledNotificationRedirectRef.current = redirectKey
+      if (redirectNotificationId) {
+        markReadInBackground(redirectNotificationId)
+      }
+      openTaskDetailsModal(redirectTaskId)
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.delete('openNotificationId')
+      nextParams.delete('openTaskId')
+      setSearchParams(nextParams, { replace: true })
+      return
+    }
+
+    if (loading) return
+
+    const fromList = redirectNotificationId ? items.find((item) => item.id === redirectNotificationId) : undefined
+    const target: NotificationItem | null = fromList ?? null
+
+    if (!target) return
+    handledNotificationRedirectRef.current = redirectKey
+    void openNotificationTask(target)
+
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete('openNotificationId')
+    nextParams.delete('openTaskId')
+    setSearchParams(nextParams, { replace: true })
+  }, [items, loading, openNotificationTask, searchParams, setSearchParams])
+
   return (
     <div className='space-y-4'>
       <Card>
@@ -217,8 +301,12 @@ export function NotificationsPage() {
                 key={item.id}
                 className={cn(
                   'rounded-md border px-3 py-3 transition-colors',
+                  item.taskId ? 'cursor-pointer hover:border-primary/50 hover:bg-primary/10' : '',
                   !item.read ? 'border-primary/30 bg-primary/5' : 'bg-muted/10',
                 )}
+                onClick={() => {
+                  void openNotificationTask(item)
+                }}
               >
                 <div className='flex items-start justify-between gap-3'>
                   <div className='flex min-w-0 items-start gap-2.5'>
@@ -242,7 +330,16 @@ export function NotificationsPage() {
                     </div>
                   </div>
 
-                  <Button type='button' size='sm' variant='ghost' className='h-8 px-2 text-xs' onClick={() => toggleRead(item.id)}>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='ghost'
+                    className='h-8 px-2 text-xs'
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void toggleRead(item.id)
+                    }}
+                  >
                     {item.read ? 'Mark unread' : 'Mark read'}
                   </Button>
                 </div>

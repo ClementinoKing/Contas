@@ -10,11 +10,13 @@ import {
   KanbanSquare,
   List,
   MessageSquare,
+  Lock,
   Loader2,
   MessageCircle,
   NotebookPen,
   Paperclip,
   Pencil,
+  Play,
   Search,
   Send,
   Heart,
@@ -22,11 +24,12 @@ import {
   Smile,
   Square,
   Trash2,
+  UserPlus,
   UserRound,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -34,10 +37,20 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { GlobalSaveStatus } from '@/components/ui/global-save-status'
 import { Input } from '@/components/ui/input'
+import { MentionRichTextEditor } from '@/components/ui/mention-rich-text-editor'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { CreateTaskDialog, type CreatedTaskPayload } from '@/features/tasks/components/create-task-dialog'
+import { openTaskDetailsModal } from '@/features/tasks/lib/open-task-details-modal'
+import {
+  legacyBoardColumnForStatusKey,
+  mapStatusRowsToOptions,
+  resolveProjectStatusOptions,
+  statusLabelFromKey,
+  type StatusOption,
+} from '@/features/tasks/lib/status-catalog'
 import type { TaskRow } from '@/features/tasks/tasks-data'
 import { resolveAvatarUrl, resolveR2ObjectUrl, uploadVoiceToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
@@ -53,8 +66,34 @@ type ListCompletionFilter = 'all' | 'open' | 'completed'
 type ListStatusFilter = 'all' | TaskRow['status']
 
 const MY_TASKS_ACTIVE_TAB_KEY = 'contas.my-tasks.active-tab'
+const MY_TASKS_CACHE_KEY = 'contas.my-tasks.cache.v1'
+const MY_TASKS_CACHE_MAX_AGE_MS = 10 * 60 * 1000
 const COMMENT_PAYLOAD_PREFIX = '__contas_comment_v1__:'
 const COMMENT_EMOJIS = ['😀', '😂', '😍', '👍', '🔥', '🎉', '🙏', '✅']
+const RECORDING_VISUALIZER_BARS = 20
+const PLAYBACK_VISUALIZER_BARS = 22
+
+type MyTasksCachePayload = {
+  updatedAt: number
+  userId: string
+  taskRows: TaskRow[]
+  commentsByTaskId: Record<string, BoardComment[]>
+  projects: Array<{ id: string; name: string }>
+  members: Array<{ id: string; name: string; username?: string; avatarUrl?: string }>
+  boardDefinitions: BoardDefinition[]
+}
+
+function myTasksCacheStorageKey(userId: string) {
+  return `${MY_TASKS_CACHE_KEY}:${userId}`
+}
+
+function createBaseWaveLevels(count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const curve = Math.sin(index * 0.68) * 0.22
+    const wobble = Math.cos(index * 1.17) * 0.12
+    return Math.max(0.22, Math.min(0.9, 0.46 + curve + wobble))
+  })
+}
 
 type VoicePayload = {
   file: File
@@ -69,6 +108,7 @@ type BoardComment = {
   authorAvatarUrl?: string
   content: string
   voiceDataUrl?: string
+  voiceStorageKey?: string
   voiceDurationMs?: number
   createdAt: string
   likes: number
@@ -103,8 +143,10 @@ type BoardTask = {
 type BoardDefinition = {
   id: string
   title: string
+  key: string
   sortOrder: number
   isDefault: boolean
+  projectId?: string | null
 }
 
 type BoardColumn = { id: string; title: string; isDefault: boolean; items: BoardTask[] }
@@ -215,15 +257,168 @@ function formatVoiceDuration(durationMs?: number) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
-function getMentionDraft(value: string, cursor: number | null) {
-  if (cursor === null || cursor < 0) return null
-  const beforeCursor = value.slice(0, cursor)
-  const match = beforeCursor.match(/(^|\s)@([a-zA-Z0-9._-]*)$/)
-  if (!match) return null
+function VoicePlayback({
+  src,
+  durationMs,
+}: {
+  src: string
+  durationMs?: number
+}) {
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const rafRef = useRef<number | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0)
+  const [durationSeconds, setDurationSeconds] = useState(0)
+  const [levels, setLevels] = useState<number[]>(
+    () => createBaseWaveLevels(PLAYBACK_VISUALIZER_BARS),
+  )
 
-  const query = match[2] ?? ''
-  const start = cursor - query.length - 1
-  return { start, end: cursor, query }
+  const stopAnimation = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    setIsPlaying(false)
+    setLevels(createBaseWaveLevels(PLAYBACK_VISUALIZER_BARS))
+  }, [])
+
+  const stopPlayback = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    audio.pause()
+    audio.currentTime = 0
+    setCurrentTimeSeconds(0)
+    stopAnimation()
+  }, [stopAnimation])
+
+  const runAnimation = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio || audio.paused || audio.ended) {
+      stopAnimation()
+      return
+    }
+
+    const t = audio.currentTime
+    setLevels(
+      Array.from({ length: PLAYBACK_VISUALIZER_BARS }, (_, index) => {
+        const wave = Math.sin(t * 9 + index * 0.8)
+        const shimmer = Math.sin(t * 5.5 + index * 1.2)
+        return Math.max(0.16, Math.min(1, 0.46 + wave * 0.3 + shimmer * 0.2))
+      }),
+    )
+    rafRef.current = requestAnimationFrame(runAnimation)
+  }, [stopAnimation])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    const onPlay = () => {
+      setIsPlaying(true)
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(runAnimation)
+      }
+    }
+    const onPause = () => stopAnimation()
+    const onEnded = () => stopPlayback()
+    const onTimeUpdate = () => setCurrentTimeSeconds(audio.currentTime || 0)
+    const onLoadedMetadata = () => setDurationSeconds(Number.isFinite(audio.duration) ? audio.duration : 0)
+
+    audio.addEventListener('play', onPlay)
+    audio.addEventListener('pause', onPause)
+    audio.addEventListener('ended', onEnded)
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    audio.addEventListener('loadedmetadata', onLoadedMetadata)
+
+    return () => {
+      audio.removeEventListener('play', onPlay)
+      audio.removeEventListener('pause', onPause)
+      audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('timeupdate', onTimeUpdate)
+      audio.removeEventListener('loadedmetadata', onLoadedMetadata)
+      stopAnimation()
+    }
+  }, [runAnimation, stopAnimation, stopPlayback])
+
+  const togglePlayback = async () => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (isPlaying) {
+      stopPlayback()
+      return
+    }
+    try {
+      await audio.play()
+    } catch {
+      setIsPlaying(false)
+    }
+  }
+
+  const shownSeconds = isPlaying
+    ? currentTimeSeconds
+    : durationSeconds > 0
+      ? durationSeconds
+      : (durationMs ?? 0) / 1000
+  const effectiveDuration = durationSeconds > 0 ? durationSeconds : (durationMs ?? 0) / 1000
+  const progressRatio = effectiveDuration > 0 ? Math.min(1, currentTimeSeconds / effectiveDuration) : 0
+  const playedIndex = Math.floor(progressRatio * levels.length)
+
+  return (
+    <div className='flex items-center gap-3 rounded-full border border-border/70 bg-background/70 px-3 py-1.5'>
+      <audio ref={audioRef} src={src} preload='metadata' className='hidden' />
+      <div
+        className='relative grid h-6 min-w-0 flex-1 items-center gap-[2px]'
+        style={{ gridTemplateColumns: `repeat(${levels.length}, minmax(0, 1fr))` }}
+      >
+        {levels.map((level, index) => (
+          <span
+            key={index}
+            className={cn(
+              'z-[1] w-[2px] justify-self-center rounded-full transition-all duration-100',
+              index <= playedIndex
+                ? 'bg-foreground/85'
+                : isPlaying
+                  ? 'bg-foreground/45'
+                  : 'bg-muted-foreground/55',
+            )}
+            style={{ height: `${Math.max(4, Math.round(level * 11)) * 2}px` }}
+          />
+        ))}
+      </div>
+      <span className='text-sm font-medium tabular-nums text-muted-foreground'>{formatVoiceDuration(shownSeconds * 1000)}</span>
+      <button
+        type='button'
+        onClick={() => void togglePlayback()}
+        className='inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/25 text-foreground transition-colors hover:bg-muted/40'
+        aria-label={isPlaying ? 'Stop playback' : 'Play voice message'}
+      >
+        {isPlaying ? <Square className='h-3.5 w-3.5' /> : <Play className='h-3.5 w-3.5' />}
+      </button>
+    </div>
+  )
+}
+
+function mentionHandleForMember(member: { name: string; username?: string | null }) {
+  const explicit = member.username?.trim()
+  if (explicit) return explicit
+  return member.name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9._-]/g, '')
+}
+
+function extractMentionedMemberIds(text: string, members: Array<{ id: string; name: string; username?: string | null }>) {
+  const normalized = text.toLowerCase()
+  const mentioned = new Set<string>()
+  for (const member of members) {
+    const handleToken = `@${mentionHandleForMember(member).toLowerCase()}`
+    const nameToken = `@${member.name.toLowerCase()}`
+    if (normalized.includes(handleToken) || normalized.includes(nameToken)) {
+      mentioned.add(member.id)
+    }
+  }
+  return Array.from(mentioned)
 }
 
 function initialsForName(value: string) {
@@ -251,10 +446,11 @@ function makeActivity(message: string): BoardActivity {
 }
 
 const INITIAL_BOARD_DEFINITIONS: BoardDefinition[] = [
-  { id: 'planned', title: 'Planned', sortOrder: 0, isDefault: true },
-  { id: 'in_progress', title: 'In Progress', sortOrder: 1, isDefault: true },
-  { id: 'review', title: 'Review', sortOrder: 2, isDefault: true },
-  { id: 'blocked', title: 'Blocked', sortOrder: 3, isDefault: true },
+  { id: 'planned', key: 'planned', title: 'Planned', sortOrder: 0, isDefault: true },
+  { id: 'in_progress', key: 'in_progress', title: 'In Progress', sortOrder: 1, isDefault: true },
+  { id: 'review', key: 'review', title: 'Review', sortOrder: 2, isDefault: true },
+  { id: 'blocked', key: 'blocked', title: 'Blocked', sortOrder: 3, isDefault: true },
+  { id: 'done', key: 'done', title: 'Done', sortOrder: 4, isDefault: true },
 ]
 
 function parseDate(date: string) {
@@ -431,18 +627,7 @@ function formatTaskDueLabel(value?: string | null) {
 }
 
 function mapTaskStatus(value?: string | null): TaskRow['status'] {
-  switch (value) {
-    case 'in_progress':
-      return 'In Progress'
-    case 'review':
-      return 'Review'
-    case 'blocked':
-      return 'Blocked'
-    case 'done':
-      return 'Done'
-    default:
-      return 'Planned'
-  }
+  return statusLabelFromKey(value)
 }
 
 function mapTaskPriority(value?: string | null): TaskRow['priority'] {
@@ -481,25 +666,13 @@ function createBoardId(name: string) {
   return base ? `board_${base}_${crypto.randomUUID().slice(0, 8)}` : `board_${crypto.randomUUID()}`
 }
 
-function isStatusBackedBoardColumn(value: string) {
-  return value === 'planned' || value === 'in_progress' || value === 'review' || value === 'blocked'
-}
-
-function boardColumnIdFromTask(task: Pick<TaskRow, 'status' | 'boardColumn'>) {
+function boardColumnIdFromTask(task: Pick<TaskRow, 'statusId' | 'status' | 'statusKey' | 'boardColumn'>) {
+  if (task.statusKey) return task.statusKey
   if (task.boardColumn) return task.boardColumn
+  if (task.statusId) return task.statusId
 
-  switch (task.status) {
-    case 'Done':
-      return 'review'
-    case 'In Progress':
-      return 'in_progress'
-    case 'Review':
-      return 'review'
-    case 'Blocked':
-      return 'blocked'
-    default:
-      return 'planned'
-  }
+  const key = (task.statusKey ?? task.status).toLowerCase().replace(/\s+/g, '_')
+  return key || 'planned'
 }
 
 function fallbackBoardTitle(boardId: string) {
@@ -520,9 +693,12 @@ function createBoardColumnsFromTasks(
     .sort((a, b) => a.sortOrder - b.sortOrder)
     .map((column) => ({ id: column.id, title: column.title, isDefault: column.isDefault, items: [] as BoardTask[] }))
   const columnMap = new Map(columns.map((column) => [column.id, column]))
+  const columnIdByKey = new Map(definitionSource.map((definition) => [definition.key, definition.id]))
 
   tasks.forEach((task) => {
-    const columnId = boardColumnIdFromTask(task)
+    const columnId =
+      (task.statusKey ? columnIdByKey.get(task.statusKey) : undefined) ??
+      boardColumnIdFromTask(task)
     let column = columnMap.get(columnId)
     if (!column) {
       column = { id: columnId, title: fallbackBoardTitle(columnId), isDefault: false, items: [] }
@@ -547,35 +723,12 @@ function createBoardColumnsFromTasks(
 }
 
 function mapColumnIdToTaskStatus(columnId: string): TaskRow['status'] {
-  switch (columnId) {
-    case 'in_progress':
-      return 'In Progress'
-    case 'review':
-      return 'Review'
-    case 'blocked':
-      return 'Blocked'
-    default:
-      return 'Planned'
-  }
+  return mapTaskStatus(columnId)
 }
 
 function mapTaskStatusToDatabaseStatus(status: TaskRow['status']) {
-  switch (status) {
-    case 'In Progress':
-      return 'in_progress'
-    case 'Review':
-      return 'review'
-    case 'Blocked':
-      return 'blocked'
-    case 'Done':
-      return 'done'
-    default:
-      return 'planned'
-  }
-}
-
-function nextTaskStatusForBoardMove(columnId: string, currentStatus: TaskRow['status']) {
-  return isStatusBackedBoardColumn(columnId) ? mapColumnIdToTaskStatus(columnId) : currentStatus
+  const normalized = status.trim().toLowerCase().replace(/\s+/g, '_')
+  return normalized || 'planned'
 }
 
 function boardColumnIdFromStatus(status: TaskRow['status']) {
@@ -591,30 +744,17 @@ function boardColumnIdFromStatus(status: TaskRow['status']) {
   }
 }
 
-async function fetchBoardDefinitions() {
-  const withDefaults = await supabase.from('boards').select('id, name, sort_order, is_default').order('sort_order', { ascending: true })
+function findBoardDefinitionByColumnId(definitions: BoardDefinition[], columnId: string) {
+  return definitions.find((definition) => definition.id === columnId || definition.key === columnId)
+}
 
-  if (!withDefaults.error && withDefaults.data) {
-    return withDefaults.data.map((board) => ({
-      id: board.id,
-      title: board.name,
-      sortOrder: board.sort_order ?? 0,
-      isDefault: board.is_default ?? false,
-    }))
-  }
-
-  const withoutDefaults = await supabase.from('boards').select('id, name, sort_order').order('sort_order', { ascending: true })
-
-  if (!withoutDefaults.error && withoutDefaults.data) {
-    return withoutDefaults.data.map((board) => ({
-      id: board.id,
-      title: board.name,
-      sortOrder: board.sort_order ?? 0,
-      isDefault: board.id === 'planned' || board.id === 'in_progress' || board.id === 'review' || board.id === 'blocked',
-    }))
-  }
-
-  return INITIAL_BOARD_DEFINITIONS
+async function fetchStatusCatalog() {
+  const statuses = await supabase
+    .from('status')
+    .select('id, key, label, sort_order, is_default, project_id, color')
+    .order('sort_order', { ascending: true })
+  if (statuses.error || !statuses.data) return []
+  return mapStatusRowsToOptions(statuses.data)
 }
 
 function TaskHoverCard({
@@ -627,11 +767,48 @@ function TaskHoverCard({
   onOpenTask?: (taskId: string) => void
 }) {
   const details = taskHoverDetails(task)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const [openUpward, setOpenUpward] = useState(false)
+
+  const resolveVerticalPlacement = useCallback(() => {
+    const popover = popoverRef.current
+    const anchor = popover?.parentElement
+    if (!popover || !anchor) return
+
+    const anchorRect = anchor.getBoundingClientRect()
+    const estimatedCardHeight = popover.offsetHeight > 0 ? popover.offsetHeight : 220
+    const gap = 8
+    const spaceBelow = window.innerHeight - anchorRect.bottom
+    const spaceAbove = anchorRect.top
+    const shouldOpenUpward = spaceBelow < estimatedCardHeight + gap && spaceAbove > spaceBelow
+    setOpenUpward(shouldOpenUpward)
+  }, [])
+
+  useEffect(() => {
+    const popover = popoverRef.current
+    const anchor = popover?.parentElement
+    if (!anchor) return
+
+    const handleEnter = () => resolveVerticalPlacement()
+    anchor.addEventListener('mouseenter', handleEnter)
+    anchor.addEventListener('focusin', handleEnter)
+    window.addEventListener('resize', handleEnter)
+    window.addEventListener('scroll', handleEnter, { passive: true })
+
+    return () => {
+      anchor.removeEventListener('mouseenter', handleEnter)
+      anchor.removeEventListener('focusin', handleEnter)
+      window.removeEventListener('resize', handleEnter)
+      window.removeEventListener('scroll', handleEnter)
+    }
+  }, [resolveVerticalPlacement])
 
   return (
     <div
+      ref={popoverRef}
       className={cn(
-        'pointer-events-none absolute top-full z-30 mt-2 hidden w-[min(16rem,calc(100vw-2rem))] rounded-lg border bg-card p-3 shadow-lg group-hover:block group-focus-within:block',
+        'pointer-events-none absolute z-30 hidden w-[min(16rem,calc(100vw-2rem))] rounded-lg border bg-card p-3 shadow-lg group-hover:block group-focus-within:block',
+        openUpward ? 'bottom-full mb-2' : 'top-full mt-2',
         align === 'left' && 'left-0',
         align === 'center' && 'left-1/2 -translate-x-1/2',
         align === 'right' && 'right-0',
@@ -762,6 +939,8 @@ function TaskListSkeleton() {
 }
 
 function TaskBoardSkeleton() {
+  const skeletonColumns = Array.from({ length: 4 }, (_, index) => index)
+  const skeletonCards = Array.from({ length: 3 }, (_, index) => index)
   return (
     <div className='space-y-3'>
       <Card>
@@ -780,45 +959,42 @@ function TaskBoardSkeleton() {
         </CardContent>
       </Card>
       <section className='w-full max-w-full overflow-hidden rounded-lg border bg-muted/10 p-2'>
-        <div className='w-full max-w-full overflow-x-auto overscroll-x-contain pb-1'>
+        <div className='w-full max-w-full overflow-x-auto overscroll-x-contain pb-1 [scrollbar-gutter:stable_both-edges]'>
           <div className='inline-flex min-w-full gap-3 pr-1'>
-            {Array.from({ length: 3 }, (_, index) => (
+            {skeletonColumns.map((index) => (
               <Card key={index} className='w-[320px] shrink-0'>
                 <CardHeader className='pb-3'>
                   <div className='flex items-center justify-between gap-2'>
                     <SkeletonBlock className='h-4 w-24' />
-                    <SkeletonBlock className='h-6 w-14' />
+                    <SkeletonBlock className='h-4 w-16' />
                   </div>
+                  <SkeletonBlock className='h-3 w-14' />
                 </CardHeader>
                 <CardContent className='space-y-2'>
-                  {Array.from({ length: 3 }, (_, itemIndex) => (
+                  {skeletonCards.map((itemIndex) => (
                     <div key={itemIndex} className='rounded-md border bg-muted/20 p-2.5'>
                       <div className='flex items-start justify-between gap-2'>
                         <div className='flex min-w-0 items-start gap-2'>
                           <SkeletonBlock className='mt-0.5 h-4 w-4 rounded' />
-                          <div className='space-y-2'>
-                            <SkeletonBlock className='h-4 w-32' />
-                            <SkeletonBlock className='h-3 w-20' />
+                          <div className='min-w-0 space-y-2'>
+                            <SkeletonBlock className='h-4 w-40' />
+                            <SkeletonBlock className='h-3 w-48' />
+                            <div className='flex flex-wrap gap-1.5 pt-1'>
+                              <SkeletonBlock className='h-5 w-20 rounded-md' />
+                              <SkeletonBlock className='h-5 w-24 rounded-md' />
+                              <SkeletonBlock className='h-5 w-10 rounded-md' />
+                            </div>
                           </div>
                         </div>
                         <SkeletonBlock className='h-7 w-7 rounded-md' />
                       </div>
                     </div>
                   ))}
+                  <div className='h-px bg-border/60' />
                   <SkeletonBlock className='h-9 w-full' />
                 </CardContent>
               </Card>
             ))}
-            <Card className='w-[320px] shrink-0'>
-              <CardHeader className='pb-3'>
-                <SkeletonBlock className='h-4 w-24' />
-                <SkeletonBlock className='h-3 w-40' />
-              </CardHeader>
-              <CardContent className='space-y-2'>
-                <SkeletonBlock className='h-10 w-full' />
-                <SkeletonBlock className='h-9 w-full' />
-              </CardContent>
-            </Card>
           </div>
         </div>
       </section>
@@ -873,6 +1049,7 @@ function TaskCalendarSkeleton() {
 
 export function MyTasksPage() {
   const { currentUser } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState<TaskTab>(() => {
     const storedTab = localStorage.getItem(MY_TASKS_ACTIVE_TAB_KEY)
     return storedTab === 'board' || storedTab === 'calendar' || storedTab === 'notes' || storedTab === 'list' ? storedTab : 'list'
@@ -880,20 +1057,24 @@ export function MyTasksPage() {
   const [calendarView, setCalendarView] = useState<CalendarView>('monthly')
   const [calendarDate, setCalendarDate] = useState<Date>(() => startOfDay(new Date()))
   const [loadingTasks, setLoadingTasks] = useState(true)
+  const [backgroundSyncState, setBackgroundSyncState] = useState<'idle' | 'syncing' | 'saved' | 'error'>('idle')
   const [taskRows, setTaskRows] = useState<TaskRow[]>([])
   const [commentsByTaskId, setCommentsByTaskId] = useState<Record<string, BoardComment[]>>({})
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
-  const [members, setMembers] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([])
+  const [members, setMembers] = useState<Array<{ id: string; name: string; username?: string; avatarUrl?: string }>>([])
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const [createTaskColumnId, setCreateTaskColumnId] = useState('planned')
+  const [createTaskParentTaskId, setCreateTaskParentTaskId] = useState<string | undefined>(undefined)
   const [realtimeReloadToken, setRealtimeReloadToken] = useState(0)
 
   const [boardDefinitions, setBoardDefinitions] = useState<BoardDefinition[]>(INITIAL_BOARD_DEFINITIONS)
+  const [statusCatalog, setStatusCatalog] = useState<StatusOption[]>([])
   const [boardColumns, setBoardColumns] = useState<BoardColumn[]>(() =>
     createBoardColumnsFromTasks([], INITIAL_BOARD_DEFINITIONS, {}),
   )
   const [newColumnName, setNewColumnName] = useState('')
   const [draggingTask, setDraggingTask] = useState<{ taskId: string; fromColumnId: string } | null>(null)
+  const [dragOverColumnId, setDragOverColumnId] = useState<string | null>(null)
 
   const [editingTask, setEditingTask] = useState<{ columnId: string; taskId: string } | null>(null)
   const [editingTaskDraft, setEditingTaskDraft] = useState<BoardTaskDraft>({
@@ -937,28 +1118,95 @@ export function MyTasksPage() {
   const [voiceCommentError, setVoiceCommentError] = useState<string | null>(null)
   const [replyDraftByCommentId, setReplyDraftByCommentId] = useState<Record<string, string>>({})
   const [activeReplyCommentId, setActiveReplyCommentId] = useState<string | null>(null)
-  const [descriptionMentionDraft, setDescriptionMentionDraft] = useState<{ start: number; end: number; query: string } | null>(null)
-  const [descriptionMentionActiveIndex, setDescriptionMentionActiveIndex] = useState(0)
   const [detailAssigneeOpen, setDetailAssigneeOpen] = useState(false)
   const [detailAssigneeSearch, setDetailAssigneeSearch] = useState('')
   const [detailSaveState, setDetailSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const descriptionTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const detailDescriptionDebounceRef = useRef<number | null>(null)
   const detailSavedFlashRef = useRef<number | null>(null)
+  const backgroundSyncFlashRef = useRef<number | null>(null)
+  const boardDragResetTimeoutRef = useRef<number | null>(null)
   const detailLastPersistedRef = useRef('')
+  const detailSaveInFlightRef = useRef(false)
+  const queuedDetailDraftRef = useRef<BoardTaskDraft | null>(null)
   const commentMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const commentVoiceChunksRef = useRef<BlobPart[]>([])
   const commentVoiceStartAtRef = useRef(0)
+  const commentMicStreamRef = useRef<MediaStream | null>(null)
+  const commentAudioContextRef = useRef<AudioContext | null>(null)
+  const commentAnimationFrameRef = useRef<number | null>(null)
+  const openedTaskFromQueryRef = useRef<string | null>(null)
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
+  const [recordingLevels, setRecordingLevels] = useState<number[]>(
+    () => Array.from({ length: RECORDING_VISUALIZER_BARS }, () => 0.12),
+  )
   const [listSearch, setListSearch] = useState('')
   const [listScopeFilter, setListScopeFilter] = useState<ListScopeFilter>('all')
   const [listCompletionFilter, setListCompletionFilter] = useState<ListCompletionFilter>('all')
   const [listStatusFilter, setListStatusFilter] = useState<ListStatusFilter>('all')
   const [listProjectFilter, setListProjectFilter] = useState('all')
+  const inflightActionKeysRef = useRef<Set<string>>(new Set())
+  const hasLoadedTasksOnceRef = useRef(false)
+  const realtimeReloadDebounceRef = useRef<number | null>(null)
+  const dynamicStatusOptions = useMemo(() => {
+    const source = statusCatalog.length > 0 ? statusCatalog : resolveProjectStatusOptions([], null)
+    const seen = new Set<string>()
+    const deduped = source
+      .slice()
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label))
+      .filter((status) => {
+        const key = status.key.trim().toLowerCase()
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    return deduped.map((status) => ({
+      id: status.id,
+      key: status.key,
+      title: status.label,
+      sortOrder: status.sortOrder,
+      isDefault: status.isDefault,
+      projectId: status.projectId,
+    }))
+  }, [statusCatalog])
   const clearPendingVoiceComment = useCallback(() => {
     setPendingVoiceComment((current) => {
       if (current) URL.revokeObjectURL(current.previewUrl)
       return null
     })
+  }, [])
+  const getStatusOptionsForProject = useCallback(
+    (projectId?: string) =>
+      resolveProjectStatusOptions(statusCatalog, projectId).map((status) => ({
+        id: status.id,
+        key: status.key,
+        title: status.label,
+        sortOrder: status.sortOrder,
+        isDefault: status.isDefault,
+        projectId: status.projectId,
+      })),
+    [statusCatalog],
+  )
+  const findStatusForProjectKey = useCallback(
+    (projectId: string | undefined, statusKey: string) => {
+      const normalizedKey = statusKey.trim().toLowerCase()
+      return resolveProjectStatusOptions(statusCatalog, projectId).find((status) => status.key.trim().toLowerCase() === normalizedKey) ?? null
+    },
+    [statusCatalog],
+  )
+  const stopRecordingVisualizer = useCallback(() => {
+    if (commentAnimationFrameRef.current !== null) {
+      cancelAnimationFrame(commentAnimationFrameRef.current)
+      commentAnimationFrameRef.current = null
+    }
+    if (commentAudioContextRef.current) {
+      void commentAudioContextRef.current.close()
+      commentAudioContextRef.current = null
+    }
+    if (commentMicStreamRef.current) {
+      commentMicStreamRef.current.getTracks().forEach((track) => track.stop())
+      commentMicStreamRef.current = null
+    }
+    setRecordingLevels(Array.from({ length: RECORDING_VISUALIZER_BARS }, () => 0.12))
   }, [])
 
   const weekStart = useMemo(() => getWeekStart(calendarDate), [calendarDate])
@@ -974,30 +1222,103 @@ export function MyTasksPage() {
     [calendarDate],
   )
 
+  const setBackgroundSync = useCallback((state: 'syncing' | 'saved' | 'error') => {
+    setBackgroundSyncState(state)
+    if (backgroundSyncFlashRef.current !== null) {
+      window.clearTimeout(backgroundSyncFlashRef.current)
+      backgroundSyncFlashRef.current = null
+    }
+    if (state === 'saved' || state === 'error') {
+      backgroundSyncFlashRef.current = window.setTimeout(() => {
+        setBackgroundSyncState('idle')
+        backgroundSyncFlashRef.current = null
+      }, state === 'saved' ? 900 : 1600)
+    }
+  }, [])
+
+  const runWithDedup = useCallback(
+    async <T,>(key: string, run: () => Promise<T>): Promise<T | null> => {
+      if (inflightActionKeysRef.current.has(key)) return null
+      inflightActionKeysRef.current.add(key)
+      try {
+        return await run()
+      } finally {
+        inflightActionKeysRef.current.delete(key)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    const userId = currentUser?.id
+    if (!userId) return
+    const raw = localStorage.getItem(myTasksCacheStorageKey(userId))
+    if (!raw) return
+
+    try {
+      const parsed = JSON.parse(raw) as MyTasksCachePayload
+      const isStale = Date.now() - parsed.updatedAt > MY_TASKS_CACHE_MAX_AGE_MS
+      if (isStale || parsed.userId !== userId) return
+
+      setTaskRows(parsed.taskRows ?? [])
+      setCommentsByTaskId(parsed.commentsByTaskId ?? {})
+      setProjects(parsed.projects ?? [])
+      setMembers(parsed.members ?? [])
+      setBoardDefinitions(
+        parsed.boardDefinitions?.length
+          ? parsed.boardDefinitions.map((definition) => ({
+              ...definition,
+              key: definition.key ?? definition.id ?? mapTaskStatusToDatabaseStatus(definition.title ?? 'Planned'),
+            }))
+          : INITIAL_BOARD_DEFINITIONS,
+      )
+      setLoadingTasks(false)
+      hasLoadedTasksOnceRef.current = true
+      setBackgroundSync('syncing')
+    } catch {
+      // Ignore invalid cache payloads.
+    }
+  }, [currentUser?.id, setBackgroundSync])
+
   useEffect(() => {
     const onRealtimeChange = (event: Event) => {
       const detail = (event as CustomEvent<{ table?: string }>).detail
       const table = detail?.table
       if (!table) return
-      if (!['tasks', 'projects', 'task_assignees', 'task_comments', 'boards', 'notifications'].includes(table)) return
-      setRealtimeReloadToken((value) => value + 1)
+      if (!['tasks', 'projects', 'task_assignees', 'task_comments', 'status'].includes(table)) return
+      if (realtimeReloadDebounceRef.current !== null) {
+        window.clearTimeout(realtimeReloadDebounceRef.current)
+      }
+      setBackgroundSync('syncing')
+      realtimeReloadDebounceRef.current = window.setTimeout(() => {
+        setRealtimeReloadToken((value) => value + 1)
+        realtimeReloadDebounceRef.current = null
+      }, 180)
     }
 
     window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
     return () => {
       window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
+      if (realtimeReloadDebounceRef.current !== null) {
+        window.clearTimeout(realtimeReloadDebounceRef.current)
+        realtimeReloadDebounceRef.current = null
+      }
     }
-  }, [])
+  }, [setBackgroundSync])
 
   useEffect(() => {
     let cancelled = false
-    setLoadingTasks(true)
+    if (!hasLoadedTasksOnceRef.current) {
+      setLoadingTasks(true)
+    } else {
+      setBackgroundSync('syncing')
+    }
 
     void Promise.all([
-      fetchBoardDefinitions(),
+      fetchStatusCatalog(),
       supabase
         .from('tasks')
-        .select('id, title, description, status, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, completed_at, created_at')
+        .select('id, parent_task_id, title, description, status, status_id, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, completed_at, created_at, task_status:status_id(id,key,label,sort_order,project_id,is_default)')
         .order('created_at', { ascending: false }),
       supabase.from('task_assignees').select('task_id, assignee_id'),
       supabase
@@ -1006,10 +1327,10 @@ export function MyTasksPage() {
         .order('created_at', { ascending: false }),
       supabase.from('task_comment_reactions').select('comment_id, user_id, reaction'),
       supabase.from('projects').select('id, name').order('name', { ascending: true }),
-      supabase.from('profiles').select('id, full_name, email, avatar_url').order('full_name', { ascending: true }),
+      supabase.from('profiles').select('id, full_name, username, email, avatar_url').order('full_name', { ascending: true }),
     ]).then(
-      async ([
-        fetchedBoards,
+      ([
+        fetchedStatuses,
         tasksResult,
         taskAssigneesResult,
         taskCommentsResult,
@@ -1020,50 +1341,35 @@ export function MyTasksPage() {
       if (cancelled) return
 
       const projects = (projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
-      const members = await Promise.all(
-        (profilesResult.data ?? []).map(async (profile) => {
-          const rawAvatar = profile.avatar_url ?? undefined
-          if (!rawAvatar) {
-            return {
-              id: profile.id,
-              name: profile.full_name ?? profile.email ?? 'Unknown member',
-              avatarUrl: undefined,
-            }
-          }
-
-          if (isDirectAvatarUrl(rawAvatar)) {
-            return {
-              id: profile.id,
-              name: profile.full_name ?? profile.email ?? 'Unknown member',
-              avatarUrl: rawAvatar,
-            }
-          }
-
-          try {
-            const resolvedUrl = await resolveAvatarUrl(rawAvatar)
-            return {
-              id: profile.id,
-              name: profile.full_name ?? profile.email ?? 'Unknown member',
-              avatarUrl: resolvedUrl,
-            }
-          } catch {
-            return {
-              id: profile.id,
-              name: profile.full_name ?? profile.email ?? 'Unknown member',
-              avatarUrl: undefined,
-            }
-          }
-        }),
-      )
+      const profileRows = profilesResult.data ?? []
+      const members = profileRows.map((profile) => {
+        const rawAvatar = profile.avatar_url ?? undefined
+        return {
+          id: profile.id,
+          name: profile.full_name ?? profile.email ?? 'Unknown member',
+          username: profile.username ?? undefined,
+          avatarUrl: rawAvatar && isDirectAvatarUrl(rawAvatar) ? rawAvatar : undefined,
+        }
+      })
       setProjects(projects)
       setMembers(members)
 
       if (tasksResult.error || !tasksResult.data) {
         setLoadingTasks(false)
+        setBackgroundSync('error')
         return
       }
 
-      setBoardDefinitions(fetchedBoards)
+      setStatusCatalog(fetchedStatuses)
+      const nextBoardDefinitions = resolveProjectStatusOptions(fetchedStatuses, null).map((status) => ({
+        id: status.id,
+        key: status.key,
+        title: status.label,
+        sortOrder: status.sortOrder,
+        isDefault: status.isDefault,
+        projectId: status.projectId,
+      }))
+      setBoardDefinitions(nextBoardDefinitions.length > 0 ? nextBoardDefinitions : INITIAL_BOARD_DEFINITIONS)
 
       const projectMap = new Map(projects.map((project) => [project.id, project.name]))
       const memberMap = new Map(members.map((member) => [member.id, member.name]))
@@ -1077,6 +1383,7 @@ export function MyTasksPage() {
         }
       }
       const commentsByTask = new Map<string, BoardComment[]>()
+      const voiceStorageKeyByCommentId = new Map<string, string>()
       const likeCountByCommentId = new Map<string, number>()
       const likedByMeCommentIds = new Set<string>()
       if (!taskCommentReactionsResult.error && taskCommentReactionsResult.data) {
@@ -1093,27 +1400,13 @@ export function MyTasksPage() {
           string,
           { text: string; voiceDataUrl?: string; voiceDurationMs?: number; voiceStorageKey?: string }
         >()
-        await Promise.all(
-          taskCommentsResult.data.map(async (row) => {
-            const parsedContent = parseCommentContent(row.content)
-            let resolvedVoiceUrl = parsedContent.voiceDataUrl
-
-            if (parsedContent.voiceStorageKey) {
-              try {
-                resolvedVoiceUrl = await resolveR2ObjectUrl(parsedContent.voiceStorageKey)
-              } catch {
-                resolvedVoiceUrl = parsedContent.voiceDataUrl
-              }
-            }
-
-            parsedCommentContentById.set(row.id, {
-              text: parsedContent.text,
-              voiceDataUrl: resolvedVoiceUrl,
-              voiceDurationMs: parsedContent.voiceDurationMs,
-              voiceStorageKey: parsedContent.voiceStorageKey,
-            })
-          }),
-        )
+        taskCommentsResult.data.forEach((row) => {
+          const parsedContent = parseCommentContent(row.content)
+          if (parsedContent.voiceStorageKey) {
+            voiceStorageKeyByCommentId.set(row.id, parsedContent.voiceStorageKey)
+          }
+          parsedCommentContentById.set(row.id, parsedContent)
+        })
 
         const rootsById = new Map<string, BoardComment>()
         for (const row of taskCommentsResult.data) {
@@ -1128,6 +1421,7 @@ export function MyTasksPage() {
             authorAvatarUrl: row.author_id ? avatarMap.get(row.author_id) : undefined,
             content: parsedContent.text,
             voiceDataUrl: parsedContent.voiceDataUrl,
+            voiceStorageKey: parsedContent.voiceStorageKey,
             voiceDurationMs: parsedContent.voiceDurationMs,
             createdAt: dateTimeLabel(row.created_at),
             likes: likeCountByCommentId.get(row.id) ?? 0,
@@ -1154,43 +1448,131 @@ export function MyTasksPage() {
           })
         }
       }
-      setCommentsByTaskId(Object.fromEntries(commentsByTask.entries()))
+      const mappedCommentsByTaskId = Object.fromEntries(commentsByTask.entries())
+      const mappedTaskRows = tasksResult.data.map((task) => {
+        const baseDate = task.start_at ?? task.due_at ?? task.created_at ?? new Date().toISOString()
+        const startDate = new Date(baseDate)
+        const endDate = task.due_at ? new Date(task.due_at) : startDate
+        const assigneeIds = assigneeIdsByTaskId.get(task.id) ?? (task.assigned_to ? [task.assigned_to] : [])
+        const assigneeNames = assigneeIds.map((id) => memberMap.get(id)).filter((name): name is string => Boolean(name))
+        const taskStatus = (task.task_status as { id?: string; key?: string; label?: string } | null) ?? null
+        const statusKey = taskStatus?.key ?? task.status ?? null
 
-      setTaskRows(
-        tasksResult.data.map((task) => {
-          const baseDate = task.start_at ?? task.due_at ?? task.created_at ?? new Date().toISOString()
-          const startDate = new Date(baseDate)
-          const endDate = task.due_at ? new Date(task.due_at) : startDate
-          const assigneeIds = assigneeIdsByTaskId.get(task.id) ?? (task.assigned_to ? [task.assigned_to] : [])
-          const assigneeNames = assigneeIds.map((id) => memberMap.get(id)).filter((name): name is string => Boolean(name))
+        return {
+          id: task.id,
+          parentTaskId: task.parent_task_id ?? undefined,
+          title: task.title,
+          description: task.description ?? `${projectMap.get(task.project_id ?? '') ?? 'Unassigned project'} task`,
+          createdById: task.created_by ?? '',
+          owner: assigneeNames.length > 0 ? assigneeNames.join(', ') : 'Unassigned',
+          assigneeIds,
+          due: formatTaskDueLabel(task.due_at),
+          completed: Boolean(task.completed_at),
+          status: taskStatus?.label ?? mapTaskStatus(statusKey),
+          statusId: task.status_id ?? taskStatus?.id ?? undefined,
+          statusKey: statusKey ?? undefined,
+          priority: mapTaskPriority(task.priority),
+          boardColumn: task.status_id ?? task.board_column ?? undefined,
+          projectId: task.project_id ?? '',
+          projectName: projectMap.get(task.project_id ?? '') ?? 'Unassigned project',
+          startDate: startDate.toISOString().slice(0, 10),
+          endDate: endDate.toISOString().slice(0, 10),
+        }
+      })
 
-          return {
-            id: task.id,
-            title: task.title,
-            description: task.description ?? `${projectMap.get(task.project_id ?? '') ?? 'Unassigned project'} task`,
-            createdById: task.created_by ?? '',
-            owner: assigneeNames.length > 0 ? assigneeNames.join(', ') : 'Unassigned',
-            assigneeIds,
-            due: formatTaskDueLabel(task.due_at),
-            completed: Boolean(task.completed_at),
-            status: mapTaskStatus(task.status),
-            priority: mapTaskPriority(task.priority),
-            boardColumn: task.board_column ?? undefined,
-            projectId: task.project_id ?? '',
-            projectName: projectMap.get(task.project_id ?? '') ?? 'Unassigned project',
-            startDate: startDate.toISOString().slice(0, 10),
-            endDate: endDate.toISOString().slice(0, 10),
-          }
-        }),
-      )
+      setCommentsByTaskId(mappedCommentsByTaskId)
+      setTaskRows(mappedTaskRows)
+      if (currentUser?.id) {
+        const payload: MyTasksCachePayload = {
+          updatedAt: Date.now(),
+          userId: currentUser.id,
+          taskRows: mappedTaskRows,
+          commentsByTaskId: mappedCommentsByTaskId,
+          projects,
+          members,
+          boardDefinitions: nextBoardDefinitions.length > 0 ? nextBoardDefinitions : INITIAL_BOARD_DEFINITIONS,
+        }
+        localStorage.setItem(myTasksCacheStorageKey(currentUser.id), JSON.stringify(payload))
+      }
       setLoadingTasks(false)
+      hasLoadedTasksOnceRef.current = true
+      setBackgroundSync('saved')
+
+      const profilesNeedingAvatarResolution = profileRows.filter((profile) => {
+        const rawAvatar = profile.avatar_url ?? undefined
+        return Boolean(rawAvatar && !isDirectAvatarUrl(rawAvatar))
+      })
+      if (profilesNeedingAvatarResolution.length > 0) {
+        void Promise.all(
+          profilesNeedingAvatarResolution.map(async (profile) => {
+            const rawAvatar = profile.avatar_url ?? undefined
+            if (!rawAvatar) return null
+            try {
+              const resolvedUrl = await resolveAvatarUrl(rawAvatar)
+              return { id: profile.id, url: resolvedUrl }
+            } catch {
+              return null
+            }
+          }),
+        ).then((resolvedAvatars) => {
+          if (cancelled) return
+          const avatarById = new Map(
+            resolvedAvatars
+              .filter((value): value is { id: string; url: string } => Boolean(value?.id && value.url))
+              .map((value) => [value.id, value.url]),
+          )
+          if (avatarById.size === 0) return
+
+          setMembers((current) => current.map((member) => ({ ...member, avatarUrl: avatarById.get(member.id) ?? member.avatarUrl })))
+        })
+      }
+
+      const voiceCommentsToResolve = Array.from(voiceStorageKeyByCommentId.entries())
+      if (voiceCommentsToResolve.length > 0) {
+        void Promise.all(
+          voiceCommentsToResolve.map(async ([commentId, storageKey]) => {
+            try {
+              const resolvedUrl = await resolveR2ObjectUrl(storageKey)
+              return [commentId, resolvedUrl] as const
+            } catch {
+              return null
+            }
+          }),
+        ).then((resolvedVoiceEntries) => {
+          if (cancelled) return
+          const voiceUrlByCommentId = new Map(
+            resolvedVoiceEntries.filter((entry): entry is readonly [string, string] => Boolean(entry?.[0] && entry[1])),
+          )
+          if (voiceUrlByCommentId.size === 0) return
+
+          setCommentsByTaskId((current) => {
+            let changed = false
+            const next: Record<string, BoardComment[]> = {}
+            Object.entries(current).forEach(([taskId, taskComments]) => {
+              next[taskId] = taskComments.map((comment) => {
+                const resolvedUrl = voiceUrlByCommentId.get(comment.id)
+                if (!resolvedUrl || resolvedUrl === comment.voiceDataUrl) return comment
+                changed = true
+                return { ...comment, voiceDataUrl: resolvedUrl }
+              })
+            })
+            return changed ? next : current
+          })
+        })
+      }
       },
     )
+      .catch((error) => {
+        if (cancelled) return
+        console.error('Failed to load tasks data', error)
+        setLoadingTasks(false)
+        setBackgroundSync('error')
+      })
 
     return () => {
       cancelled = true
     }
-  }, [currentUser?.id, realtimeReloadToken])
+  }, [currentUser?.id, realtimeReloadToken, setBackgroundSync])
 
   useEffect(() => {
     setBoardColumns(createBoardColumnsFromTasks(taskRows, boardDefinitions, commentsByTaskId))
@@ -1315,18 +1697,21 @@ export function MyTasksPage() {
       tasks: [] as TaskRow[],
     }))
     const sectionById = new Map(sections.map((section) => [section.id, section]))
+    const sectionByKey = new Map(definitions.map((definition, index) => [definition.key, sections[index]]))
 
     listFilteredTasks.forEach((task) => {
-      const columnId = boardColumnIdFromTask(task)
-      let section = sectionById.get(columnId)
+      const statusKey = (task.statusKey ?? '').trim().toLowerCase()
+      const statusId = task.statusId ?? boardColumnIdFromTask(task)
+      let section = (statusKey ? sectionByKey.get(statusKey) : undefined) ?? sectionById.get(statusId)
       if (!section) {
         section = {
-          id: columnId,
-          title: fallbackBoardTitle(columnId),
+          id: statusId,
+          title: statusKey ? mapTaskStatus(statusKey) : fallbackBoardTitle(statusId),
           tasks: [],
         }
         sections.push(section)
-        sectionById.set(columnId, section)
+        sectionById.set(statusId, section)
+        if (statusKey) sectionByKey.set(statusKey, section)
       }
       section.tasks.push(task)
     })
@@ -1338,28 +1723,46 @@ export function MyTasksPage() {
     (taskId: string) => {
       const task = taskRows.find((item) => item.id === taskId)
       if (!task) return false
-      return Boolean(currentUser?.id && task.createdById === currentUser.id)
+      return Boolean(currentUser?.id && (task.createdById === currentUser.id || task.assigneeIds.includes(currentUser.id)))
     },
     [currentUser?.id, taskRows],
   )
 
-  const openTaskDetailsById = (taskId: string) => {
-    for (const column of boardColumns) {
-      const task = column.items.find((item) => item.id === taskId)
-      if (task) {
-        openTaskDetails(column.id, task)
-        return
-      }
-    }
-  }
+  const openTaskDetailsById = useCallback((taskId: string) => {
+    if (!taskRows.some((task) => task.id === taskId)) return false
+    openTaskDetailsModal(taskId)
+    return true
+  }, [taskRows])
 
   const handleTaskDialogOpenChange = (open: boolean) => {
     setTaskDialogOpen(open)
-    if (!open) setCreateTaskColumnId('planned')
+    if (!open) {
+      setCreateTaskColumnId('planned')
+      setCreateTaskParentTaskId(undefined)
+    }
   }
+
+  useEffect(() => {
+    const taskId = searchParams.get('openTaskId')
+    if (!taskId) {
+      openedTaskFromQueryRef.current = null
+      return
+    }
+    if (openedTaskFromQueryRef.current === taskId) return
+    if (!taskRows.some((task) => task.id === taskId)) return
+
+    const opened = openTaskDetailsById(taskId)
+    if (!opened) return
+    openedTaskFromQueryRef.current = taskId
+
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete('openTaskId')
+    setSearchParams(nextParams, { replace: true })
+  }, [openTaskDetailsById, searchParams, setSearchParams, taskRows])
 
   const openTaskDialogForColumn = (columnId: string) => {
     setCreateTaskColumnId(columnId)
+    setCreateTaskParentTaskId(undefined)
     setTaskDialogOpen(true)
   }
 
@@ -1370,6 +1773,7 @@ export function MyTasksPage() {
     setTaskRows((rows) => [
       {
         id: task.id,
+        parentTaskId: task.parentTaskId,
         title: task.title,
         description: task.description,
         createdById: task.createdById ?? currentUser?.id ?? '',
@@ -1377,9 +1781,11 @@ export function MyTasksPage() {
         assigneeIds: task.assigneeIds,
         due: formatTaskDueLabel(task.dueAt),
         completed: false,
-        status: mapTaskStatus(task.status),
+        status: mapTaskStatus(task.statusKey ?? task.status),
+        statusId: task.statusId ?? undefined,
+        statusKey: task.statusKey ?? task.status ?? undefined,
         priority: mapTaskPriority(task.priority),
-        boardColumn: task.boardColumn ?? 'planned',
+        boardColumn: task.statusId ?? task.boardColumn ?? 'planned',
         projectId: task.projectId,
         projectName: task.projectName,
         startDate: startDate.toISOString().slice(0, 10),
@@ -1413,6 +1819,9 @@ export function MyTasksPage() {
     }
     if (detailSavedFlashRef.current !== null) {
       window.clearTimeout(detailSavedFlashRef.current)
+    }
+    if (backgroundSyncFlashRef.current !== null) {
+      window.clearTimeout(backgroundSyncFlashRef.current)
     }
   }, [])
 
@@ -1483,42 +1892,136 @@ export function MyTasksPage() {
     })
   }
 
-  const updateSelectedTasks = (updater: (task: BoardTask) => BoardTask) => {
-    setBoardColumns((columns) =>
-      columns.map((column) => ({
-        ...column,
-        items: column.items.map((item) => (selectedTaskSet.has(item.id) ? updater(item) : item)),
-      })),
-    )
-  }
-
   const markSelectedCompleted = async () => {
     if (selectedTaskSet.size === 0) return
     const selectedIds = Array.from(selectedTaskSet).filter((taskId) => canEditTaskById(taskId))
     if (selectedIds.length === 0) return
     const selectedEditableSet = new Set(selectedIds)
+    const doneStatusKey = 'done'
     const previousRows = taskRows
     const completedAt = new Date().toISOString()
-    setTaskRows((rows) => rows.map((task) => (selectedEditableSet.has(task.id) ? { ...task, completed: true } : task)))
-    const { error } = await supabase.from('tasks').update({ completed_at: completedAt }).in('id', selectedIds)
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        selectedEditableSet.has(task.id)
+          ? (() => {
+              const doneStatus = findStatusForProjectKey(task.projectId, doneStatusKey)
+              return {
+                ...task,
+                completed: true,
+                status: doneStatus?.label ?? 'Done',
+                statusId: doneStatus?.id ?? task.statusId,
+                statusKey: doneStatus?.key ?? doneStatusKey,
+                boardColumn: doneStatus?.id ?? task.boardColumn,
+              }
+            })()
+          : task,
+      ),
+    )
+    setBackgroundSync('syncing')
+    const result = await runWithDedup(`complete:${selectedIds.sort().join(',')}`, async () => {
+      const updates = selectedIds.map(async (taskId) => {
+        const task = previousRows.find((row) => row.id === taskId)
+        if (!task) return null
+        const doneStatus = findStatusForProjectKey(task.projectId, doneStatusKey)
+        return supabase
+          .from('tasks')
+          .update({
+            completed_at: completedAt,
+            status_id: doneStatus?.id ?? null,
+            status: doneStatus?.key ?? doneStatusKey,
+            board_column: legacyBoardColumnForStatusKey(doneStatus?.key ?? doneStatusKey),
+          })
+          .eq('id', taskId)
+      })
+      const settled = await Promise.all(updates)
+      const firstError = settled.find((response) => response?.error)?.error ?? null
+      return { error: firstError }
+    })
+    if (!result) return
+    const { error } = result
     if (error) {
       console.error('Failed to mark selected tasks complete', error)
       setTaskRows(previousRows)
+      setBackgroundSync('error')
       return
     }
+    setBackgroundSync('saved')
     clearSelection()
   }
 
-  const assignSelectedTasks = () => {
-    const assignee = bulkAssignValue.trim()
-    if (!assignee || selectedTaskSet.size === 0) return
+  const assignSelectedTasks = async () => {
+    const assigneeInput = bulkAssignValue.trim()
+    if (!assigneeInput || selectedTaskSet.size === 0) return
+    const selectedIds = Array.from(selectedTaskSet).filter((taskId) => canEditTaskById(taskId))
+    if (selectedIds.length === 0) return
 
-    updateSelectedTasks((task) => ({
-      ...task,
-      assignee,
-      activity: [makeActivity(`Assigned to ${assignee} from bulk action`), ...task.activity],
-    }))
+    const assigneeMember = members.find((member) => member.name.toLowerCase() === assigneeInput.toLowerCase())
+    if (!assigneeMember) {
+      setBackgroundSync('error')
+      return
+    }
+
+    const previousRows = taskRows
+    const selectedEditableSet = new Set(selectedIds)
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        selectedEditableSet.has(task.id)
+          ? {
+              ...task,
+              owner: assigneeMember.name,
+              assigneeIds: [assigneeMember.id],
+              assigneeNames: [assigneeMember.name],
+            }
+          : task,
+      ),
+    )
+
+    setBackgroundSync('syncing')
+    const dedupeKey = `assign-bulk:${assigneeMember.id}:${selectedIds.sort().join(',')}`
+    const result = await runWithDedup(dedupeKey, async () => {
+      const { error: taskError } = await supabase.from('tasks').update({ assigned_to: assigneeMember.id }).in('id', selectedIds)
+      if (taskError) return { error: taskError }
+
+      const { error: clearAssigneesError } = await supabase.from('task_assignees').delete().in('task_id', selectedIds)
+      if (clearAssigneesError) return { error: clearAssigneesError }
+
+      const { error: insertAssigneesError } = await supabase
+        .from('task_assignees')
+        .insert(selectedIds.map((taskId) => ({ task_id: taskId, assignee_id: assigneeMember.id })))
+      if (insertAssigneesError) return { error: insertAssigneesError }
+
+      if (currentUser?.id) {
+        const notifications = selectedIds.map((taskId) => {
+          const taskTitle = previousRows.find((task) => task.id === taskId)?.title ?? 'a task'
+          return {
+            recipient_id: assigneeMember.id,
+            actor_id: currentUser.id,
+            task_id: taskId,
+            type: 'task' as const,
+            title: 'Task assigned to you',
+            message: `You were assigned "${taskTitle}".`,
+            metadata: { event: 'task_assigned', source: 'board_bulk_assign' },
+          }
+        })
+        const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+        if (notificationsError) {
+          console.error('Failed to create assignment notifications', notificationsError)
+        }
+      }
+
+      return { error: null as null }
+    })
+    if (!result) return
+    if (result.error) {
+      console.error('Failed to assign selected tasks', result.error)
+      setTaskRows(previousRows)
+      setBackgroundSync('error')
+      return
+    }
+
+    setBackgroundSync('saved')
     setBulkAssignValue('')
+    clearSelection()
   }
 
   const moveSelectedTasks = async () => {
@@ -1527,25 +2030,54 @@ export function MyTasksPage() {
     if (selectedIds.length === 0) return
     const selectedEditableSet = new Set(selectedIds)
     const previousRows = taskRows
+    const destinationDefinition = findBoardDefinitionByColumnId(boardDefinitions, bulkMoveTargetColumnId)
+    const nextStatusLabel = destinationDefinition?.title ?? mapColumnIdToTaskStatus(bulkMoveTargetColumnId)
+    const nextStatusKey = destinationDefinition?.key ?? mapTaskStatusToDatabaseStatus(nextStatusLabel)
     setTaskRows((rows) =>
       rows.map((task) =>
         selectedEditableSet.has(task.id)
-          ? { ...task, status: nextTaskStatusForBoardMove(bulkMoveTargetColumnId, task.status), boardColumn: bulkMoveTargetColumnId }
+          ? (() => {
+              const resolvedStatus = findStatusForProjectKey(task.projectId, nextStatusKey)
+              return {
+                ...task,
+                status: resolvedStatus?.label ?? nextStatusLabel,
+                statusId: resolvedStatus?.id ?? task.statusId,
+                statusKey: resolvedStatus?.key ?? nextStatusKey,
+                boardColumn: bulkMoveTargetColumnId,
+              }
+            })()
           : task,
       ),
     )
-    const { error } = isStatusBackedBoardColumn(bulkMoveTargetColumnId)
-      ? await supabase
+    setBackgroundSync('syncing')
+    const result = await runWithDedup(`move-bulk:${bulkMoveTargetColumnId}:${selectedIds.sort().join(',')}`, async () => {
+      const updates = selectedIds.map(async (taskId) => {
+        const task = previousRows.find((row) => row.id === taskId)
+        if (!task) return null
+        const resolvedStatus = findStatusForProjectKey(task.projectId, nextStatusKey)
+        return supabase
           .from('tasks')
-          .update({ status: mapColumnIdToTaskStatus(bulkMoveTargetColumnId) === 'Planned' ? 'planned' : bulkMoveTargetColumnId, board_column: bulkMoveTargetColumnId })
-          .in('id', selectedIds)
-      : await supabase.from('tasks').update({ board_column: bulkMoveTargetColumnId }).in('id', selectedIds)
+          .update({
+            status_id: resolvedStatus?.id ?? null,
+            status: resolvedStatus?.key ?? nextStatusKey,
+            board_column: legacyBoardColumnForStatusKey(resolvedStatus?.key ?? nextStatusKey),
+          })
+          .eq('id', taskId)
+      })
+      const settled = await Promise.all(updates)
+      const firstError = settled.find((response) => response?.error)?.error ?? null
+      return { error: firstError }
+    })
+    if (!result) return
+    const { error } = result
     if (error) {
       console.error('Failed to move selected tasks', error)
       setTaskRows(previousRows)
+      setBackgroundSync('error')
       return
     }
 
+    setBackgroundSync('saved')
     clearSelection()
   }
 
@@ -1568,67 +2100,197 @@ export function MyTasksPage() {
     setBoardCompletionFilter('open')
   }
 
+  const clearBoardDragState = useCallback(() => {
+    setDraggingTask(null)
+    setDragOverColumnId(null)
+    if (boardDragResetTimeoutRef.current !== null) {
+      window.clearTimeout(boardDragResetTimeoutRef.current)
+      boardDragResetTimeoutRef.current = null
+    }
+  }, [])
+
   const handleBoardDragStart = (taskId: string, fromColumnId: string) => {
     setDraggingTask({ taskId, fromColumnId })
+    setDragOverColumnId(fromColumnId)
+    if (boardDragResetTimeoutRef.current !== null) {
+      window.clearTimeout(boardDragResetTimeoutRef.current)
+    }
+    boardDragResetTimeoutRef.current = window.setTimeout(() => {
+      clearBoardDragState()
+    }, 8000)
+  }
+
+  const setBoardDragPreview = (event: React.DragEvent<HTMLElement>) => {
+    const source = event.currentTarget
+    const clone = source.cloneNode(true) as HTMLElement
+    const rect = source.getBoundingClientRect()
+
+    clone.classList.remove('bg-muted/20')
+    clone.classList.add('bg-card')
+    clone.style.position = 'fixed'
+    clone.style.top = '-9999px'
+    clone.style.left = '-9999px'
+    clone.style.width = `${Math.round(rect.width)}px`
+    clone.style.pointerEvents = 'none'
+    clone.style.opacity = '1'
+    clone.style.background = 'hsl(var(--card))'
+    clone.style.borderColor = 'hsl(var(--border))'
+    clone.style.transform = 'none'
+    clone.style.filter = 'none'
+    clone.style.boxShadow = '0 8px 28px rgba(0,0,0,0.35)'
+    clone.style.borderRadius = '12px'
+
+    event.dataTransfer.effectAllowed = 'move'
+    document.body.appendChild(clone)
+    event.dataTransfer.setDragImage(clone, Math.max(12, rect.width * 0.08), 20)
+    window.setTimeout(() => {
+      clone.remove()
+    }, 0)
   }
 
   const handleBoardDrop = async (toColumnId: string) => {
     if (!draggingTask) return
+    setDragOverColumnId(null)
     if (draggingTask.fromColumnId === toColumnId) {
-      setDraggingTask(null)
+      clearBoardDragState()
       return
     }
 
     const taskId = draggingTask.taskId
-    if (!canEditTaskById(taskId)) {
-      setDraggingTask(null)
-      return
-    }
     const previousRows = taskRows
     const currentTask = taskRows.find((task) => task.id === taskId)
     if (!currentTask) {
-      setDraggingTask(null)
+      clearBoardDragState()
       return
     }
+    const destinationDefinition = findBoardDefinitionByColumnId(boardDefinitions, toColumnId)
+    const nextStatusLabel = destinationDefinition?.title ?? mapColumnIdToTaskStatus(toColumnId)
+    const nextStatusKey = destinationDefinition?.key ?? mapTaskStatusToDatabaseStatus(nextStatusLabel)
+    const resolvedStatus = findStatusForProjectKey(currentTask.projectId, nextStatusKey)
     setTaskRows((rows) =>
       rows.map((task) =>
-        task.id === taskId ? { ...task, status: nextTaskStatusForBoardMove(toColumnId, task.status), boardColumn: toColumnId } : task,
+        task.id === taskId
+          ? {
+              ...task,
+              status: resolvedStatus?.label ?? nextStatusLabel,
+              statusId: resolvedStatus?.id ?? task.statusId,
+              statusKey: resolvedStatus?.key ?? nextStatusKey,
+              boardColumn: toColumnId,
+            }
+          : task,
       ),
     )
-    setDraggingTask(null)
+    clearBoardDragState()
 
-    const { error } = isStatusBackedBoardColumn(toColumnId)
-      ? await supabase
-          .from('tasks')
-          .update({ status: mapTaskStatusToDatabaseStatus(nextTaskStatusForBoardMove(toColumnId, currentTask.status)), board_column: toColumnId })
-          .eq('id', taskId)
-      : await supabase.from('tasks').update({ board_column: toColumnId }).eq('id', taskId)
+    setBackgroundSync('syncing')
+    const result = await runWithDedup(`drag:${taskId}:${toColumnId}`, async () =>
+      supabase
+        .from('tasks')
+        .update({
+          status_id: resolvedStatus?.id ?? null,
+          status: resolvedStatus?.key ?? nextStatusKey,
+          board_column: legacyBoardColumnForStatusKey(resolvedStatus?.key ?? nextStatusKey),
+        })
+        .eq('id', taskId),
+    )
+    if (!result) return
+    const { error } = result
     if (error) {
       console.error('Failed to move task on board', error)
       setTaskRows(previousRows)
+      setBackgroundSync('error')
+      return
     }
+    setBackgroundSync('saved')
   }
+
+  useEffect(() => {
+    const handleDragCompletion = () => {
+      clearBoardDragState()
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        clearBoardDragState()
+      }
+    }
+
+    window.addEventListener('dragend', handleDragCompletion)
+    window.addEventListener('drop', handleDragCompletion)
+    window.addEventListener('blur', handleDragCompletion)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      window.removeEventListener('dragend', handleDragCompletion)
+      window.removeEventListener('drop', handleDragCompletion)
+      window.removeEventListener('blur', handleDragCompletion)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      if (boardDragResetTimeoutRef.current !== null) {
+        window.clearTimeout(boardDragResetTimeoutRef.current)
+        boardDragResetTimeoutRef.current = null
+      }
+    }
+  }, [clearBoardDragState])
 
   const handleAddBoardColumn = async () => {
     const trimmedName = newColumnName.trim()
     if (!trimmedName) return
-    const newBoard = {
-      id: createBoardId(trimmedName),
-      name: trimmedName,
+    const statusKey = createBoardId(trimmedName).replace(/^board_/, '')
+    const newStatus = {
+      key: statusKey,
+      label: trimmedName,
       sort_order: boardDefinitions.length,
       is_default: false,
+      project_id: null,
       created_by: currentUser?.id ?? null,
     }
     const previousDefinitions = boardDefinitions
+    const previousCatalog = statusCatalog
     setBoardDefinitions((definitions) => [
       ...definitions,
-      { id: newBoard.id, title: newBoard.name, sortOrder: newBoard.sort_order, isDefault: false },
+      {
+        id: `temp-${statusKey}`,
+        key: newStatus.key,
+        title: newStatus.label,
+        sortOrder: newStatus.sort_order,
+        isDefault: false,
+        projectId: newStatus.project_id,
+      },
     ])
     setNewColumnName('')
-    const { error } = await supabase.from('boards').insert(newBoard)
+    const { data, error } = await supabase.from('status').insert(newStatus).select('id, key, label, sort_order, is_default, project_id').single()
     if (error) {
       console.error('Failed to create board column', error)
       setBoardDefinitions(previousDefinitions)
+      setStatusCatalog(previousCatalog)
+      return
+    }
+    if (data) {
+      setStatusCatalog((current) => [
+        ...current,
+        {
+          id: data.id,
+          key: data.key ?? statusKey,
+          label: data.label ?? trimmedName,
+          sortOrder: data.sort_order ?? 0,
+          projectId: data.project_id ?? null,
+          isDefault: data.is_default ?? false,
+          color: null,
+        },
+      ])
+      setBoardDefinitions((definitions) =>
+        definitions.map((definition) =>
+          definition.id.startsWith('temp-')
+            ? {
+                id: data.id,
+                key: data.key ?? statusKey,
+                title: data.label ?? trimmedName,
+                sortOrder: data.sort_order ?? 0,
+                isDefault: data.is_default ?? false,
+                projectId: data.project_id ?? null,
+              }
+            : definition,
+        ),
+      )
     }
   }
 
@@ -1638,20 +2300,42 @@ export function MyTasksPage() {
 
     const previousDefinitions = boardDefinitions
     const previousRows = taskRows
+    const previousCatalog = statusCatalog
 
     setBoardDefinitions((definitions) => definitions.filter((item) => item.id !== columnId))
+    const plannedDefinition = boardDefinitions.find((item) => item.key === 'planned') ?? boardDefinitions[0]
+    const affectedTasks = previousRows.filter((task) => task.statusId === columnId || task.boardColumn === columnId)
     setTaskRows((rows) =>
       rows.map((task) =>
-        task.boardColumn === columnId
-          ? { ...task, boardColumn: 'planned', status: 'Planned' }
+        task.statusId === columnId || task.boardColumn === columnId
+          ? (() => {
+              const fallbackPlanned = findStatusForProjectKey(task.projectId, 'planned')
+              return {
+                ...task,
+                boardColumn: fallbackPlanned?.id ?? plannedDefinition?.id ?? 'planned',
+                status: fallbackPlanned?.label ?? plannedDefinition?.title ?? 'Planned',
+                statusId: fallbackPlanned?.id ?? plannedDefinition?.id ?? task.statusId,
+                statusKey: fallbackPlanned?.key ?? plannedDefinition?.key ?? 'planned',
+              }
+            })()
           : task,
       ),
     )
 
-    const { error: moveError } = await supabase
-      .from('tasks')
-      .update({ board_column: 'planned', status: 'planned' })
-      .eq('board_column', columnId)
+    const moveUpdates = await Promise.all(
+      affectedTasks.map(async (task) => {
+        const fallbackPlanned = findStatusForProjectKey(task.projectId, 'planned')
+        return supabase
+          .from('tasks')
+          .update({
+            status_id: fallbackPlanned?.id ?? plannedDefinition?.id ?? null,
+            status: fallbackPlanned?.key ?? plannedDefinition?.key ?? 'planned',
+            board_column: legacyBoardColumnForStatusKey(fallbackPlanned?.key ?? plannedDefinition?.key ?? 'planned'),
+          })
+          .eq('id', task.id)
+      }),
+    )
+    const moveError = moveUpdates.find((response) => response.error)?.error
 
     if (moveError) {
       console.error('Failed to reassign tasks before deleting board column', moveError)
@@ -1660,28 +2344,66 @@ export function MyTasksPage() {
       return
     }
 
-    const { error: deleteError } = await supabase.from('boards').delete().eq('id', columnId)
+    const { error: deleteError } = await supabase.from('status').delete().eq('id', columnId)
 
     if (deleteError) {
       console.error('Failed to delete board column', deleteError)
       setBoardDefinitions(previousDefinitions)
       setTaskRows(previousRows)
+      setStatusCatalog(previousCatalog)
+      return
     }
+    setStatusCatalog((current) => current.filter((status) => status.id !== columnId))
   }
 
   const toggleBoardTaskCompleted = async (taskId: string) => {
     if (!canEditTaskById(taskId)) return
-    const nextCompleted = !(taskRows.find((task) => task.id === taskId)?.completed ?? false)
+    const currentTask = taskRows.find((task) => task.id === taskId)
+    if (!currentTask) return
+    const nextCompleted = !currentTask.completed
+    const doneStatus = findStatusForProjectKey(currentTask.projectId, 'done')
+    const doneStatusKey = doneStatus?.key ?? 'done'
+    const doneStatusLabel = doneStatus?.label ?? 'Done'
     const previousRows = taskRows
-    setTaskRows((rows) => rows.map((task) => (task.id === taskId ? { ...task, completed: nextCompleted } : task)))
-    const { error } = await supabase
-      .from('tasks')
-      .update({ completed_at: nextCompleted ? new Date().toISOString() : null })
-      .eq('id', taskId)
+    setTaskRows((rows) =>
+      rows.map((task) =>
+        task.id === taskId
+          ? {
+              ...task,
+              completed: nextCompleted,
+              status: nextCompleted ? doneStatusLabel : task.status,
+              statusId: nextCompleted ? (doneStatus?.id ?? task.statusId) : task.statusId,
+              statusKey: nextCompleted ? doneStatusKey : task.statusKey,
+              boardColumn: nextCompleted ? (doneStatus?.id ?? task.boardColumn) : task.boardColumn,
+            }
+          : task,
+      ),
+    )
+    setBackgroundSync('syncing')
+    const result = await runWithDedup(`toggle-complete:${taskId}`, async () =>
+      supabase
+        .from('tasks')
+        .update({
+          completed_at: nextCompleted ? new Date().toISOString() : null,
+          ...(nextCompleted
+            ? {
+                status_id: doneStatus?.id ?? null,
+                status: doneStatusKey,
+                board_column: legacyBoardColumnForStatusKey(doneStatusKey),
+              }
+            : {}),
+        })
+        .eq('id', taskId),
+    )
+    if (!result) return
+    const { error } = result
     if (error) {
       console.error('Failed to update task completion', error)
       setTaskRows(previousRows)
+      setBackgroundSync('error')
+      return
     }
+    setBackgroundSync('saved')
   }
 
   const resetTaskDraft = () => ({
@@ -1699,7 +2421,9 @@ export function MyTasksPage() {
   const persistTaskDraft = async (taskId: string, draft: BoardTaskDraft) => {
     const existingTask = taskRows.find((task) => task.id === taskId)
     if (!existingTask) return { ok: false as const, nextBoardColumn: '' }
-    if (!currentUser?.id || existingTask.createdById !== currentUser.id) return { ok: false as const, nextBoardColumn: '' }
+    if (!currentUser?.id || (existingTask.createdById !== currentUser.id && !existingTask.assigneeIds.includes(currentUser.id))) {
+      return { ok: false as const, nextBoardColumn: '' }
+    }
 
     const title = draft.title.trim()
     if (!title) return { ok: false as const, nextBoardColumn: '' }
@@ -1714,21 +2438,34 @@ export function MyTasksPage() {
 
     const nextAssigneeIds = draft.assigneeIds
     const previousAssigneeIds = existingTask.assigneeIds
+    const assigneesChanged =
+      nextAssigneeIds.length !== previousAssigneeIds.length ||
+      [...nextAssigneeIds].sort().some((assigneeId, index) => assigneeId !== [...previousAssigneeIds].sort()[index])
     const nextAssigneeNames = nextAssigneeIds
       .map((id) => members.find((member) => member.id === id)?.name)
       .filter((name): name is string => Boolean(name))
     const nextAssignee = nextAssigneeNames.length > 0 ? nextAssigneeNames.join(', ') : 'Unassigned'
     const nextDescription = draft.description.trim() || 'No description yet.'
     const nextProject = projects.find((project) => project.id === draft.projectId)
-    const defaultStatusColumn = boardColumnIdFromStatus(draft.status)
+    const projectScopedStatuses = getStatusOptionsForProject(draft.projectId)
+    const requestedStatusDefinition = projectScopedStatuses.find(
+      (definition) =>
+        definition.title.toLowerCase() === draft.status.toLowerCase() ||
+        definition.key === mapTaskStatusToDatabaseStatus(draft.status),
+    )
+    const doneDefinition = projectScopedStatuses.find((definition) => definition.key === 'done')
+    const effectiveStatusDefinition = draft.completed && doneDefinition ? doneDefinition : requestedStatusDefinition
+    const effectiveStatusLabel = draft.completed && doneDefinition ? doneDefinition.title : draft.status
+    const defaultStatusColumn = effectiveStatusDefinition?.id ?? boardColumnIdFromStatus(effectiveStatusLabel)
+    const nextStatusId = effectiveStatusDefinition?.id ?? null
+    const nextStatusKey = effectiveStatusDefinition?.key ?? mapTaskStatusToDatabaseStatus(effectiveStatusLabel)
     const nextBoardColumn =
-      existingTask.boardColumn && !isStatusBackedBoardColumn(existingTask.boardColumn)
-        ? existingTask.boardColumn
-        : defaultStatusColumn
+      existingTask.boardColumn || defaultStatusColumn
     const startAtIso = `${normalizedSchedule.startDate}T00:00:00.000Z`
     const dueAtIso = `${normalizedSchedule.endDate}T00:00:00.000Z`
     const previousRows = taskRows
 
+    setBackgroundSync('syncing')
     setTaskRows((rows) =>
       rows.map((task) =>
         task.id === taskId
@@ -1740,7 +2477,9 @@ export function MyTasksPage() {
               due: formatTaskDueLabel(dueAtIso),
               owner: nextAssignee,
               assigneeIds: nextAssigneeIds,
-              status: draft.status,
+              status: effectiveStatusLabel,
+              statusId: nextStatusId ?? task.statusId,
+              statusKey: nextStatusKey,
               priority: draft.priority,
               boardColumn: nextBoardColumn,
               description: nextDescription,
@@ -1757,9 +2496,10 @@ export function MyTasksPage() {
       .update({
         title,
         description: nextDescription,
-        status: mapTaskStatusToDatabaseStatus(draft.status),
+        status_id: nextStatusId,
+        status: nextStatusKey,
         priority: mapTaskPriorityToDatabasePriority(draft.priority),
-        board_column: nextBoardColumn,
+        board_column: legacyBoardColumnForStatusKey(nextStatusKey),
         project_id: draft.projectId || null,
         start_at: startAtIso,
         due_at: dueAtIso,
@@ -1771,30 +2511,35 @@ export function MyTasksPage() {
     if (error) {
       console.error('Failed to save task details', error)
       setTaskRows(previousRows)
+      setBackgroundSync('error')
       return { ok: false as const, nextBoardColumn: '' }
     }
 
-    const { error: clearError } = await supabase.from('task_assignees').delete().eq('task_id', taskId)
-    if (clearError) {
-      console.error('Failed to clear task assignees', clearError)
-      setTaskRows(previousRows)
-      return { ok: false as const, nextBoardColumn: '' }
-    }
-
-    if (nextAssigneeIds.length > 0) {
-      const { error: insertError } = await supabase
-        .from('task_assignees')
-        .insert(nextAssigneeIds.map((assigneeId) => ({ task_id: taskId, assignee_id: assigneeId })))
-      if (insertError) {
-        console.error('Failed to save task assignees', insertError)
+    if (assigneesChanged) {
+      const { error: clearError } = await supabase.from('task_assignees').delete().eq('task_id', taskId)
+      if (clearError) {
+        console.error('Failed to clear task assignees', clearError)
         setTaskRows(previousRows)
+        setBackgroundSync('error')
         return { ok: false as const, nextBoardColumn: '' }
+      }
+
+      if (nextAssigneeIds.length > 0) {
+        const { error: insertError } = await supabase
+          .from('task_assignees')
+          .insert(nextAssigneeIds.map((assigneeId) => ({ task_id: taskId, assignee_id: assigneeId })))
+        if (insertError) {
+          console.error('Failed to save task assignees', insertError)
+          setTaskRows(previousRows)
+          setBackgroundSync('error')
+          return { ok: false as const, nextBoardColumn: '' }
+        }
       }
     }
 
     if (currentUser?.id) {
       const addedAssigneeIds = nextAssigneeIds.filter(
-        (assigneeId) => !previousAssigneeIds.includes(assigneeId) && assigneeId !== currentUser.id,
+        (assigneeId) => !previousAssigneeIds.includes(assigneeId),
       )
       if (addedAssigneeIds.length > 0) {
         const notifications = addedAssigneeIds.map((recipientId) => ({
@@ -1813,6 +2558,30 @@ export function MyTasksPage() {
       }
     }
 
+    if (currentUser?.id) {
+      const previousMentionedIds = extractMentionedMemberIds(existingTask.description ?? '', members)
+      const nextMentionedIds = extractMentionedMemberIds(draft.description ?? '', members)
+      const addedMentionIds = nextMentionedIds.filter(
+        (memberId) => !previousMentionedIds.includes(memberId) && memberId !== currentUser.id,
+      )
+      if (addedMentionIds.length > 0) {
+        const mentionNotifications = addedMentionIds.map((recipientId) => ({
+          recipient_id: recipientId,
+          actor_id: currentUser.id,
+          task_id: taskId,
+          type: 'mention' as const,
+          title: 'You were mentioned',
+          message: `You were mentioned in "${title}".`,
+          metadata: { event: 'task_mentioned', source: 'task_edit_description' },
+        }))
+        const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+        if (mentionNotificationsError) {
+          console.error('Failed to create mention notifications', mentionNotificationsError)
+        }
+      }
+    }
+
+    setBackgroundSync('saved')
     return { ok: true as const, nextBoardColumn }
   }
 
@@ -1879,8 +2648,32 @@ export function MyTasksPage() {
     setDetailSaveState('idle')
     clearDetailSaveTimers()
   }
+  void openTaskDetails
 
   const closeTaskDetails = () => {
+    const closingTaskId = activeTaskRef?.taskId ?? null
+    const closingDraft = detailDraft
+    const closingSerialized = serializeDetailDraft(closingDraft)
+    const closingTask = closingTaskId ? taskRows.find((task) => task.id === closingTaskId) : null
+    const canPersistOnClose = Boolean(
+      currentUser?.id &&
+      closingTask &&
+      (closingTask.createdById === currentUser.id || closingTask.assigneeIds.includes(currentUser.id)),
+    )
+    const hasUnsavedChanges = closingSerialized !== detailLastPersistedRef.current
+
+    if (closingTaskId && canPersistOnClose && hasUnsavedChanges) {
+      setBackgroundSync('syncing')
+      void persistTaskDraft(closingTaskId, closingDraft).then((result) => {
+        if (!result.ok) {
+          setBackgroundSync('error')
+          return
+        }
+        detailLastPersistedRef.current = closingSerialized
+        setBackgroundSync('saved')
+      })
+    }
+
     setActiveTaskRef(null)
     setCommentDraft('')
     setDetailAssigneeOpen(false)
@@ -1902,7 +2695,14 @@ export function MyTasksPage() {
     if (!taskId) return null
     return taskRows.find((task) => task.id === taskId) ?? null
   }, [activeTaskData?.task.id, taskRows])
-  const canEditActiveTask = Boolean(currentUser?.id && activeTaskRow?.createdById === currentUser.id)
+  const activeTaskSubtasks = useMemo(() => {
+    const parentTaskId = activeTaskRow?.id
+    if (!parentTaskId) return []
+    return taskRows
+      .filter((task) => task.parentTaskId === parentTaskId)
+      .sort((a, b) => a.startDate.localeCompare(b.startDate))
+  }, [activeTaskRow?.id, taskRows])
+  const canEditActiveTask = Boolean(activeTaskRow && canEditTaskById(activeTaskRow.id))
   const activeCommentAuthor = useMemo(() => {
     const member = members.find((item) => item.id === currentUser?.id)
     return {
@@ -1919,16 +2719,10 @@ export function MyTasksPage() {
   const filteredDetailTeammates = useMemo(() => {
     const query = detailAssigneeSearch.trim().toLowerCase()
     if (!query) return detailTeammateOptions
-    return detailTeammateOptions.filter((member) => member.name.toLowerCase().includes(query))
+    return detailTeammateOptions.filter(
+      (member) => member.name.toLowerCase().includes(query) || mentionHandleForMember(member).toLowerCase().includes(query),
+    )
   }, [detailAssigneeSearch, detailTeammateOptions])
-  const descriptionMentionOptions = useMemo(() => {
-    if (!descriptionMentionDraft) return []
-    const query = descriptionMentionDraft.query.trim().toLowerCase()
-    const candidates = query
-      ? detailTeammateOptions.filter((member) => member.name.toLowerCase().includes(query))
-      : detailTeammateOptions
-    return candidates.slice(0, 6)
-  }, [descriptionMentionDraft, detailTeammateOptions])
 
   useEffect(() => {
     setReplyDraftByCommentId({})
@@ -1939,21 +2733,17 @@ export function MyTasksPage() {
     setCommentEmojiOpen(false)
     const recorder = commentMediaRecorderRef.current
     if (recorder && recorder.state !== 'inactive') recorder.stop()
-  }, [activeTaskRef?.taskId, clearPendingVoiceComment])
-  useEffect(() => {
-    setDescriptionMentionDraft(null)
-    setDescriptionMentionActiveIndex(0)
-  }, [activeTaskRef?.taskId])
-  useEffect(() => {
-    setDescriptionMentionActiveIndex(0)
-  }, [descriptionMentionDraft?.query])
+    stopRecordingVisualizer()
+    setRecordingElapsedMs(0)
+  }, [activeTaskRef?.taskId, clearPendingVoiceComment, stopRecordingVisualizer])
   useEffect(() => {
     return () => {
       clearPendingVoiceComment()
       const recorder = commentMediaRecorderRef.current
       if (recorder && recorder.state !== 'inactive') recorder.stop()
+      stopRecordingVisualizer()
     }
-  }, [clearPendingVoiceComment])
+  }, [clearPendingVoiceComment, stopRecordingVisualizer])
 
   const serializeDetailDraft = (draft: BoardTaskDraft) =>
     JSON.stringify({
@@ -1980,10 +2770,21 @@ export function MyTasksPage() {
       return
     }
 
+    if (detailSaveInFlightRef.current) {
+      queuedDetailDraftRef.current = draft
+      setDetailSaveState('saving')
+      return
+    }
+
+    detailSaveInFlightRef.current = true
     setDetailSaveState('saving')
+    setBackgroundSync('syncing')
     const result = await persistTaskDraft(activeTaskRef.taskId, draft)
     if (!result.ok) {
       setDetailSaveState('error')
+      setBackgroundSync('error')
+      detailSaveInFlightRef.current = false
+      queuedDetailDraftRef.current = null
       return
     }
 
@@ -1997,6 +2798,14 @@ export function MyTasksPage() {
       setDetailSaveState('idle')
       detailSavedFlashRef.current = null
     }, 1200)
+    setBackgroundSync('saved')
+    detailSaveInFlightRef.current = false
+
+    if (queuedDetailDraftRef.current) {
+      const queuedDraft = queuedDetailDraftRef.current
+      queuedDetailDraftRef.current = null
+      void saveDetailTask(queuedDraft)
+    }
   }
 
   const triggerDetailAutosave = () => {
@@ -2025,11 +2834,19 @@ export function MyTasksPage() {
     setTaskRows((rows) => rows.filter((task) => task.id !== taskId))
     setSelectedTaskIds((ids) => ids.filter((id) => id !== taskId))
 
-    const { error } = await supabase.from('tasks').delete().eq('id', taskId)
+    setBackgroundSync('syncing')
+    const result = await runWithDedup(`delete:${taskId}`, async () =>
+      supabase.from('tasks').delete().eq('id', taskId),
+    )
+    if (!result) return
+    const { error } = result
     if (error) {
       console.error('Failed to delete task', error)
       setTaskRows(previousRows)
+      setBackgroundSync('error')
+      return
     }
+    setBackgroundSync('saved')
   }
 
   function stopVoiceCommentRecording() {
@@ -2050,8 +2867,36 @@ export function MyTasksPage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const recorder = new MediaRecorder(stream)
+      commentMicStreamRef.current = stream
       commentVoiceChunksRef.current = []
       commentVoiceStartAtRef.current = Date.now()
+      setRecordingElapsedMs(0)
+
+      const audioContext = new AudioContext()
+      commentAudioContextRef.current = audioContext
+      const source = audioContext.createMediaStreamSource(stream)
+      const analyser = audioContext.createAnalyser()
+      analyser.fftSize = 128
+      analyser.smoothingTimeConstant = 0.85
+      source.connect(analyser)
+
+      const frequencyData = new Uint8Array(analyser.frequencyBinCount)
+      const tick = () => {
+        analyser.getByteFrequencyData(frequencyData)
+        const bucketSize = Math.max(1, Math.floor(frequencyData.length / RECORDING_VISUALIZER_BARS))
+        const nextLevels = Array.from({ length: RECORDING_VISUALIZER_BARS }, (_, barIndex) => {
+          const start = barIndex * bucketSize
+          const end = Math.min(frequencyData.length, start + bucketSize)
+          let sum = 0
+          for (let i = start; i < end; i += 1) sum += frequencyData[i]
+          const avg = sum / Math.max(1, end - start)
+          return Math.max(0.12, avg / 255)
+        })
+        setRecordingLevels(nextLevels)
+        setRecordingElapsedMs(Date.now() - commentVoiceStartAtRef.current)
+        commentAnimationFrameRef.current = requestAnimationFrame(tick)
+      }
+      commentAnimationFrameRef.current = requestAnimationFrame(tick)
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -2071,7 +2916,7 @@ export function MyTasksPage() {
           if (current) URL.revokeObjectURL(current.previewUrl)
           return { file, previewUrl, durationMs }
         })
-        stream.getTracks().forEach((track) => track.stop())
+        stopRecordingVisualizer()
         commentMediaRecorderRef.current = null
         setIsRecordingVoiceComment(false)
       }
@@ -2084,6 +2929,8 @@ export function MyTasksPage() {
       setVoiceCommentError('Microphone permission is required to record voice.')
       setIsRecordingVoiceComment(false)
       commentMediaRecorderRef.current = null
+      stopRecordingVisualizer()
+      setRecordingElapsedMs(0)
     }
   }
 
@@ -2110,19 +2957,26 @@ export function MyTasksPage() {
           })
         : contentText
 
-    const { data, error } = await supabase
-      .from('task_comments')
-      .insert({
-        task_id: activeTaskRef.taskId,
-        author_id: currentUser.id,
-        content,
-        parent_comment_id: null,
-      })
-      .select('id, task_id, author_id, content, created_at')
-      .single()
+    setBackgroundSync('syncing')
+    const insertResult = await runWithDedup(`comment:${activeTaskRef.taskId}`, async () =>
+      supabase
+        .from('task_comments')
+        .insert({
+          task_id: activeTaskRef.taskId,
+          author_id: currentUser.id,
+          content,
+          parent_comment_id: null,
+        })
+        .select('id, task_id, author_id, content, created_at')
+        .single(),
+    )
+
+    if (!insertResult) return
+    const { data, error } = insertResult
 
     if (error || !data) {
       console.error('Failed to add comment', error)
+      setBackgroundSync('error')
       return
     }
 
@@ -2166,6 +3020,26 @@ export function MyTasksPage() {
           : column,
       ),
     )
+
+    const mentionedMemberIds = extractMentionedMemberIds(contentText, members).filter((memberId) => memberId !== currentUser.id)
+    if (mentionedMemberIds.length > 0) {
+      const taskTitle = activeTaskRow?.title ?? 'a task'
+      const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+        recipient_id: recipientId,
+        actor_id: currentUser.id,
+        task_id: activeTaskRef.taskId,
+        type: 'mention' as const,
+        title: 'You were mentioned in a comment',
+        message: `You were mentioned in "${taskTitle}".`,
+        metadata: { event: 'task_mentioned', source: 'task_comment' },
+      }))
+      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+      if (mentionNotificationsError) {
+        console.error('Failed to create comment mention notifications', mentionNotificationsError)
+      }
+    }
+
+    setBackgroundSync('saved')
   }
 
   const toggleCommentLike = async (commentId: string) => {
@@ -2276,27 +3150,24 @@ export function MyTasksPage() {
           : column,
       ),
     )
-  }
 
-  const insertDescriptionMention = (memberId: string) => {
-    const mention = descriptionMentionDraft
-    if (!mention) return
-    const teammate = detailTeammateOptions.find((member) => member.id === memberId)
-    if (!teammate) return
-
-    const mentionText = `@${teammate.name} `
-    const nextDescription = `${detailDraft.description.slice(0, mention.start)}${mentionText}${detailDraft.description.slice(mention.end)}`
-    const nextDraft = { ...detailDraft, description: nextDescription }
-    setDetailDraft(nextDraft)
-    triggerDebouncedDescriptionAutosave(nextDraft)
-    setDescriptionMentionDraft(null)
-    setDescriptionMentionActiveIndex(0)
-
-    const nextCursor = mention.start + mentionText.length
-    window.requestAnimationFrame(() => {
-      descriptionTextareaRef.current?.focus()
-      descriptionTextareaRef.current?.setSelectionRange(nextCursor, nextCursor)
-    })
+    const mentionedMemberIds = extractMentionedMemberIds(content, members).filter((memberId) => memberId !== currentUser.id)
+    if (mentionedMemberIds.length > 0) {
+      const taskTitle = activeTaskRow?.title ?? 'a task'
+      const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+        recipient_id: recipientId,
+        actor_id: currentUser.id,
+        task_id: activeTaskRef.taskId,
+        type: 'mention' as const,
+        title: 'You were mentioned in a reply',
+        message: `You were mentioned in "${taskTitle}".`,
+        metadata: { event: 'task_mentioned', source: 'task_reply' },
+      }))
+      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+      if (mentionNotificationsError) {
+        console.error('Failed to create reply mention notifications', mentionNotificationsError)
+      }
+    }
   }
 
   const renderCalendarContent = () => {
@@ -2636,12 +3507,20 @@ export function MyTasksPage() {
           <div className='inline-flex min-w-full gap-3 pr-1'>
             {visibleBoardColumns.map((column) => {
               const allVisibleSelected = column.items.length > 0 && column.items.every((item) => selectedTaskSet.has(item.id))
+              const isDragTargetColumn = draggingTask !== null && dragOverColumnId === column.id
 
               return (
                 <Card
                   key={column.id}
-                  className='w-[320px] shrink-0'
-                  onDragOver={(event) => event.preventDefault()}
+                  className={cn(
+                    'w-[320px] shrink-0 transition-colors',
+                    isDragTargetColumn && 'border-primary/60 bg-primary/[0.06] shadow-[0_0_0_1px_hsl(var(--primary)/0.25)]',
+                  )}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'move'
+                    if (dragOverColumnId !== column.id) setDragOverColumnId(column.id)
+                  }}
                   onDrop={() => handleBoardDrop(column.id)}
                 >
                   <CardHeader className='pb-3'>
@@ -2672,20 +3551,45 @@ export function MyTasksPage() {
 
                   <CardContent className='space-y-2'>
                     {column.items.length === 0 ? (
-                      <div className='rounded-md border border-dashed p-3 text-xs text-muted-foreground'>
+                      <div
+                        className={cn(
+                          'rounded-md border border-dashed p-3 text-xs text-muted-foreground transition-colors',
+                          isDragTargetColumn && 'border-primary/60 bg-primary/5 text-foreground',
+                        )}
+                      >
                         Drop or add tasks here
                       </div>
                     ) : null}
 
                     {column.items.map((item) => {
                       const canEditBoardTask = canEditTaskById(item.id)
+                      const isTaskBeingDragged = draggingTask?.taskId === item.id && draggingTask?.fromColumnId === column.id
+                      if (isTaskBeingDragged) {
+                        return (
+                          <article
+                            key={item.id}
+                            className='rounded-md border border-dashed border-primary/50 bg-primary/5 p-2.5'
+                          >
+                            <div className='h-14 rounded-md border border-dashed border-primary/30 bg-transparent' />
+                          </article>
+                        )
+                      }
                       return (
                       <article
                         key={item.id}
-                        draggable={canEditBoardTask}
-                        onDragStart={() => {
-                          if (!canEditBoardTask) return
+                        draggable
+                        onDragStart={(event) => {
+                          event.currentTarget.style.opacity = '1'
+                          event.currentTarget.style.filter = 'none'
+                          event.currentTarget.style.background = 'hsl(var(--card))'
+                          setBoardDragPreview(event)
                           handleBoardDragStart(item.id, column.id)
+                        }}
+                        onDragEnd={(event) => {
+                          event.currentTarget.style.opacity = '1'
+                          event.currentTarget.style.filter = 'none'
+                          event.currentTarget.style.background = ''
+                          clearBoardDragState()
                         }}
                         onPointerDown={(event) => {
                           if (shouldIgnoreHoldTarget(event.target)) return
@@ -2700,7 +3604,7 @@ export function MyTasksPage() {
                             holdSelectedTaskIdRef.current = null
                             return
                           }
-                          openTaskDetails(column.id, item)
+                          openTaskDetailsModal(item.id)
                         }}
                         className={cn(
                           'cursor-pointer rounded-md border bg-muted/20 p-2.5 transition-colors active:cursor-grabbing',
@@ -2794,11 +3698,11 @@ export function MyTasksPage() {
                                       }
                                       className='h-8 rounded-md border bg-background px-2 text-xs text-foreground'
                                     >
-                                      <option value='Planned'>Planned</option>
-                                      <option value='In Progress'>In Progress</option>
-                                      <option value='Review'>Review</option>
-                                      <option value='Blocked'>Blocked</option>
-                                      <option value='Done'>Done</option>
+                                      {getStatusOptionsForProject(editingTaskDraft.projectId).map((statusOption) => (
+                                        <option key={statusOption.id} value={statusOption.title}>
+                                          {statusOption.title}
+                                        </option>
+                                      ))}
                                     </select>
                                   </div>
                                   <select
@@ -3023,11 +3927,11 @@ export function MyTasksPage() {
                   aria-label='Filter tasks by status'
                 >
                   <option value='all'>All statuses</option>
-                  <option value='Planned'>Planned</option>
-                  <option value='In Progress'>In Progress</option>
-                  <option value='Review'>Review</option>
-                  <option value='Blocked'>Blocked</option>
-                  <option value='Done'>Done</option>
+                  {dynamicStatusOptions.map((statusOption) => (
+                    <option key={statusOption.id} value={statusOption.title}>
+                      {statusOption.title}
+                    </option>
+                  ))}
                 </select>
 
                 <div className='grid grid-cols-2 gap-2'>
@@ -3304,11 +4208,14 @@ export function MyTasksPage() {
                   )
                 })}
               </div>
-              {activeTab === 'board' ? (
-                <p className='text-xs text-muted-foreground sm:text-sm'>
-                  {totalTasksCount} total tasks • {selectedTasksCount} selected • Press and hold a task to select
-                </p>
-              ) : null}
+              <div className='flex items-center gap-3'>
+                <GlobalSaveStatus state={backgroundSyncState} />
+                {activeTab === 'board' ? (
+                  <p className='text-xs text-muted-foreground sm:text-sm'>
+                    {totalTasksCount} total tasks • {selectedTasksCount} selected • Press and hold a task to select
+                  </p>
+                ) : null}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -3323,10 +4230,11 @@ export function MyTasksPage() {
         onOpenChange={handleTaskDialogOpenChange}
         onTaskCreated={handleTaskCreated}
         initialBoardColumn={createTaskColumnId}
+        initialParentTaskId={createTaskParentTaskId}
       />
 
       <Dialog open={Boolean(activeTaskData)} onOpenChange={(open) => (!open ? closeTaskDetails() : undefined)}>
-        <DialogContent className='max-h-[90vh] max-w-4xl overflow-hidden p-0'>
+        <DialogContent disableAnimations className='max-h-[90vh] max-w-4xl overflow-hidden p-0'>
           {activeTaskData ? (
             <div className='flex max-h-[90vh] min-h-0 flex-col'>
               <DialogHeader className='border-b px-4 py-3'>
@@ -3334,9 +4242,6 @@ export function MyTasksPage() {
                   <div>
                     <DialogTitle>Task Details</DialogTitle>
                     <DialogDescription>{activeTaskData.column.title}</DialogDescription>
-                    {!canEditActiveTask ? (
-                      <p className='mt-1 text-xs text-amber-300'>Only the task creator can edit details. You can still add comments.</p>
-                    ) : null}
                   </div>
                   <div className='text-xs text-muted-foreground'>
                     {detailSaveState === 'saving' ? (
@@ -3354,14 +4259,21 @@ export function MyTasksPage() {
               <div className='grid min-h-0 flex-1 lg:grid-cols-[minmax(0,2.1fr)_360px]'>
                 <div className='flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain border-r p-4'>
                   <div className='flex flex-1 flex-col gap-4'>
-                    <Input
-                      value={detailDraft.title}
-                      onChange={(event) => setDetailDraft((draft) => ({ ...draft, title: event.target.value }))}
-                      onBlur={triggerDetailAutosave}
-                      placeholder='Task title'
-                      className='h-11 text-lg font-semibold'
-                      readOnly={!canEditActiveTask}
-                    />
+                    <div className='relative'>
+                      <Input
+                        value={detailDraft.title}
+                        onChange={(event) => setDetailDraft((draft) => ({ ...draft, title: event.target.value }))}
+                        onBlur={triggerDetailAutosave}
+                        placeholder='Task title'
+                        className={cn('h-11 text-lg font-semibold', !canEditActiveTask && 'pr-10')}
+                        readOnly={!canEditActiveTask}
+                      />
+                      {!canEditActiveTask ? (
+                        <span className='pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground' title='Only task creator can edit details'>
+                          <Lock className='h-4 w-4' aria-hidden='true' />
+                        </span>
+                      ) : null}
+                    </div>
 
                   <div className='grid gap-3 md:grid-cols-2'>
                     <div className='space-y-1.5'>
@@ -3424,11 +4336,11 @@ export function MyTasksPage() {
                         }}
                         className='h-9 w-full rounded-md border bg-background px-2 text-sm text-foreground'
                       >
-                        <option value='Planned'>Planned</option>
-                        <option value='In Progress'>In Progress</option>
-                        <option value='Review'>Review</option>
-                        <option value='Blocked'>Blocked</option>
-                        <option value='Done'>Done</option>
+                        {getStatusOptionsForProject(detailDraft.projectId).map((definition) => (
+                          <option key={definition.id} value={definition.title}>
+                            {definition.title}
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div className='space-y-1.5'>
@@ -3477,13 +4389,54 @@ export function MyTasksPage() {
                     </div>
                   </div>
 
-                  <div className='space-y-2 rounded-md border bg-muted/10 p-3'>
-                    <div className='flex items-center justify-between gap-2'>
-                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Assignees</p>
+                  <div className='rounded-md border bg-muted/10 p-2.5'>
+                    <div className='grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2'>
+                      <div className='flex min-h-8 flex-wrap content-center gap-2'>
+                        {detailDraft.assigneeIds.length === 0 ? (
+                          <p className='px-1 text-sm text-muted-foreground'>No assignees selected.</p>
+                        ) : (
+                          detailDraft.assigneeIds.map((assigneeId) => {
+                            const member = detailTeammateOptions.find((item) => item.id === assigneeId)
+                            const label = member?.name ?? 'Unknown user'
+                            return (
+                              <span key={assigneeId} className='inline-flex items-center gap-2 rounded-full border bg-background px-2.5 py-1 text-xs'>
+                                <Avatar className='h-5 w-5 border'>
+                                  {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
+                                  <AvatarFallback className='text-[9px] font-semibold'>{initialsForName(label)}</AvatarFallback>
+                                </Avatar>
+                                <span className='max-w-28 truncate'>{label}</span>
+                                <button
+                                  type='button'
+                                  disabled={!canEditActiveTask}
+                                  onClick={() => {
+                                    const nextDraft = {
+                                      ...detailDraft,
+                                      assigneeIds: detailDraft.assigneeIds.filter((id) => id !== assigneeId),
+                                    }
+                                    setDetailDraft(nextDraft)
+                                    triggerDetailAutosaveWithDraft(nextDraft)
+                                  }}
+                                  className='inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
+                                  aria-label={`Remove ${label}`}
+                                >
+                                  <X className='h-3 w-3' />
+                                </button>
+                              </span>
+                            )
+                          })
+                        )}
+                      </div>
                       <Popover open={detailAssigneeOpen} onOpenChange={setDetailAssigneeOpen}>
                         <PopoverTrigger asChild>
-                          <Button type='button' size='sm' variant='outline' className='h-8' disabled={!canEditActiveTask}>
-                            Add assignee
+                          <Button
+                            type='button'
+                            size='sm'
+                            variant='outline'
+                            className='h-8 w-8 rounded-full px-0'
+                            disabled={!canEditActiveTask}
+                            aria-label='Add assignee'
+                          >
+                            <UserPlus className='h-4 w-4' />
                           </Button>
                         </PopoverTrigger>
                         <PopoverContent className='w-72 p-2' align='end'>
@@ -3529,112 +4482,84 @@ export function MyTasksPage() {
                         </PopoverContent>
                       </Popover>
                     </div>
-                    <div className='flex flex-wrap gap-2'>
-                      {detailDraft.assigneeIds.length === 0 ? (
-                        <p className='text-sm text-muted-foreground'>No assignees selected.</p>
+                  </div>
+
+                  <div className='rounded-md border bg-muted/10 p-2.5'>
+                    <div className='mb-2 flex items-center justify-between gap-2'>
+                      <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        Subtasks ({activeTaskSubtasks.length})
+                      </p>
+                    </div>
+
+                    <div className='space-y-2'>
+                      {activeTaskSubtasks.length === 0 ? (
+                        <p className='text-xs text-muted-foreground'>No subtasks yet.</p>
                       ) : (
-                        detailDraft.assigneeIds.map((assigneeId) => {
-                          const member = detailTeammateOptions.find((item) => item.id === assigneeId)
-                          const label = member?.name ?? 'Unknown user'
-                          return (
-                            <span key={assigneeId} className='inline-flex items-center gap-2 rounded-full border bg-background px-2.5 py-1 text-xs'>
-                              <Avatar className='h-5 w-5 border'>
-                                {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
-                                <AvatarFallback className='text-[9px] font-semibold'>{initialsForName(label)}</AvatarFallback>
-                              </Avatar>
-                              <span className='max-w-28 truncate'>{label}</span>
-                              <button
-                                type='button'
-                                disabled={!canEditActiveTask}
-                                onClick={() => {
-                                  const nextDraft = {
-                                    ...detailDraft,
-                                    assigneeIds: detailDraft.assigneeIds.filter((id) => id !== assigneeId),
-                                  }
-                                  setDetailDraft(nextDraft)
-                                  triggerDetailAutosaveWithDraft(nextDraft)
-                                }}
-                                className='inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
-                                aria-label={`Remove ${label}`}
-                              >
-                                <X className='h-3 w-3' />
-                              </button>
-                            </span>
-                          )
-                        })
+                        activeTaskSubtasks.map((subtask) => (
+                          <div key={subtask.id} className='flex items-center gap-2 rounded-md border bg-background px-2 py-1.5'>
+                            <button
+                              type='button'
+                              onClick={() => toggleBoardTaskCompleted(subtask.id)}
+                              disabled={!canEditTaskById(subtask.id)}
+                              className={cn(
+                                'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                                subtask.completed ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-border text-transparent',
+                              )}
+                              aria-label={subtask.completed ? `Mark ${subtask.title} as incomplete` : `Mark ${subtask.title} as complete`}
+                            >
+                              <Check className='h-3 w-3' />
+                            </button>
+                            <button
+                              type='button'
+                              onClick={() => openTaskDetailsById(subtask.id)}
+                              className={cn(
+                                'min-w-0 flex-1 truncate text-left text-sm hover:underline',
+                                subtask.completed ? 'text-muted-foreground line-through' : 'text-foreground',
+                              )}
+                            >
+                              {subtask.title}
+                            </button>
+                            <span className='text-[11px] text-muted-foreground'>{subtask.status}</span>
+                          </div>
+                        ))
                       )}
+                      <div className='pt-1'>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='outline'
+                          className='h-8 gap-1.5'
+                          onClick={() => {
+                            if (!activeTaskRow) return
+                            setCreateTaskColumnId(activeTaskRow.boardColumn ?? boardColumnIdFromStatus(activeTaskRow.status))
+                            setCreateTaskParentTaskId(activeTaskRow.id)
+                            setTaskDialogOpen(true)
+                          }}
+                        >
+                          <CirclePlus className='h-3.5 w-3.5' />
+                          Add subtask
+                        </Button>
+                      </div>
                     </div>
                   </div>
 
                   <div className='mt-auto flex min-h-[220px] flex-1 flex-col space-y-1.5'>
                     <p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Description</p>
                     <div className='relative flex min-h-0 flex-1'>
-                    <textarea
-                      ref={descriptionTextareaRef}
-                      rows={6}
-                      value={detailDraft.description}
-                      readOnly={!canEditActiveTask}
-                      onChange={(event) => {
-                        const nextDraft = { ...detailDraft, description: event.target.value }
-                        setDetailDraft(nextDraft)
-                        triggerDebouncedDescriptionAutosave(nextDraft)
-                        setDescriptionMentionDraft(getMentionDraft(event.target.value, event.target.selectionStart))
-                      }}
-                      onClick={(event) => setDescriptionMentionDraft(getMentionDraft(event.currentTarget.value, event.currentTarget.selectionStart))}
-                      onKeyUp={(event) =>
-                        setDescriptionMentionDraft(getMentionDraft(event.currentTarget.value, event.currentTarget.selectionStart))
-                      }
-                      onKeyDown={(event) => {
-                        if (!descriptionMentionDraft || descriptionMentionOptions.length === 0) return
-                        if (event.key === 'ArrowDown') {
-                          event.preventDefault()
-                          setDescriptionMentionActiveIndex((index) => (index + 1) % descriptionMentionOptions.length)
-                          return
-                        }
-                        if (event.key === 'ArrowUp') {
-                          event.preventDefault()
-                          setDescriptionMentionActiveIndex(
-                            (index) => (index - 1 + descriptionMentionOptions.length) % descriptionMentionOptions.length,
-                          )
-                          return
-                        }
-                        if (event.key === 'Enter') {
-                          event.preventDefault()
-                          const selected = descriptionMentionOptions[descriptionMentionActiveIndex]
-                          if (selected) insertDescriptionMention(selected.id)
-                          return
-                        }
-                        if (event.key === 'Escape') {
-                          event.preventDefault()
-                          setDescriptionMentionDraft(null)
-                        }
-                      }}
-                      onBlur={triggerDetailAutosave}
-                      placeholder='Describe the task...'
-                      className='h-full min-h-[180px] w-full resize-none rounded-md border bg-background px-3 py-2 text-sm'
-                    />
-                    {descriptionMentionDraft && descriptionMentionOptions.length > 0 ? (
-                      <div className='absolute bottom-2 left-2 z-20 w-[min(20rem,calc(100%-1rem))] rounded-md border bg-card p-1 shadow-lg'>
-                        {descriptionMentionOptions.map((member, index) => (
-                          <button
-                            key={member.id}
-                            type='button'
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => insertDescriptionMention(member.id)}
-                            className={cn(
-                              'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm',
-                              index === descriptionMentionActiveIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60',
-                            )}
-                          >
-                            <Avatar className='h-5 w-5 border'>
-                              {member.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={member.name} /> : null}
-                              <AvatarFallback className='text-[9px] font-semibold'>{initialsForName(member.name)}</AvatarFallback>
-                            </Avatar>
-                            <span className='truncate'>{member.name}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
+                      <MentionRichTextEditor
+                        value={detailDraft.description}
+                        onChange={(nextDescription) => {
+                          const nextDraft = { ...detailDraft, description: nextDescription }
+                          setDetailDraft(nextDraft)
+                          triggerDebouncedDescriptionAutosave(nextDraft)
+                        }}
+                        onBlur={triggerDetailAutosave}
+                        mentionOptions={detailTeammateOptions}
+                        placeholder='Describe the task...'
+                        disabled={!canEditActiveTask}
+                        minHeightClassName='min-h-[180px]'
+                        className='h-full'
+                      />
                     </div>
                   </div>
 
@@ -3669,7 +4594,7 @@ export function MyTasksPage() {
                                   {comment.content ? <p className='mt-1 whitespace-pre-wrap text-sm leading-5 text-foreground'>{comment.content}</p> : null}
                                   {comment.voiceDataUrl ? (
                                     <div className='mt-2 space-y-1'>
-                                      <audio controls src={comment.voiceDataUrl} className='h-8 w-full' />
+                                      <VoicePlayback src={comment.voiceDataUrl} durationMs={comment.voiceDurationMs} />
                                       <p className='text-[11px] text-muted-foreground'>Voice message · {formatVoiceDuration(comment.voiceDurationMs)}</p>
                                     </div>
                                   ) : null}
@@ -3783,71 +4708,106 @@ export function MyTasksPage() {
                               <X className='h-3.5 w-3.5' />
                             </button>
                           </div>
-                          <audio controls src={pendingVoiceComment.previewUrl} className='mt-1 h-8 w-full' />
+                          <div className='mt-1'>
+                            <VoicePlayback src={pendingVoiceComment.previewUrl} durationMs={pendingVoiceComment.durationMs} />
+                          </div>
                         </div>
                       ) : null}
                       {voiceCommentError ? <p className='text-xs text-rose-300'>{voiceCommentError}</p> : null}
                     <div className='flex items-center gap-2'>
-                      <Avatar className='mt-0.5 h-7 w-7 border'>
+                      <Avatar className='h-9 w-9 border'>
                         {activeCommentAuthor.avatarUrl ? <AvatarImage src={activeCommentAuthor.avatarUrl} alt={activeCommentAuthor.name} /> : null}
                         <AvatarFallback className='text-[10px] font-semibold'>{initialsForName(activeCommentAuthor.name)}</AvatarFallback>
                       </Avatar>
-                      <Input
-                        value={commentDraft}
-                        onChange={(event) => setCommentDraft(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault()
-                            addCommentToTask()
-                          }
-                        }}
-                        placeholder='Add a comment...'
-                        className='h-9 w-full rounded-full border bg-background px-3 text-sm'
-                      />
-                      <Popover open={commentEmojiOpen} onOpenChange={setCommentEmojiOpen}>
-                        <PopoverTrigger asChild>
-                          <Button type='button' size='sm' variant='outline' className='h-9 w-9 shrink-0 rounded-full px-0' aria-label='Add emoji'>
-                            <Smile className='h-4 w-4' />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className='w-auto p-1.5' align='end'>
-                          <div className='flex items-center gap-1'>
-                            {COMMENT_EMOJIS.map((emoji) => (
-                              <button
-                                key={emoji}
-                                type='button'
-                                onClick={() => {
-                                  setCommentDraft((value) => `${value}${emoji}`)
-                                  setCommentEmojiOpen(false)
-                                }}
-                                className='inline-flex h-8 w-8 items-center justify-center rounded-md text-base hover:bg-accent'
-                                aria-label={`Insert ${emoji}`}
-                              >
-                                {emoji}
-                              </button>
-                            ))}
+                      <div className='relative min-w-0 flex-1'>
+                        {isRecordingVoiceComment ? (
+                          <div className='flex h-9 items-center gap-3 rounded-full border border-border/70 bg-background/70 px-3 py-1.5'>
+                            <div
+                              className='grid h-6 min-w-0 flex-1 items-center gap-[2px]'
+                              style={{ gridTemplateColumns: `repeat(${recordingLevels.length}, minmax(0, 1fr))` }}
+                            >
+                              {recordingLevels.map((level, index) => (
+                                <span
+                                  key={index}
+                                  className='w-[2px] justify-self-center rounded-full bg-foreground/85'
+                                  style={{ height: `${Math.max(4, Math.round(level * 11)) * 2}px` }}
+                                />
+                              ))}
+                            </div>
+                            <span className='text-sm font-medium tabular-nums text-muted-foreground'>
+                              {formatVoiceDuration(recordingElapsedMs)}
+                            </span>
+                            <button
+                              type='button'
+                              className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/25 text-foreground transition-colors hover:bg-muted/40'
+                              onClick={stopVoiceCommentRecording}
+                              aria-label='Stop recording'
+                            >
+                              <Square className='h-3 w-3' />
+                            </button>
                           </div>
-                        </PopoverContent>
-                      </Popover>
-                      <Button
-                        type='button'
-                        size='sm'
-                        variant='outline'
-                        className={cn(
-                          'h-9 w-9 shrink-0 rounded-full px-0',
-                          isRecordingVoiceComment && 'border-rose-500/60 bg-rose-500/10 text-rose-300',
+                        ) : (
+                          <>
+                            <Input
+                              value={commentDraft}
+                              onChange={(event) => setCommentDraft(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  addCommentToTask()
+                                }
+                              }}
+                              placeholder='Add a comment...'
+                              className='h-9 w-full rounded-full border bg-background pl-3 pr-20 text-sm'
+                            />
+                            <div className='absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1'>
+                              <Popover open={commentEmojiOpen} onOpenChange={setCommentEmojiOpen}>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    type='button'
+                                    className='inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                    aria-label='Add emoji'
+                                  >
+                                    <Smile className='h-4 w-4' />
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent className='w-auto p-1.5' align='end'>
+                                  <div className='flex items-center gap-1'>
+                                    {COMMENT_EMOJIS.map((emoji) => (
+                                      <button
+                                        key={emoji}
+                                        type='button'
+                                        onClick={() => {
+                                          setCommentDraft((value) => `${value}${emoji}`)
+                                          setCommentEmojiOpen(false)
+                                        }}
+                                        className='inline-flex h-8 w-8 items-center justify-center rounded-md text-base hover:bg-accent'
+                                        aria-label={`Insert ${emoji}`}
+                                      >
+                                        {emoji}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                              <button
+                                type='button'
+                                className='inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                onClick={() => void startVoiceCommentRecording()}
+                                aria-label='Record voice message'
+                              >
+                                <Mic className='h-4 w-4' />
+                              </button>
+                            </div>
+                          </>
                         )}
-                        onClick={isRecordingVoiceComment ? stopVoiceCommentRecording : () => void startVoiceCommentRecording()}
-                        aria-label={isRecordingVoiceComment ? 'Stop recording' : 'Record voice message'}
-                      >
-                        {isRecordingVoiceComment ? <Square className='h-4 w-4' /> : <Mic className='h-4 w-4' />}
-                      </Button>
+                      </div>
                       <Button
                         type='button'
                         size='sm'
                         className='h-9 w-9 shrink-0 rounded-full px-0'
                         onClick={addCommentToTask}
-                        disabled={!commentDraft.trim() && !pendingVoiceComment}
+                        disabled={isRecordingVoiceComment || (!commentDraft.trim() && !pendingVoiceComment)}
                         aria-label='Send comment'
                       >
                         <Send className='h-4 w-4' />

@@ -37,6 +37,11 @@ async function getAuthHeaders() {
     throw new Error('Your session is no longer valid. Sign in again before uploading images.')
   }
 
+  const verifyResult = await supabase.auth.getUser(session.access_token)
+  if (verifyResult.error || !verifyResult.data.user) {
+    throw new Error('Your session is no longer valid. Sign in again before uploading.')
+  }
+
   return {
     Authorization: `Bearer ${session.access_token}`,
     apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
@@ -56,57 +61,63 @@ function networkErrorMessage(action: 'upload' | 'resolve', kind: 'avatar' | 'voi
 }
 
 export async function uploadAvatarToR2(file: File): Promise<UploadAvatarResult> {
-  const headers = await getAuthHeaders()
-  let response: Response
-
-  try {
-    response = await fetch(getFunctionsBaseUrl(), {
+  const invokeUpload = () =>
+    supabase.functions.invoke<UploadAvatarResult>('r2-avatar', {
       method: 'POST',
       headers: {
-        ...headers,
         'x-file-name': encodeURIComponent(file.name),
         'x-content-type': file.type || 'application/octet-stream',
         'x-upload-kind': 'avatar',
       },
       body: file,
     })
-  } catch {
-    throw new Error(networkErrorMessage('upload'))
+
+  let result = await invokeUpload()
+
+  if (result.error) {
+    const status = (result.error as unknown as { context?: { status?: number } })?.context?.status
+    if (status === 401) {
+      await supabase.auth.refreshSession()
+      result = await invokeUpload()
+    }
   }
 
-  if (!response.ok) {
-    const message = await response.text()
+  if (result.error || !result.data) {
+    const message = result.error?.message
     throw new Error(message || 'Avatar upload failed.')
   }
 
-  return (await response.json()) as UploadAvatarResult
+  return result.data
 }
 
 export async function uploadVoiceToR2(file: File): Promise<UploadVoiceResult> {
-  const headers = await getAuthHeaders()
-  let response: Response
-
-  try {
-    response = await fetch(getFunctionsBaseUrl(), {
+  const invokeUpload = () =>
+    supabase.functions.invoke<UploadVoiceResult>('r2-avatar', {
       method: 'POST',
       headers: {
-        ...headers,
         'x-file-name': encodeURIComponent(file.name),
         'x-content-type': file.type || 'audio/webm',
         'x-upload-kind': 'voice',
       },
       body: file,
     })
-  } catch {
-    throw new Error(networkErrorMessage('upload', 'voice'))
+
+  let result = await invokeUpload()
+
+  if (result.error) {
+    const status = (result.error as unknown as { context?: { status?: number } })?.context?.status
+    if (status === 401) {
+      await supabase.auth.refreshSession()
+      result = await invokeUpload()
+    }
   }
 
-  if (!response.ok) {
-    const message = await response.text()
+  if (result.error || !result.data) {
+    const message = result.error?.message
     throw new Error(message || 'Voice upload failed.')
   }
 
-  return (await response.json()) as UploadVoiceResult
+  return result.data
 }
 
 export async function resolveR2ObjectUrl(key: string): Promise<string> {

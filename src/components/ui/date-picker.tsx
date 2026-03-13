@@ -1,6 +1,7 @@
 import { format, isValid } from 'date-fns'
 import { Calendar as CalendarIcon } from 'lucide-react'
 import { useState } from 'react'
+import type { Matcher } from 'react-day-picker'
 
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -12,6 +13,7 @@ export function DatePicker({
   onChange,
   placeholder = 'Pick date and time',
   disabled = false,
+  disabledDays,
   className,
   fromYear = 1950,
   toYear = 2100,
@@ -21,6 +23,7 @@ export function DatePicker({
   onChange: (date?: Date) => void
   placeholder?: string
   disabled?: boolean
+  disabledDays?: Matcher | Matcher[] | undefined
   className?: string
   fromYear?: number
   toYear?: number
@@ -72,6 +75,7 @@ export function DatePicker({
         <Calendar
           mode='single'
           selected={selectedDate}
+          disabled={disabledDays}
           defaultMonth={selectedDate ?? new Date()}
           captionLayout='dropdown'
           navLayout='around'

@@ -13,11 +13,11 @@ type SchemaIssue = {
 }
 
 const REQUIRED_SCHEMA_CHECKS: SchemaCheck[] = [
-  { key: 'boards', query: 'id,name,sort_order,is_default,created_by' },
+  { key: 'status', query: 'id,project_id,key,label,sort_order,is_default,created_by' },
   { key: 'task_assignees', query: 'task_id,assignee_id,created_at' },
   { key: 'notifications', query: 'id,recipient_id,actor_id,task_id,type,title,message,read_at,created_at' },
   { key: 'projects', query: 'id,name,key,status,description,owner_id,start_date,end_date,created_by' },
-  { key: 'tasks', query: 'id,title,status,board_column,assigned_to,created_by,due_at,start_at,completed_at' },
+  { key: 'tasks', query: 'id,title,status,status_id,board_column,assigned_to,created_by,due_at,start_at,completed_at' },
   { key: 'profiles', query: 'id,full_name,email' },
 ]
 

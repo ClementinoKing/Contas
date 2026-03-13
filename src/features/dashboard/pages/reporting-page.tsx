@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase'
 type ReportingTask = {
   id: string
   status: string | null
+  statusKey: string | null
   dueAt: string | null
   completedAt: string | null
 }
@@ -45,7 +46,7 @@ export function ReportingPage() {
     let cancelled = false
 
     void Promise.all([
-      supabase.from('tasks').select('id, status, due_at, completed_at'),
+      supabase.from('tasks').select('id, status, status_id, due_at, completed_at, task_status:status_id(key)'),
       supabase.from('task_assignees').select('task_id, assignee_id'),
       supabase.from('profiles').select('id, full_name, email'),
     ]).then(([tasksResult, taskAssigneesResult, profilesResult]) => {
@@ -54,6 +55,7 @@ export function ReportingPage() {
       const nextTasks = (tasksResult.data ?? []).map((task) => ({
         id: task.id,
         status: task.status,
+        statusKey: (task.task_status as { key?: string } | null)?.key ?? task.status ?? null,
         dueAt: task.due_at,
         completedAt: task.completed_at,
       }))
@@ -70,7 +72,7 @@ export function ReportingPage() {
         if (!task) continue
         const row = metrics.get(memberName) ?? { team: memberName, planned: 0, completed: 0 }
         row.planned += 1
-        if (task.completedAt || task.status === 'done' || task.status === 'review') {
+        if (task.completedAt || task.statusKey === 'done' || task.statusKey === 'review') {
           row.completed += 1
         }
         metrics.set(memberName, row)
@@ -84,8 +86,8 @@ export function ReportingPage() {
   }, [])
 
   const totalTasks = tasks.length
-  const completedTasks = tasks.filter((task) => Boolean(task.completedAt) || task.status === 'done').length
-  const blockedTasks = tasks.filter((task) => task.status === 'blocked').length
+  const completedTasks = tasks.filter((task) => Boolean(task.completedAt) || task.statusKey === 'done').length
+  const blockedTasks = tasks.filter((task) => task.statusKey === 'blocked').length
   const cycleDays = useMemo(() => {
     const doneThisWeek = tasks.filter((task) => {
       if (!task.completedAt) return false

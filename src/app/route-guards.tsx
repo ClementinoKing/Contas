@@ -17,7 +17,7 @@ function getLastDashboardPath() {
 }
 
 function hasPersistedSupabaseSession() {
-  return Boolean(localStorage.getItem(STORAGE_KEYS.supabaseAuthToken))
+  return Boolean(localStorage.getItem(STORAGE_KEYS.supabaseAuthToken) ?? localStorage.getItem(STORAGE_KEYS.supabaseAuthTokenLegacy))
 }
 
 export function ProtectedRoute() {

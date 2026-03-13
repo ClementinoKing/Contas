@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 
 import { supabase } from '@/lib/supabase'
 
-const REALTIME_TABLES = ['tasks', 'projects', 'notifications', 'task_assignees', 'task_comments', 'boards'] as const
+const REALTIME_TABLES = ['tasks', 'projects', 'notifications', 'task_assignees', 'task_comments', 'status'] as const
 
 type RealtimePayload = {
   table: (typeof REALTIME_TABLES)[number]

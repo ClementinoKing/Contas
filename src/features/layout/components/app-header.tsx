@@ -1,4 +1,4 @@
-import { Bell, CheckCheck, CirclePlus, Goal, HelpCircle, Layers, Menu, MessageSquarePlus, Search, ShieldAlert, UserPlus2, UserRound } from 'lucide-react'
+import { AtSign, Bell, CheckCheck, CirclePlus, Goal, HelpCircle, Layers, Menu, MessageSquarePlus, Search, ShieldAlert, UserPlus2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -67,6 +67,7 @@ type HeaderNotificationItem = {
   id: string
   title: string
   message: string
+  taskId?: string
   createdAt: string
   type: HeaderNotificationType
   read: boolean
@@ -87,7 +88,7 @@ function notificationTimeLabel(value: string) {
 }
 
 function HeaderNotificationTypeIcon({ type }: { type: HeaderNotificationType }) {
-  if (type === 'mention') return <UserRound className='h-3.5 w-3.5 text-blue-400' aria-hidden='true' />
+  if (type === 'mention') return <AtSign className='h-3.5 w-3.5 text-blue-400' aria-hidden='true' />
   if (type === 'system') return <ShieldAlert className='h-3.5 w-3.5 text-amber-400' aria-hidden='true' />
   return <Bell className='h-3.5 w-3.5 text-emerald-400' aria-hidden='true' />
 }
@@ -140,7 +141,7 @@ export function AppHeader({
     setNotificationsLoading(true)
     const { data, error } = await supabase
       .from('notifications')
-      .select('id, title, message, type, read_at, created_at')
+      .select('id, title, message, task_id, type, read_at, created_at')
       .order('created_at', { ascending: false })
       .limit(8)
 
@@ -155,6 +156,7 @@ export function AppHeader({
         id: row.id,
         title: row.title,
         message: row.message,
+        taskId: row.task_id ?? undefined,
         createdAt: row.created_at,
         type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
         read: Boolean(row.read_at),
@@ -175,11 +177,11 @@ export function AppHeader({
     setProjectSubmitting(false)
   }
 
-  const openCreateProjectModal = () => {
+  const openCreateProjectModal = useCallback(() => {
     resetProjectFlow()
     setProjectOwner(currentUser?.id ?? '')
     setCreateProjectOpen(true)
-  }
+  }, [currentUser?.id])
 
   const handleProjectModalChange = (open: boolean) => {
     if (!open) {
@@ -218,6 +220,12 @@ export function AppHeader({
     if (!currentUser?.id) return
     void fetchNotificationItems()
   }, [currentUser?.id, fetchNotificationItems])
+
+  useEffect(() => {
+    const handleOpenCreateProject = () => openCreateProjectModal()
+    window.addEventListener('contas:open-create-project', handleOpenCreateProject as EventListener)
+    return () => window.removeEventListener('contas:open-create-project', handleOpenCreateProject as EventListener)
+  }, [openCreateProjectModal])
 
   useEffect(() => {
     const onRealtimeChange = (event: Event) => {
@@ -425,7 +433,11 @@ export function AppHeader({
                               void markNotificationRead(item.id, true)
                             }
                             setNotificationsOpen(false)
-                            navigate('/dashboard/notifications')
+                            const params = new URLSearchParams({ openNotificationId: item.id })
+                            if (item.taskId) {
+                              params.set('openTaskId', item.taskId)
+                            }
+                            navigate(`/dashboard/notifications?${params.toString()}`)
                           }}
                           className={`w-full rounded-md border px-2.5 py-2 text-left transition-colors ${item.read ? 'bg-muted/10 hover:bg-muted/20' : 'border-primary/30 bg-primary/5 hover:bg-primary/10'}`}
                         >

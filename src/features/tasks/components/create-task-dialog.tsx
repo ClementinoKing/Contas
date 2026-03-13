@@ -1,38 +1,61 @@
-import { AtSign, Check, ChevronsUpDown, Paperclip, Search } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { AtSign, Check, Paperclip, Search, UserPlus, X } from 'lucide-react'
+import { max, startOfDay } from 'date-fns'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { DatePicker } from '@/components/ui/date-picker'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { MentionRichTextEditor, type MentionRichTextEditorHandle } from '@/components/ui/mention-rich-text-editor'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
+import {
+  FALLBACK_STATUS_OPTIONS,
+  legacyBoardColumnForStatusKey,
+  mapStatusRowsToOptions,
+  resolveProjectStatusOptions,
+  type StatusOption,
+} from '@/features/tasks/lib/status-catalog'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 type ProjectOption = { id: string; name: string }
-type MemberOption = { id: string; name: string; email?: string; avatarUrl?: string }
-type MentionMatch = { start: number; end: number; query: string }
-type ScheduleMode = 'single' | 'range'
+type MemberOption = { id: string; name: string; username?: string; email?: string; avatarUrl?: string }
+type TaskOption = { id: string; title: string }
+type TaskType = 'task' | 'subtask'
+type ScheduleMode = 'due_date' | 'range'
 
-function mapBoardColumnToStatus(boardColumn?: string) {
-  switch (boardColumn) {
-    case 'in_progress':
-      return 'in_progress'
-    case 'review':
-      return 'review'
-    case 'blocked':
-      return 'blocked'
-    default:
-      return 'planned'
+function extractMentionedMemberIds(text: string, members: Array<{ id: string; name: string }>) {
+  const normalized = text.toLowerCase()
+  const mentioned = new Set<string>()
+  for (const member of members) {
+    const handleToken = `@${mentionHandleForMember(member).toLowerCase()}`
+    const nameToken = `@${member.name.toLowerCase()}`
+    if (normalized.includes(handleToken) || normalized.includes(nameToken)) {
+      mentioned.add(member.id)
+    }
   }
+  return Array.from(mentioned)
+}
+
+function mentionHandleForMember(member: { name: string; username?: string | null }) {
+  const explicit = member.username?.trim()
+  if (explicit) return explicit
+  return member.name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9._-]/g, '')
 }
 
 export type CreatedTaskPayload = {
   id: string
+  parentTaskId?: string
   title: string
   status: string | null
+  statusId: string | null
+  statusKey: string | null
   priority: string | null
   boardColumn: string | null
   createdById: string
@@ -53,26 +76,37 @@ export function CreateTaskDialog({
   onOpenChange,
   onTaskCreated,
   initialBoardColumn = 'planned',
+  initialStatusId,
+  initialParentTaskId,
+  initialTaskType,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onTaskCreated?: (task: CreatedTaskPayload) => void
   initialBoardColumn?: string
+  initialStatusId?: string
+  initialParentTaskId?: string
+  initialTaskType?: TaskType
 }) {
   const { currentUser } = useAuth()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const descriptionRef = useRef<HTMLTextAreaElement>(null)
+  const descriptionEditorRef = useRef<MentionRichTextEditorHandle | null>(null)
 
   const [projectOptions, setProjectOptions] = useState<ProjectOption[]>([])
+  const [statusOptions, setStatusOptions] = useState<StatusOption[]>(FALLBACK_STATUS_OPTIONS)
   const [memberOptions, setMemberOptions] = useState<MemberOption[]>([])
+  const [taskOptions, setTaskOptions] = useState<TaskOption[]>([])
+  const defaultTaskType: TaskType = initialTaskType ?? (initialParentTaskId ? 'subtask' : 'task')
+  const [taskType, setTaskType] = useState<TaskType>(defaultTaskType)
+  const [parentTaskId, setParentTaskId] = useState(initialParentTaskId ?? '')
+  const [selectedStatusId, setSelectedStatusId] = useState(initialStatusId ?? '')
   const [title, setTitle] = useState('')
   const [projectId, setProjectId] = useState('')
   const [assigneeIds, setAssigneeIds] = useState<string[]>([])
   const [assigneeSearch, setAssigneeSearch] = useState('')
   const [assigneeOpen, setAssigneeOpen] = useState(false)
   const [description, setDescription] = useState('')
-  const [activeMention, setActiveMention] = useState<MentionMatch | null>(null)
-  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>('single')
+  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>('due_date')
   const [priority, setPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('low')
   const [singleDueAt, setSingleDueAt] = useState<Date | undefined>()
   const [rangeStartAt, setRangeStartAt] = useState<Date | undefined>()
@@ -80,26 +114,45 @@ export function CreateTaskDialog({
   const [selectedAttachment, setSelectedAttachment] = useState('')
   const [creating, setCreating] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const today = startOfDay(new Date())
+  const minimumEndDate = rangeStartAt ? max([today, startOfDay(rangeStartAt)]) : today
 
   useEffect(() => {
     let cancelled = false
 
     void Promise.all([
       supabase.from('projects').select('id, name').order('name', { ascending: true }),
-      supabase.from('profiles').select('id, full_name, email, avatar_url').order('full_name', { ascending: true }),
-    ]).then(([projectsResult, profilesResult]) => {
+      supabase.from('profiles').select('id, full_name, username, email, avatar_url').order('full_name', { ascending: true }),
+      supabase.from('tasks').select('id, title').order('created_at', { ascending: false }).limit(300),
+      supabase.from('status').select('id, project_id, key, label, sort_order, is_default').order('sort_order', { ascending: true }),
+    ]).then(([projectsResult, profilesResult, tasksResult, statusesResult]) => {
       if (cancelled) return
 
       const projects = (projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
       const members = (profilesResult.data ?? []).map((profile) => ({
         id: profile.id,
         name: profile.full_name ?? profile.email ?? 'Unknown member',
+        username: profile.username ?? undefined,
         email: profile.email ?? undefined,
         avatarUrl: profile.avatar_url ?? undefined,
       }))
 
       setProjectOptions(projects)
       setMemberOptions(members)
+      setTaskOptions((tasksResult.data ?? []).map((task) => ({ id: task.id, title: task.title })))
+      const fetchedStatuses = mapStatusRowsToOptions(statusesResult.data ?? [])
+      const nextStatuses = fetchedStatuses.length > 0 ? fetchedStatuses : FALLBACK_STATUS_OPTIONS
+      setStatusOptions(nextStatuses)
+      const nextProjectId = projectId || projects[0]?.id || ''
+      const preferredById = initialStatusId ? nextStatuses.find((status) => status.id === initialStatusId) : undefined
+      const projectAwareStatuses = resolveProjectStatusOptions(nextStatuses, nextProjectId)
+      const preferredByLegacyKey = nextStatuses.find((status) => status.key === initialBoardColumn && (status.projectId === nextProjectId || status.projectId === null))
+      const defaultStatus =
+        preferredById ??
+        preferredByLegacyKey ??
+        projectAwareStatuses[0] ??
+        nextStatuses[0]
+      setSelectedStatusId(defaultStatus?.id ?? '')
       setProjectId((current) => current || projects[0]?.id || '')
     })
 
@@ -109,14 +162,16 @@ export function CreateTaskDialog({
   }, [])
 
   const reset = () => {
+    setTaskType(defaultTaskType)
+    setParentTaskId(initialParentTaskId ?? '')
+    setSelectedStatusId(initialStatusId ?? '')
     setTitle('')
     setProjectId(projectOptions[0]?.id ?? '')
     setAssigneeIds([])
     setAssigneeSearch('')
     setAssigneeOpen(false)
     setDescription('')
-    setActiveMention(null)
-    setScheduleMode('single')
+    setScheduleMode('due_date')
     setPriority('low')
     setSingleDueAt(undefined)
     setRangeStartAt(undefined)
@@ -130,10 +185,32 @@ export function CreateTaskDialog({
     onOpenChange(nextOpen)
   }
 
+  useEffect(() => {
+    if (!open) return
+    setTaskType(defaultTaskType)
+    setParentTaskId(initialParentTaskId ?? '')
+    setSelectedStatusId(initialStatusId ?? '')
+  }, [open, defaultTaskType, initialParentTaskId, initialStatusId])
+
+  const availableStatuses = useMemo(() => {
+    return resolveProjectStatusOptions(statusOptions, projectId)
+  }, [projectId, statusOptions])
+
+  useEffect(() => {
+    if (!open) return
+    if (availableStatuses.some((status) => status.id === selectedStatusId)) return
+    setSelectedStatusId(availableStatuses[0]?.id ?? '')
+  }, [availableStatuses, open, selectedStatusId])
+
   const handleSubmit = async () => {
     const trimmedTitle = title.trim()
     if (!trimmedTitle) {
       setErrorMessage('Task title is required.')
+      return
+    }
+    const nextParentTaskId = taskType === 'subtask' ? parentTaskId || initialParentTaskId || '' : ''
+    if (taskType === 'subtask' && !nextParentTaskId) {
+      setErrorMessage('Please select a parent task.')
       return
     }
 
@@ -143,18 +220,17 @@ export function CreateTaskDialog({
     try {
       let startAtIso: string | null = null
       let dueAtIso: string | null = null
-
-      if (scheduleMode === 'single') {
-        if (singleDueAt) {
-          const iso = singleDueAt.toISOString()
-          startAtIso = iso
-          dueAtIso = iso
-        } else {
-          startAtIso = new Date().toISOString()
+      if (scheduleMode === 'due_date') {
+        if (singleDueAt && startOfDay(singleDueAt).getTime() < today.getTime()) {
+          setErrorMessage('Due date cannot be in the past.')
+          setCreating(false)
+          return
         }
+        startAtIso = singleDueAt ? singleDueAt.toISOString() : new Date().toISOString()
+        dueAtIso = singleDueAt ? singleDueAt.toISOString() : null
       } else {
         if (!rangeStartAt || !rangeEndAt) {
-          setErrorMessage('Start date and end date are required for date range tasks.')
+          setErrorMessage('Start and end date are required for range mode.')
           setCreating(false)
           return
         }
@@ -163,18 +239,27 @@ export function CreateTaskDialog({
           setCreating(false)
           return
         }
+        if (startOfDay(rangeEndAt).getTime() < today.getTime()) {
+          setErrorMessage('End date cannot be in the past.')
+          setCreating(false)
+          return
+        }
         startAtIso = rangeStartAt.toISOString()
         dueAtIso = rangeEndAt.toISOString()
       }
 
       const primaryAssigneeId = assigneeIds[0] ?? null
+      const selectedStatus = availableStatuses.find((status) => status.id === selectedStatusId) ?? availableStatuses[0] ?? FALLBACK_STATUS_OPTIONS[0]
+      const legacyBoardColumn = legacyBoardColumnForStatusKey(selectedStatus?.key)
       const { data, error } = await supabase
         .from('tasks')
         .insert({
           title: trimmedTitle,
+          parent_task_id: taskType === 'subtask' ? nextParentTaskId : null,
           description: description.trim() || null,
-          status: mapBoardColumnToStatus(initialBoardColumn),
-          board_column: initialBoardColumn,
+          status_id: selectedStatus?.id ?? null,
+          status: selectedStatus?.key ?? 'planned',
+          board_column: legacyBoardColumn,
           project_id: projectId || null,
           assigned_to: primaryAssigneeId,
           created_by: currentUser?.id ?? null,
@@ -182,7 +267,7 @@ export function CreateTaskDialog({
           start_at: startAtIso,
           priority,
         })
-        .select('id, title, description, status, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, created_at')
+        .select('id, parent_task_id, title, description, status, status_id, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, created_at')
         .single()
 
       if (error || !data) {
@@ -198,7 +283,7 @@ export function CreateTaskDialog({
         }
 
         if (currentUser?.id) {
-          const recipients = assigneeIds.filter((assigneeId) => assigneeId !== currentUser.id)
+          const recipients = assigneeIds
           if (recipients.length > 0) {
             const notifications = recipients.map((recipientId) => ({
               recipient_id: recipientId,
@@ -218,14 +303,36 @@ export function CreateTaskDialog({
         }
       }
 
+      if (currentUser?.id && description.trim()) {
+        const mentionedMemberIds = extractMentionedMemberIds(description, memberOptions).filter((memberId) => memberId !== currentUser.id)
+        if (mentionedMemberIds.length > 0) {
+          const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+            recipient_id: recipientId,
+            actor_id: currentUser.id,
+            task_id: data.id,
+            type: 'mention' as const,
+            title: 'You were mentioned',
+            message: `You were mentioned in "${data.title}".`,
+            metadata: { event: 'task_mentioned', source: 'task_create_description' },
+          }))
+          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+          if (mentionNotificationsError) {
+            console.error('Failed to create mention notifications', mentionNotificationsError)
+          }
+        }
+      }
+
       const selectedAssigneeNames = assigneeIds
         .map((id) => memberOptions.find((member) => member.id === id)?.name)
         .filter((name): name is string => Boolean(name))
 
       onTaskCreated?.({
         id: data.id,
+        parentTaskId: data.parent_task_id ?? undefined,
         title: data.title,
         status: data.status,
+        statusId: data.status_id ?? null,
+        statusKey: selectedStatus?.key ?? data.status ?? null,
         priority: data.priority,
         boardColumn: data.board_column ?? null,
         createdById: data.created_by ?? currentUser?.id ?? '',
@@ -249,15 +356,23 @@ export function CreateTaskDialog({
     }
   }
 
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault()
+        void handleSubmit()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open, title, projectId, assigneeIds, description, priority, singleDueAt, rangeStartAt, rangeEndAt, scheduleMode, selectedStatusId, taskType, parentTaskId, availableStatuses])
+
   const teammateOptions = memberOptions.filter((member) => member.id !== currentUser?.id)
   const filteredMembers = teammateOptions.filter((member) => member.name.toLowerCase().includes(assigneeSearch.trim().toLowerCase()))
-  const selectedAssigneeNames = assigneeIds
-    .map((id) => memberOptions.find((member) => member.id === id)?.name)
-    .filter((name): name is string => Boolean(name))
-  const mentionMembers = teammateOptions.filter((member) =>
-    member.name.toLowerCase().includes((activeMention?.query ?? '').trim().toLowerCase()),
-  )
-
+  const selectedAssignees = assigneeIds
+    .map((id) => memberOptions.find((member) => member.id === id))
+    .filter((member): member is MemberOption => Boolean(member))
   const initials = (value: string) =>
     value
       .split(/\s+/)
@@ -266,117 +381,124 @@ export function CreateTaskDialog({
       .map((part) => part[0]?.toUpperCase() ?? '')
       .join('') || 'U'
 
-  const detectMention = (value: string, caretPosition: number) => {
-    const beforeCaret = value.slice(0, caretPosition)
-    const match = beforeCaret.match(/(^|\s)@([a-zA-Z0-9._-]*)$/)
-
-    if (!match || match.index === undefined) {
-      setActiveMention(null)
-      return
-    }
-
-    const fullMatch = match[0]
-    const mentionStart = beforeCaret.length - fullMatch.length + fullMatch.lastIndexOf('@')
-    setActiveMention({
-      start: mentionStart,
-      end: caretPosition,
-      query: match[2] ?? '',
-    })
-  }
-
-  const handleDescriptionChange = (value: string, caretPosition: number) => {
-    setDescription(value)
-    detectMention(value, caretPosition)
-  }
-
-  const insertMention = (member: MemberOption) => {
-    if (!activeMention) return
-
-    const mentionText = `@${member.name} `
-    const nextDescription = `${description.slice(0, activeMention.start)}${mentionText}${description.slice(activeMention.end)}`
-    const nextCaret = activeMention.start + mentionText.length
-
-    setDescription(nextDescription)
-    setActiveMention(null)
-
-    window.requestAnimationFrame(() => {
-      descriptionRef.current?.focus()
-      descriptionRef.current?.setSelectionRange(nextCaret, nextCaret)
-    })
-  }
-
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create Task</DialogTitle>
-          <DialogDescription>Add a task and link it to the right project and assignee.</DialogDescription>
+      <DialogContent className='flex h-[90vh] max-h-[90vh] max-w-3xl flex-col overflow-hidden p-0'>
+        <DialogHeader className='border-b bg-muted/20 px-6 py-4'>
+          <DialogTitle>{taskType === 'subtask' ? 'Create Subtask' : 'Create Task'}</DialogTitle>
+          <DialogDescription>
+            Add a {taskType === 'subtask' ? 'subtask' : 'task'} and link it to the right project and assignee.
+          </DialogDescription>
         </DialogHeader>
 
-        <div className='space-y-4'>
-          <div className='space-y-2'>
-            <label className='text-sm font-medium text-foreground'>Scheduling</label>
-            <div className='inline-flex gap-1 rounded-md bg-muted/35 p-1'>
+        <div className='flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-5'>
+          <div className='flex items-center justify-between gap-3'>
+            <Input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder='Enter task title...'
+              className='h-11 flex-1 text-[18px] font-semibold'
+            />
+            <div className='inline-flex shrink-0 gap-1 rounded-xl bg-muted/45 p-1'>
               <button
                 type='button'
-                onClick={() => setScheduleMode('single')}
+                onClick={() => setTaskType('task')}
                 className={cn(
                   'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                  scheduleMode === 'single'
+                  taskType === 'task'
                     ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                 )}
               >
-                Single Date
+                Task
               </button>
               <button
                 type='button'
-                onClick={() => setScheduleMode('range')}
+                onClick={() => setTaskType('subtask')}
                 className={cn(
                   'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                  scheduleMode === 'range'
+                  taskType === 'subtask'
                     ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                 )}
               >
-                Date Range
+                Subtask
               </button>
             </div>
-            {scheduleMode === 'single' ? (
-              <DatePicker value={singleDueAt} onChange={setSingleDueAt} placeholder='Due date' className='h-10 w-full text-sm' />
-            ) : (
-              <div className='grid gap-2 md:grid-cols-2'>
-                <DatePicker value={rangeStartAt} onChange={setRangeStartAt} placeholder='Start date' className='h-10 w-full text-sm' />
-                <DatePicker value={rangeEndAt} onChange={setRangeEndAt} placeholder='End date' className='h-10 w-full text-sm' />
-              </div>
-            )}
           </div>
+
+          {taskType === 'subtask' ? (
+            <div className='space-y-2'>
+              <select
+                value={parentTaskId}
+                onChange={(event) => setParentTaskId(event.target.value)}
+                className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+              >
+                <option value=''>Select parent task</option>
+                {taskOptions.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           <div className='space-y-2'>
-            <label className='text-sm font-medium text-foreground'>Task Name</label>
-            <Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder='Enter task title' />
-          </div>
-
-          <div className='grid gap-3 md:grid-cols-2'>
             <div className='space-y-2'>
-              <label className='text-sm font-medium text-foreground'>Assigned To</label>
+              <label className='text-sm font-medium text-foreground'>Assigned to</label>
               <Popover open={assigneeOpen} onOpenChange={setAssigneeOpen}>
                 <PopoverTrigger asChild>
-                  <button
-                    type='button'
-                    className='flex h-11 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm ring-offset-background transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                  <div
+                    role='button'
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setAssigneeOpen((value) => !value)
+                      }
+                    }}
+                    className='flex min-h-11 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-2 py-1.5 text-sm ring-offset-background transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
                   >
-                    <span className='flex min-w-0 items-center gap-3'>
-                      {selectedAssigneeNames.length > 0 ? (
-                        <span className='truncate text-left font-medium'>
-                          {selectedAssigneeNames.join(', ')}
-                        </span>
+                    <div className='flex min-w-0 flex-1 flex-wrap items-center gap-1.5'>
+                      {selectedAssignees.length > 0 ? (
+                        selectedAssignees.map((member) => (
+                          <span key={member.id} className='inline-flex items-center gap-2 rounded-full border bg-background px-2 py-1 text-xs'>
+                            <Avatar className='h-5 w-5 border'>
+                              {member.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={member.name} /> : null}
+                              <AvatarFallback className='text-[9px] font-semibold'>{initials(member.name)}</AvatarFallback>
+                            </Avatar>
+                            <span className='max-w-28 truncate'>{member.name}</span>
+                            <span
+                              role='button'
+                              tabIndex={0}
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setAssigneeIds((ids) => ids.filter((id) => id !== member.id))
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  event.stopPropagation()
+                                  setAssigneeIds((ids) => ids.filter((id) => id !== member.id))
+                                }
+                              }}
+                              className='inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
+                              aria-label={`Remove ${member.name}`}
+                            >
+                              <X className='h-3 w-3' />
+                            </span>
+                          </span>
+                        ))
                       ) : (
-                        <span className='text-muted-foreground'>Select teammate</span>
+                        <span className='px-1 text-muted-foreground'>Select teammate</span>
                       )}
+                    </div>
+                    <span className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/25 text-foreground'>
+                      <UserPlus className='h-4 w-4' />
                     </span>
-                    <ChevronsUpDown className='h-4 w-4 shrink-0 text-muted-foreground' />
-                  </button>
+                  </div>
                 </PopoverTrigger>
                 <PopoverContent className='w-[360px] p-0' align='start'>
                   <div className='border-b p-3'>
@@ -431,17 +553,16 @@ export function CreateTaskDialog({
                   </div>
                 </PopoverContent>
               </Popover>
-              {selectedAssigneeNames.length > 0 ? (
-                <p className='text-xs text-muted-foreground'>{selectedAssigneeNames.length} teammates selected</p>
-              ) : null}
             </div>
+          </div>
 
+          <div className='grid gap-3 md:grid-cols-3'>
             <div className='space-y-2'>
-              <label className='text-sm font-medium text-foreground'>Project</label>
               <select
                 value={projectId}
                 onChange={(event) => setProjectId(event.target.value)}
                 className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                aria-label='Project'
               >
                 <option value=''>No project</option>
                 {projectOptions.map((project) => (
@@ -451,89 +572,139 @@ export function CreateTaskDialog({
                 ))}
               </select>
             </div>
+            <div className='space-y-2'>
+              <select
+                value={priority}
+                onChange={(event) => setPriority(event.target.value as 'low' | 'medium' | 'high' | 'urgent')}
+                className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                aria-label='Priority'
+              >
+                <option value='low'>Low</option>
+                <option value='medium'>Medium</option>
+                <option value='high'>High</option>
+                <option value='urgent'>Urgent</option>
+              </select>
+            </div>
+            <div className='space-y-2'>
+              <select
+                value={selectedStatusId}
+                onChange={(event) => setSelectedStatusId(event.target.value)}
+                className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                aria-label='Status'
+              >
+                {availableStatuses.map((status) => (
+                  <option key={status.id} value={status.id}>
+                    {status.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className='space-y-2'>
-            <label className='text-sm font-medium text-foreground'>Priority</label>
-            <select
-              value={priority}
-              onChange={(event) => setPriority(event.target.value as 'low' | 'medium' | 'high' | 'urgent')}
-              className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
-            >
-              <option value='low'>Low</option>
-              <option value='medium'>Medium</option>
-              <option value='high'>High</option>
-              <option value='urgent'>Urgent</option>
-            </select>
-          </div>
-
-          <div className='space-y-2'>
-            <div className='flex items-center justify-between'>
-              <label className='text-sm font-medium text-foreground'>Description</label>
-              <div className='flex items-center gap-1'>
+            <div className='flex flex-wrap items-center justify-between gap-2'>
+              <label className='text-sm font-medium text-foreground'>Schedule</label>
+              <div className='inline-flex gap-1 rounded-xl bg-muted/45 p-1'>
                 <button
                   type='button'
-                  onClick={() => {
-                    const textarea = descriptionRef.current
-                    if (!textarea) return
-
-                    const start = textarea.selectionStart ?? description.length
-                    const nextDescription = `${description.slice(0, start)}@${description.slice(start)}`
-                    const nextCaret = start + 1
-
-                    setDescription(nextDescription)
-
-                    window.requestAnimationFrame(() => {
-                      textarea.focus()
-                      textarea.setSelectionRange(nextCaret, nextCaret)
-                      detectMention(nextDescription, nextCaret)
-                    })
-                  }}
-                  className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                  aria-label='Mention teammate'
+                  onClick={() => setScheduleMode('due_date')}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                    scheduleMode === 'due_date'
+                      ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )}
                 >
-                  <AtSign className='h-4 w-4' aria-hidden='true' />
+                  Due Date
                 </button>
                 <button
                   type='button'
+                  onClick={() => setScheduleMode('range')}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                    scheduleMode === 'range'
+                      ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )}
+                >
+                  Range
+                </button>
+              </div>
+            </div>
+            <p className='text-xs text-muted-foreground'>Select a due date or schedule a date range.</p>
+            <div className='transition-all duration-200'>
+              {scheduleMode === 'due_date' ? (
+                <div className='grid gap-3 md:grid-cols-2'>
+                  <DatePicker
+                    value={singleDueAt}
+                    onChange={setSingleDueAt}
+                    placeholder='Due date'
+                    className='h-10 w-full text-sm'
+                    disabledDays={{ before: today }}
+                  />
+                  <div className='hidden md:block' />
+                </div>
+              ) : (
+                <div className='grid gap-3 md:grid-cols-2'>
+                  <DatePicker
+                    value={rangeStartAt}
+                    onChange={(nextStart) => {
+                      setRangeStartAt(nextStart)
+                      if (rangeEndAt && nextStart && rangeEndAt.getTime() < max([today, startOfDay(nextStart)]).getTime()) {
+                        setRangeEndAt(undefined)
+                      }
+                    }}
+                    placeholder='Start date'
+                    className='h-10 w-full text-sm'
+                  />
+                  <DatePicker
+                    value={rangeEndAt}
+                    onChange={setRangeEndAt}
+                    placeholder='End date'
+                    className='h-10 w-full text-sm'
+                    disabledDays={{ before: minimumEndDate }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className='mt-auto flex min-h-[220px] flex-1 flex-col space-y-2'>
+            <div className='flex items-center justify-between'>
+              <span className='sr-only'>Description</span>
+            </div>
+            <div className='relative flex min-h-0 flex-1 rounded-md border border-input bg-background'>
+              <div className='pointer-events-none absolute inset-x-0 top-0 h-10 rounded-t-md bg-gradient-to-b from-muted/20 to-transparent' />
+              <div className='absolute right-2 top-2 z-10 flex items-center gap-1'>
+                <button
+                  type='button'
                   onClick={() => fileInputRef.current?.click()}
-                  className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                  className='inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
                   aria-label='Add attachment'
                 >
                   <Paperclip className='h-4 w-4' aria-hidden='true' />
                 </button>
+                <button
+                  type='button'
+                  onClick={() => {
+                    descriptionEditorRef.current?.insertText('@')
+                    descriptionEditorRef.current?.focus()
+                  }}
+                  className='inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                  aria-label='Mention teammate'
+                >
+                  <AtSign className='h-4 w-4' aria-hidden='true' />
+                </button>
               </div>
-            </div>
-            <div className='relative'>
-              <textarea
-                ref={descriptionRef}
-                rows={5}
+              <MentionRichTextEditor
+                ref={descriptionEditorRef}
                 value={description}
-                onChange={(event) => handleDescriptionChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
-                onKeyUp={(event) => detectMention(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-                onClick={(event) => detectMention(event.currentTarget.value, event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-                placeholder='Describe the task... use @ to mention teammates'
-                className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                onChange={setDescription}
+                mentionOptions={teammateOptions}
+                placeholder='Describe the task...'
+                minHeightClassName='min-h-[140px]'
+                className='h-full border-0 bg-transparent pr-20'
               />
-
-              {activeMention ? (
-                <div className='absolute bottom-3 left-3 z-20 min-w-[180px] max-w-[260px] overflow-hidden rounded-xl border bg-popover/98 shadow-[0_18px_40px_-18px_rgba(15,23,42,0.45)] backdrop-blur'>
-                  {mentionMembers.length === 0 ? (
-                    <div className='px-3 py-4 text-sm text-muted-foreground'>No matching teammates.</div>
-                  ) : (
-                    mentionMembers.slice(0, 5).map((member) => (
-                      <button
-                        key={member.id}
-                        type='button'
-                        onClick={() => insertMention(member)}
-                        className='flex w-full items-center px-3 py-2.5 text-left transition-colors hover:bg-accent'
-                      >
-                        <div className='truncate text-sm font-medium text-foreground'>{member.name}</div>
-                      </button>
-                    ))
-                  )}
-                </div>
-              ) : null}
             </div>
             <input
               ref={fileInputRef}
@@ -543,28 +714,37 @@ export function CreateTaskDialog({
             />
             <div className='flex items-center justify-between text-xs text-muted-foreground'>
               <span>{selectedAttachment ? `Attachment: ${selectedAttachment}` : 'No attachment selected'}</span>
-              {scheduleMode === 'single' ? (
+              {scheduleMode === 'due_date' ? (
                 <span>{singleDueAt ? `Due: ${singleDueAt.toLocaleDateString()}` : 'No due date selected'}</span>
               ) : (
                 <span>
                   {rangeStartAt && rangeEndAt
                     ? `Range: ${rangeStartAt.toLocaleDateString()} - ${rangeEndAt.toLocaleDateString()}`
-                    : 'No range selected'}
+                    : 'No date range selected'}
                 </span>
               )}
             </div>
           </div>
 
-          {errorMessage ? <p className='text-sm text-destructive'>{errorMessage}</p> : null}
+        </div>
 
-          <DialogFooter>
-            <Button type='button' variant='outline' onClick={() => handleOpenChange(false)} disabled={creating}>
-              Cancel
-            </Button>
-            <Button type='button' onClick={() => void handleSubmit()} disabled={creating}>
-              {creating ? 'Creating...' : 'Create Task'}
-            </Button>
-          </DialogFooter>
+        <div className='border-t bg-background px-6 py-4 shadow-[0_-1px_0_hsl(var(--border))]'>
+          {errorMessage ? (
+            <p className='mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive'>
+              {errorMessage}
+            </p>
+          ) : null}
+          <div className='flex flex-wrap items-center justify-between gap-2'>
+            <p className='text-[11px] text-muted-foreground'>Press {navigator.platform.includes('Mac') ? 'Cmd' : 'Ctrl'} + Enter to create</p>
+            <DialogFooter className='gap-2 sm:justify-end'>
+              <Button type='button' variant='outline' onClick={() => handleOpenChange(false)} disabled={creating}>
+                Cancel
+              </Button>
+              <Button type='button' onClick={() => void handleSubmit()} disabled={creating} className='min-w-[132px]'>
+                {creating ? 'Creating...' : taskType === 'subtask' ? 'Create Subtask' : 'Create Task'}
+              </Button>
+            </DialogFooter>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

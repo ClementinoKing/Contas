@@ -58,5 +58,5 @@ else
 fi
 
 echo "Deploying function: r2-avatar"
-supabase functions deploy r2-avatar --project-ref "$PROJECT_REF"
+supabase functions deploy r2-avatar --project-ref "$PROJECT_REF" --no-verify-jwt
 echo "Deploy complete."

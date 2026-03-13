@@ -147,7 +147,9 @@ function cacheProfileFromUser(user: User) {
 
 function extractStoredSupabaseSession() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.supabaseAuthToken)
+    const raw =
+      localStorage.getItem(STORAGE_KEYS.supabaseAuthToken) ??
+      localStorage.getItem(STORAGE_KEYS.supabaseAuthTokenLegacy)
     if (!raw) return null
 
     const parsed = JSON.parse(raw) as
@@ -489,6 +491,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     localStorage.removeItem(STORAGE_KEYS.supabaseAuthToken)
+    localStorage.removeItem(STORAGE_KEYS.supabaseAuthTokenLegacy)
     clearCachedProfile()
     dispatch({ type: 'CLEAR_SESSION' })
   }, [])

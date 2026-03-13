@@ -1,5 +1,6 @@
 export type TaskRow = {
   id: string
+  parentTaskId?: string
   title: string
   description?: string
   createdById?: string
@@ -7,7 +8,9 @@ export type TaskRow = {
   assigneeIds: string[]
   due: string
   completed?: boolean
-  status: 'In Progress' | 'Review' | 'Planned' | 'Blocked' | 'Done'
+  status: string
+  statusId?: string
+  statusKey?: string
   priority: 'Low' | 'Medium' | 'High' | 'Urgent'
   boardColumn?: string
   projectId: string

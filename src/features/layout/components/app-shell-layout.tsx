@@ -8,6 +8,7 @@ import { useAppRealtime } from '../hooks/use-app-realtime'
 import { useSchemaHealth } from '../hooks/use-schema-health'
 import { AppHeader } from './app-header'
 import { DesktopSidebar, MobileSidebar } from './app-sidebar'
+import { UniversalTaskDetailsModal } from '@/features/tasks/components/universal-task-details-modal'
 
 const LAST_DASHBOARD_PATH_KEY = 'contas.last-dashboard-path'
 
@@ -64,6 +65,7 @@ export function AppShellLayout() {
           </div>
         </main>
       </div>
+      <UniversalTaskDetailsModal />
     </div>
   )
 }
