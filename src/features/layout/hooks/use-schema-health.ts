@@ -19,6 +19,8 @@ const REQUIRED_SCHEMA_CHECKS: SchemaCheck[] = [
   { key: 'projects', query: 'id,name,key,status,description,owner_id,start_date,end_date,created_by' },
   { key: 'tasks', query: 'id,title,status,status_id,board_column,assigned_to,created_by,due_at,start_at,completed_at' },
   { key: 'profiles', query: 'id,full_name,email' },
+  { key: 'organization_timeline_events', query: 'id,title,event_type,starts_at' },
+  { key: 'user_presence_sessions', query: 'session_key,user_id,is_online,last_seen_at' },
 ]
 
 export function useSchemaHealth() {

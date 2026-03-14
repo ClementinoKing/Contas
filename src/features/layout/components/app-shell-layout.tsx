@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils'
 
 import { useShell } from '../context/shell-context'
 import { useAppRealtime } from '../hooks/use-app-realtime'
+import { usePresenceHeartbeat } from '../hooks/use-presence-heartbeat'
 import { useSchemaHealth } from '../hooks/use-schema-health'
 import { AppHeader } from './app-header'
 import { DesktopSidebar, MobileSidebar } from './app-sidebar'
@@ -18,6 +19,7 @@ export function AppShellLayout() {
   const { sidebarCollapsed, toggleSidebar } = useShell()
   const { loading: schemaLoading, hasIssues: hasSchemaIssues, issues: schemaIssues } = useSchemaHealth()
   useAppRealtime()
+  usePresenceHeartbeat()
 
   useEffect(() => {
     if (!location.pathname.startsWith('/dashboard/') || location.pathname === '/dashboard') return

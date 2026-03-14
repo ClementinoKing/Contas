@@ -531,13 +531,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [setSession, state.session])
 
   const logout = useCallback(async () => {
+    if (state.session?.user.id) {
+      try {
+        await supabase
+          .from('profiles')
+          .update({
+            is_online: false,
+            last_seen_at: new Date().toISOString(),
+          })
+          .eq('id', state.session.user.id)
+      } catch {
+        // ignore presence write failures on logout
+      }
+    }
     await supabase.auth.signOut().catch(() => undefined)
     localStorage.removeItem(STORAGE_KEYS.supabaseAuthToken)
     localStorage.removeItem(STORAGE_KEYS.supabaseAuthTokenLegacy)
     clearCachedProfile()
     purgeCachedClientDataOnLogout()
     dispatch({ type: 'CLEAR_SESSION' })
-  }, [])
+  }, [state.session?.user.id])
 
   const value = useMemo<AuthContextValue>(
     () => ({

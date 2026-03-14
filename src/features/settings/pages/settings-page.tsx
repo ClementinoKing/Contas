@@ -23,7 +23,6 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
-import { DatePicker } from '@/components/ui/date-picker'
 import { Input } from '@/components/ui/input'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { useOrganization } from '@/features/organization/context/organization-context'
@@ -33,6 +32,90 @@ import { cn } from '@/lib/utils'
 
 type SettingsTabKey = 'profile' | 'organization' | 'notifications' | 'account' | 'display' | 'apps' | 'admin'
 type InvitationRole = 'owner' | 'admin' | 'member' | 'viewer'
+type WeekdayKey = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+type AvailabilityBlock = { id: string; day: WeekdayKey; startTime: string; endTime: string }
+
+const INVITE_JOB_TITLES = [
+  'Managing Director',
+  'HR & Compliance Manager',
+  'Accounting Manager',
+  'Senior Accountant',
+  'Junior Accountant',
+  'Payroll and Regulatory Support Officer',
+  'Junior Business Executive Officer',
+] as const
+
+const INVITE_DEPARTMENTS = [
+  'Executive Leadership',
+  'Accounting & Financial Services',
+  'Payroll & Regulatory Services',
+  'Human Resources & Compliance',
+  'Business Development & Client Services',
+] as const
+
+const WEEKDAY_OPTIONS: Array<{ key: WeekdayKey; label: string }> = [
+  { key: 'monday', label: 'Monday' },
+  { key: 'tuesday', label: 'Tuesday' },
+  { key: 'wednesday', label: 'Wednesday' },
+  { key: 'thursday', label: 'Thursday' },
+  { key: 'friday', label: 'Friday' },
+  { key: 'saturday', label: 'Saturday' },
+  { key: 'sunday', label: 'Sunday' },
+]
+
+function createLocalId() {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `av-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function createAvailabilityBlock(partial?: Partial<Omit<AvailabilityBlock, 'id'>>): AvailabilityBlock {
+  return {
+    id: createLocalId(),
+    day: partial?.day ?? 'monday',
+    startTime: partial?.startTime ?? '08:00',
+    endTime: partial?.endTime ?? '17:00',
+  }
+}
+
+function isValidTimeValue(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value)
+}
+
+function toMinutes(value: string) {
+  const [hours, minutes] = value.split(':').map(Number)
+  return hours * 60 + minutes
+}
+
+function getWeekdayIndex(day: WeekdayKey) {
+  return WEEKDAY_OPTIONS.findIndex((option) => option.key === day)
+}
+
+function getDaysInRange(fromDay: WeekdayKey, toDay: WeekdayKey): WeekdayKey[] {
+  const fromIndex = getWeekdayIndex(fromDay)
+  const toIndex = getWeekdayIndex(toDay)
+  if (fromIndex < 0 || toIndex < 0) return []
+  if (fromIndex <= toIndex) {
+    return WEEKDAY_OPTIONS.slice(fromIndex, toIndex + 1).map((option) => option.key)
+  }
+  return [...WEEKDAY_OPTIONS.slice(fromIndex), ...WEEKDAY_OPTIONS.slice(0, toIndex + 1)].map((option) => option.key)
+}
+
+function normalizeAvailabilitySchedule(raw: unknown): AvailabilityBlock[] {
+  if (!Array.isArray(raw)) return []
+  const weekdays = new Set(WEEKDAY_OPTIONS.map((option) => option.key))
+  return raw
+    .filter((item): item is { day?: unknown; startTime?: unknown; endTime?: unknown } => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      day: typeof item.day === 'string' ? item.day.toLowerCase() : '',
+      startTime: typeof item.startTime === 'string' ? item.startTime : '',
+      endTime: typeof item.endTime === 'string' ? item.endTime : '',
+    }))
+    .filter((item): item is { day: WeekdayKey; startTime: string; endTime: string } => {
+      return weekdays.has(item.day as WeekdayKey) && isValidTimeValue(item.startTime) && isValidTimeValue(item.endTime)
+    })
+    .map((item) => createAvailabilityBlock(item))
+}
 
 type InvitationItem = {
   id: string
@@ -131,9 +214,11 @@ export function SettingsPage() {
   const [pushAlerts, setPushAlerts] = useState(false)
   const [weeklyDigest, setWeeklyDigest] = useState(true)
   const [twoFactor, setTwoFactor] = useState(false)
-  const [outOfOffice, setOutOfOffice] = useState(false)
-  const [outOfOfficeStart, setOutOfOfficeStart] = useState<Date | undefined>()
-  const [outOfOfficeEnd, setOutOfOfficeEnd] = useState<Date | undefined>()
+  const [availabilitySchedule, setAvailabilitySchedule] = useState<AvailabilityBlock[]>([])
+  const [availabilityRangeFrom, setAvailabilityRangeFrom] = useState<WeekdayKey>('monday')
+  const [availabilityRangeTo, setAvailabilityRangeTo] = useState<WeekdayKey>('friday')
+  const [availabilityRangeStartTime, setAvailabilityRangeStartTime] = useState('08:00')
+  const [availabilityRangeEndTime, setAvailabilityRangeEndTime] = useState('17:00')
   const [connectedCalendar, setConnectedCalendar] = useState(true)
   const [slackSync, setSlackSync] = useState(false)
   const [mobileAppSync, setMobileAppSync] = useState(true)
@@ -180,7 +265,7 @@ export function SettingsPage() {
     void supabase
       .from('profiles')
       .select(
-        'full_name, email, avatar_url, job_title, department, role_label, about_me, out_of_office, out_of_office_start, out_of_office_end',
+        'full_name, email, avatar_url, job_title, department, role_label, about_me, availability_schedule',
       )
       .eq('id', currentUser.id)
       .maybeSingle()
@@ -195,9 +280,7 @@ export function SettingsPage() {
         setProfileDepartment(data.department ?? '')
         setProfileRoleLabel(data.role_label ?? '')
         setProfileAboutMe(data.about_me ?? '')
-        setOutOfOffice(data.out_of_office ?? false)
-        setOutOfOfficeStart(data.out_of_office_start ? new Date(data.out_of_office_start) : undefined)
-        setOutOfOfficeEnd(data.out_of_office_end ? new Date(data.out_of_office_end) : undefined)
+        setAvailabilitySchedule(normalizeAvailabilitySchedule(data.availability_schedule))
       })
 
     return () => {
@@ -445,6 +528,16 @@ export function SettingsPage() {
     setSavingProfile(true)
     setProfileSaveMessage(null)
 
+    const invalidBlock = availabilitySchedule.find(
+      (block) => !isValidTimeValue(block.startTime) || !isValidTimeValue(block.endTime) || toMinutes(block.endTime) <= toMinutes(block.startTime),
+    )
+    if (invalidBlock) {
+      const dayLabel = WEEKDAY_OPTIONS.find((option) => option.key === invalidBlock.day)?.label ?? 'Selected day'
+      setProfileSaveMessage(`${dayLabel}: end time must be later than start time.`)
+      setSavingProfile(false)
+      return
+    }
+
     const avatarValue = profileAvatarPath ?? profileAvatarUrl ?? null
     const { error } = await supabase
       .from('profiles')
@@ -455,9 +548,14 @@ export function SettingsPage() {
         department: profileDepartment.trim() || null,
         role_label: profileRoleLabel.trim() || null,
         about_me: profileAboutMe.trim() || null,
-        out_of_office: outOfOffice,
-        out_of_office_start: outOfOfficeStart ? outOfOfficeStart.toISOString() : null,
-        out_of_office_end: outOfOfficeEnd ? outOfOfficeEnd.toISOString() : null,
+        availability_schedule: availabilitySchedule.map((block) => ({
+          day: block.day,
+          startTime: block.startTime,
+          endTime: block.endTime,
+        })),
+        out_of_office: false,
+        out_of_office_start: null,
+        out_of_office_end: null,
       })
       .eq('id', currentUser.id)
 
@@ -476,6 +574,57 @@ export function SettingsPage() {
     })
     setProfileSaveMessage('Profile updated.')
     setSavingProfile(false)
+  }
+
+  const addAvailabilityBlock = () => {
+    setAvailabilitySchedule((current) => [...current, createAvailabilityBlock()])
+  }
+
+  const updateAvailabilityBlock = (id: string, nextValues: Partial<Omit<AvailabilityBlock, 'id'>>) => {
+    setAvailabilitySchedule((current) =>
+      current.map((block) => (block.id === id ? { ...block, ...nextValues } : block)),
+    )
+  }
+
+  const removeAvailabilityBlock = (id: string) => {
+    setAvailabilitySchedule((current) => current.filter((block) => block.id !== id))
+  }
+
+  const addAvailabilityRange = () => {
+    if (
+      !isValidTimeValue(availabilityRangeStartTime) ||
+      !isValidTimeValue(availabilityRangeEndTime) ||
+      toMinutes(availabilityRangeEndTime) <= toMinutes(availabilityRangeStartTime)
+    ) {
+      setProfileSaveMessage('Range time is invalid. End time must be later than start time.')
+      return
+    }
+
+    const days = getDaysInRange(availabilityRangeFrom, availabilityRangeTo)
+    if (days.length === 0) {
+      setProfileSaveMessage('Invalid day range selected.')
+      return
+    }
+
+    let inserted = 0
+    setAvailabilitySchedule((current) => {
+      const next = [...current]
+      for (const day of days) {
+        const exists = next.some(
+          (block) => block.day === day && block.startTime === availabilityRangeStartTime && block.endTime === availabilityRangeEndTime,
+        )
+        if (exists) continue
+        next.push(createAvailabilityBlock({ day, startTime: availabilityRangeStartTime, endTime: availabilityRangeEndTime }))
+        inserted += 1
+      }
+      return next
+    })
+
+    setProfileSaveMessage(
+      inserted > 0
+        ? `Added ${inserted} availability block${inserted > 1 ? 's' : ''} from ${availabilityRangeFrom} to ${availabilityRangeTo}.`
+        : 'That day/time range already exists.',
+    )
   }
 
   const renderAdminInviteForm = (containerClassName?: string) => (
@@ -521,22 +670,36 @@ export function SettingsPage() {
         </div>
         <div className='space-y-2'>
           <label className='text-sm font-medium text-foreground'>Job title</label>
-          <Input
+          <select
             value={inviteJobTitle}
             onChange={(event) => setInviteJobTitle(event.target.value)}
-            placeholder='e.g. Finance Manager'
-          />
+            className='h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
+          >
+            <option value=''>Select job title</option>
+            {INVITE_JOB_TITLES.map((title) => (
+              <option key={title} value={title}>
+                {title}
+              </option>
+            ))}
+          </select>
           {!inviteJobTitle.trim() && inviteMessage === 'Job title is required.' ? (
             <p className='text-xs text-destructive'>Job title is required.</p>
           ) : null}
         </div>
         <div className='space-y-2'>
           <label className='text-sm font-medium text-foreground'>Department</label>
-          <Input
+          <select
             value={inviteDepartment}
             onChange={(event) => setInviteDepartment(event.target.value)}
-            placeholder='e.g. Finance'
-          />
+            className='h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
+          >
+            <option value=''>Select department</option>
+            {INVITE_DEPARTMENTS.map((department) => (
+              <option key={department} value={department}>
+                {department}
+              </option>
+            ))}
+          </select>
           {!inviteDepartment.trim() && inviteMessage === 'Department is required.' ? (
             <p className='text-xs text-destructive'>Department is required.</p>
           ) : null}
@@ -711,11 +874,33 @@ export function SettingsPage() {
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Job Title</label>
-                <Input value={profileJobTitle} onChange={(event) => setProfileJobTitle(event.target.value)} />
+                <select
+                  value={profileJobTitle}
+                  onChange={(event) => setProfileJobTitle(event.target.value)}
+                  className='h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
+                >
+                  <option value=''>Select job title</option>
+                  {INVITE_JOB_TITLES.map((title) => (
+                    <option key={title} value={title}>
+                      {title}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Department</label>
-                <Input value={profileDepartment} onChange={(event) => setProfileDepartment(event.target.value)} />
+                <select
+                  value={profileDepartment}
+                  onChange={(event) => setProfileDepartment(event.target.value)}
+                  className='h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
+                >
+                  <option value=''>Select department</option>
+                  {INVITE_DEPARTMENTS.map((department) => (
+                    <option key={department} value={department}>
+                      {department}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Role</label>
@@ -731,35 +916,83 @@ export function SettingsPage() {
                 />
               </div>
               <div className='space-y-3 rounded-lg border p-3 md:col-span-2'>
-                <div className='flex items-center justify-between gap-3'>
+                <div className='flex flex-wrap items-center justify-between gap-3'>
                   <div>
-                    <p className='font-medium text-foreground'>Out of office</p>
+                    <p className='font-medium text-foreground'>Availability schedule</p>
                     <p className='text-sm text-muted-foreground'>
-                      Team members will see you as unavailable during the selected time.
+                      Define weekly office availability. Outside these hours, you are treated as unavailable.
                     </p>
                   </div>
-                  <Toggle checked={outOfOffice} onChange={setOutOfOffice} label='Toggle out of office status' />
+                  <Button type='button' variant='outline' size='sm' onClick={addAvailabilityBlock}>
+                    Add availability block
+                  </Button>
                 </div>
-                <div className='grid gap-3 md:grid-cols-2'>
-                  <div className='space-y-2'>
-                    <label className='text-sm font-medium text-foreground'>Start</label>
-                    <DatePicker
-                      value={outOfOfficeStart}
-                      onChange={setOutOfOfficeStart}
-                      disabled={!outOfOffice}
-                      placeholder='Pick start date'
-                    />
-                  </div>
-                  <div className='space-y-2'>
-                    <label className='text-sm font-medium text-foreground'>End</label>
-                    <DatePicker
-                      value={outOfOfficeEnd}
-                      onChange={setOutOfOfficeEnd}
-                      disabled={!outOfOffice}
-                      placeholder='Pick end date'
-                    />
-                  </div>
+                <div className='grid gap-2 rounded-md border bg-muted/10 p-2 md:grid-cols-[1fr_1fr_1fr_1fr_auto]'>
+                  <select
+                    value={availabilityRangeFrom}
+                    onChange={(event) => setAvailabilityRangeFrom(event.target.value as WeekdayKey)}
+                    className='h-9 w-full rounded-md border border-input bg-background px-3 text-sm'
+                  >
+                    {WEEKDAY_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        From {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={availabilityRangeTo}
+                    onChange={(event) => setAvailabilityRangeTo(event.target.value as WeekdayKey)}
+                    className='h-9 w-full rounded-md border border-input bg-background px-3 text-sm'
+                  >
+                    {WEEKDAY_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        To {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Input type='time' value={availabilityRangeStartTime} onChange={(event) => setAvailabilityRangeStartTime(event.target.value)} />
+                  <Input type='time' value={availabilityRangeEndTime} onChange={(event) => setAvailabilityRangeEndTime(event.target.value)} />
+                  <Button type='button' variant='outline' size='sm' onClick={addAvailabilityRange}>
+                    Apply range
+                  </Button>
                 </div>
+                {availabilitySchedule.length === 0 ? (
+                  <div className='rounded-md border border-dashed p-3 text-xs text-muted-foreground'>
+                    No availability set yet. You will appear unavailable until at least one block is added.
+                  </div>
+                ) : (
+                  <div className='space-y-2'>
+                    {availabilitySchedule.map((block) => (
+                      <div key={block.id} className='grid gap-2 rounded-md border p-2 md:grid-cols-[1.2fr_1fr_1fr_auto]'>
+                        <select
+                          value={block.day}
+                          onChange={(event) => updateAvailabilityBlock(block.id, { day: event.target.value as WeekdayKey })}
+                          className='h-9 w-full rounded-md border border-input bg-background px-3 text-sm'
+                        >
+                          {WEEKDAY_OPTIONS.map((option) => (
+                            <option key={option.key} value={option.key}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <Input
+                          type='time'
+                          value={block.startTime}
+                          onChange={(event) => updateAvailabilityBlock(block.id, { startTime: event.target.value })}
+                        />
+                        <Input
+                          type='time'
+                          value={block.endTime}
+                          onChange={(event) => updateAvailabilityBlock(block.id, { endTime: event.target.value })}
+                        />
+                        <Button type='button' variant='outline' size='sm' onClick={() => removeAvailabilityBlock(block.id)}>
+                          Remove
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className='text-xs text-muted-foreground'>End time must be later than start time. Schedule repeats every week.</p>
               </div>
               <div className='flex justify-end md:col-span-2'>
                 <div className='flex items-center gap-3'>

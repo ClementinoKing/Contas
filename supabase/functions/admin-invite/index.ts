@@ -27,6 +27,22 @@ const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
 const RESEND_FROM_EMAIL = Deno.env.get('RESEND_FROM_EMAIL') ?? ''
 const TEMP_PASSWORD = '12345678'
 const FALLBACK_APP_BASE_URL = 'https://contas.cloudninetech.co.za'
+const INVITE_JOB_TITLES = new Set([
+  'Managing Director',
+  'HR & Compliance Manager',
+  'Accounting Manager',
+  'Senior Accountant',
+  'Junior Accountant',
+  'Payroll and Regulatory Support Officer',
+  'Junior Business Executive Officer',
+])
+const INVITE_DEPARTMENTS = new Set([
+  'Executive Leadership',
+  'Accounting & Financial Services',
+  'Payroll & Regulatory Services',
+  'Human Resources & Compliance',
+  'Business Development & Client Services',
+])
 
 function getAppBaseUrl() {
   return (Deno.env.get('APP_BASE_URL') ?? FALLBACK_APP_BASE_URL).replace(/\/+$/, '')
@@ -58,6 +74,15 @@ function isAlreadyExistsError(message: string) {
   return /already been registered|already exists|already invited|user already exists|duplicate/i.test(message)
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 async function sendResendInviteEmail(input: {
   to: string
   invitedByName: string
@@ -69,20 +94,143 @@ async function sendResendInviteEmail(input: {
   }
 
   const appUrl = loginUrl()
+  const safeInvitedBy = escapeHtml(input.invitedByName)
+  const safeFullName = escapeHtml(input.fullName)
+  const safeRole = escapeHtml(input.role.charAt(0).toUpperCase() + input.role.slice(1))
+  const safeAppUrl = escapeHtml(appUrl)
+
   const html = `
-    <div style="font-family: Inter, Arial, sans-serif; line-height: 1.5; color: #0f172a;">
-      <h2 style="margin-bottom: 12px;">You are invited to Organization Hub</h2>
-      <p>${input.invitedByName} invited <strong>${input.fullName}</strong> as <strong>${input.role}</strong>.</p>
-      <p>Your temporary login password is: <strong>${TEMP_PASSWORD}</strong></p>
-      <p>You will be required to reset this password immediately after first login.</p>
-      <p>Use the button below to continue to your workspace:</p>
-      <p>
-        <a href="${appUrl}" style="display:inline-block;padding:10px 16px;border-radius:8px;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;">
-          Open Organization Hub
-        </a>
-      </p>
-      <p style="font-size: 13px; color: #475569;">If the button does not work, open: ${appUrl}</p>
-    </div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contas Organization Invitation</title>
+  <style>
+    body{
+      margin:0;
+      padding:0;
+      background:#f4f6f8;
+      font-family:Arial, Helvetica, sans-serif;
+      color:#1f2f6f;
+      -webkit-text-size-adjust:100%;
+      -ms-text-size-adjust:100%;
+    }
+    table{ border-spacing:0; border-collapse:collapse; }
+    img{ border:0; display:block; max-width:100%; }
+    a{ text-decoration:none; }
+    .email-wrapper{ width:100%; background:#f4f6f8; padding:32px 16px; }
+    .email-container{ width:100%; max-width:640px; margin:0 auto; background:#ffffff; border-radius:14px; overflow:hidden; box-shadow:0 8px 24px rgba(18,33,89,0.08); }
+    .header{ background:#ffffff; padding:28px 40px 20px; text-align:center; border-bottom:1px solid #e7edf3; }
+    .logo{ max-width:300px; width:100%; height:auto; margin:0 auto; }
+    .hero{ background:linear-gradient(180deg,#eef6fb 0%,#ffffff 100%); padding:34px 40px 20px; }
+    .hero h1{ margin:0 0 14px; font-size:30px; line-height:1.2; color:#1f2f6f; font-weight:700; }
+    .hero p{ margin:0; font-size:15px; line-height:1.6; color:#41527f; }
+    .content{ padding:0 40px 36px; }
+    .content p{ margin:0 0 16px; font-size:15px; line-height:1.6; color:#41527f; }
+    .content strong{ color:#1f2f6f; }
+    .info-card{ background:#f8fbfd; border:1px solid #dbe8f1; border-radius:10px; padding:16px 18px; margin:24px 0; }
+    .info-row{ margin-bottom:12px; font-size:14px; line-height:1.5; color:#41527f; }
+    .info-row:last-child{ margin-bottom:0; }
+    .label{ display:block; font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#5da2c9; margin-bottom:4px; }
+    .password-box{ display:inline-block; margin-top:6px; background:#eef6fb; border:1px solid #cfe1ec; padding:8px 14px; border-radius:6px; font-weight:700; font-size:16px; color:#1f2f6f; letter-spacing:1px; }
+    .cta-wrap{ margin:28px 0 20px; }
+    .cta-button{ display:inline-block; background:#1f2f6f; color:#ffffff !important; text-decoration:none; font-size:15px; font-weight:700; padding:14px 26px; border-radius:8px; }
+    .helper-text{ font-size:13px; line-height:1.6; color:#5b6b8e; }
+    .helper-text a{ color:#5da2c9; text-decoration:underline; word-break:break-word; }
+    .note{ margin-top:20px; padding:14px 16px; background:#f8fbfd; border-left:3px solid #5da2c9; border-radius:6px; font-size:13px; line-height:1.6; color:#41527f; }
+    .footer{ border-top:1px solid #e7edf3; padding:22px 40px 28px; text-align:center; background:#ffffff; font-size:12px; line-height:1.6; color:#6a7898; }
+    @media only screen and (max-width:640px){
+      .email-wrapper{ padding:20px 10px !important; }
+      .header,.hero,.content,.footer{ padding-left:24px !important; padding-right:24px !important; }
+      .hero h1{ font-size:24px !important; }
+      .cta-button{ display:block !important; text-align:center !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="email-wrapper">
+    <table role="presentation" width="100%">
+      <tr>
+        <td align="center">
+          <table role="presentation" class="email-container" width="100%">
+            <tr>
+              <td class="header">
+                <img
+                  src="https://pub-791bdd6d3ff446a8b7e0c43576b708fb.r2.dev/img/Contas%20Logo.png"
+                  alt="Contas"
+                  class="logo"
+                />
+              </td>
+            </tr>
+            <tr>
+              <td class="hero">
+                <h1>You are invited to Organization Hub</h1>
+                <p>
+                  Access your workspace securely and complete your account setup
+                  to begin collaborating with your organization.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td class="content">
+                <p>
+                  <strong>${safeInvitedBy}</strong> has invited
+                  <strong>${safeFullName}</strong> to join
+                  <strong>Organization Hub</strong> as a
+                  <strong>${safeRole.toLowerCase()}</strong>.
+                </p>
+                <div class="info-card">
+                  <div class="info-row">
+                    <span class="label">Invited by</span>
+                    ${safeInvitedBy}
+                  </div>
+                  <div class="info-row">
+                    <span class="label">Role</span>
+                    ${safeRole}
+                  </div>
+                  <div class="info-row">
+                    <span class="label">Temporary Password</span>
+                    <div class="password-box">${TEMP_PASSWORD}</div>
+                  </div>
+                </div>
+                <p>
+                  For security reasons, you will be required to reset this
+                  password immediately after your first login.
+                </p>
+                <div class="cta-wrap">
+                  <a
+                    href="${safeAppUrl}"
+                    class="cta-button"
+                  >
+                    Open Organization Hub
+                  </a>
+                </div>
+                <p class="helper-text">
+                  If the button does not work, copy and paste this link into your browser:<br />
+                  <a href="${safeAppUrl}">
+                    ${safeAppUrl}
+                  </a>
+                </p>
+                <div class="note">
+                  If you were not expecting this invitation, you can safely ignore
+                  this email or contact your administrator for assistance.
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td class="footer">
+                © 2026 Contas. All rights reserved.<br />
+                This invitation was sent to give you access to your organization workspace.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </div>
+</body>
+</html>
   `
 
   const response = await fetch('https://api.resend.com/emails', {
@@ -287,6 +435,12 @@ Deno.serve(async (req) => {
   }
   if (!department) {
     return json({ ok: false, status: 'error', message: 'Department is required.' }, 400)
+  }
+  if (!INVITE_JOB_TITLES.has(jobTitle)) {
+    return json({ ok: false, status: 'error', message: 'Invalid job title selected.' }, 400)
+  }
+  if (!INVITE_DEPARTMENTS.has(department)) {
+    return json({ ok: false, status: 'error', message: 'Invalid department selected.' }, 400)
   }
 
   const { data: existingPending } = await serviceClient
