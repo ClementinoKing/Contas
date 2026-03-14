@@ -21,6 +21,10 @@ const REQUIRED_SCHEMA_CHECKS: SchemaCheck[] = [
   { key: 'profiles', query: 'id,full_name,email' },
   { key: 'organization_timeline_events', query: 'id,title,event_type,starts_at' },
   { key: 'user_presence_sessions', query: 'session_key,user_id,is_online,last_seen_at' },
+  { key: 'goals', query: 'id,title,owner_id,cycle,status,health,confidence,department,due_at' },
+  { key: 'goal_key_results', query: 'id,goal_id,title,metric_type,current_value,target_value,due_at,owner_id,source' },
+  { key: 'goal_checkins', query: 'id,goal_id,author_id,progress_delta,confidence,created_at' },
+  { key: 'goal_links', query: 'id,goal_id,link_type,project_id,task_id,created_at' },
 ]
 
 export function useSchemaHealth() {
