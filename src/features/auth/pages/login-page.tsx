@@ -2,7 +2,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { LogIn } from 'lucide-react'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
@@ -70,12 +70,7 @@ export function LoginPage() {
         </Button>
       </form>
 
-      <p className='mt-6 text-sm text-muted-foreground'>
-        New here?{' '}
-        <Link className='font-medium text-primary hover:underline' to='/register'>
-          Create an account
-        </Link>
-      </p>
+      <p className='mt-6 text-sm text-muted-foreground'>Need access? Contact your administrator for an invite.</p>
     </AuthLayout>
   )
 }

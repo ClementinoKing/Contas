@@ -15,6 +15,8 @@ export interface User {
   email: string
   name: string
   username?: string
+  roleLabel?: string
+  mustResetPassword?: boolean
   jobTitle?: string
   avatarUrl?: string
   avatarPath?: string

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { MentionRichTextEditor, type MentionRichTextEditorHandle } from '@/components/ui/mention-rich-text-editor'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { dispatchNotificationEmails } from '@/features/notifications/lib/email-delivery'
 import {
   FALLBACK_STATUS_OPTIONS,
   legacyBoardColumnForStatusKey,
@@ -295,9 +296,26 @@ export function CreateTaskDialog({
               metadata: { event: 'task_assigned', source: 'task_create' },
             }))
 
-            const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+            const { data: insertedNotifications, error: notificationsError } = await supabase
+              .from('notifications')
+              .insert(notifications)
+              .select('id, recipient_id, task_id')
             if (notificationsError) {
               console.error('Failed to create assignment notifications', notificationsError)
+            } else {
+              void dispatchNotificationEmails(
+                (insertedNotifications ?? [])
+                  .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+                  .map((item) => ({
+                    notificationId: item.id,
+                    recipientId: item.recipient_id,
+                    recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
+                    type: 'task_assigned' as const,
+                    taskId: item.task_id as string,
+                    taskTitle: data.title,
+                    actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+                  })),
+              )
             }
           }
         }
@@ -315,9 +333,26 @@ export function CreateTaskDialog({
             message: `You were mentioned in "${data.title}".`,
             metadata: { event: 'task_mentioned', source: 'task_create_description' },
           }))
-          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+          const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
+            .from('notifications')
+            .insert(mentionNotifications)
+            .select('id, recipient_id, task_id')
           if (mentionNotificationsError) {
             console.error('Failed to create mention notifications', mentionNotificationsError)
+          } else {
+            void dispatchNotificationEmails(
+              (insertedMentionNotifications ?? [])
+                .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+                .map((item) => ({
+                  notificationId: item.id,
+                  recipientId: item.recipient_id,
+                  recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
+                  type: 'mention' as const,
+                  taskId: item.task_id as string,
+                  taskTitle: data.title,
+                  actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+                })),
+            )
           }
         }
       }

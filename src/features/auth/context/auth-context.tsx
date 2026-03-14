@@ -56,7 +56,9 @@ type ProfileSnapshot = {
   email: string | null
   avatar_url: string | null
   username: string | null
+  role_label: string | null
   job_title: string | null
+  must_reset_password: boolean | null
 }
 
 type CachedProfileSnapshot = ProfileSnapshot & {
@@ -134,6 +136,27 @@ function clearCachedProfile() {
   localStorage.removeItem(STORAGE_KEYS.profileCache)
 }
 
+function purgeCachedClientDataOnLogout() {
+  const preservedKeys = new Set<string>(['contas.ui.theme', STORAGE_KEYS.sidebarCollapsed])
+
+  const localKeys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)).filter(
+    (key): key is string => Boolean(key),
+  )
+  for (const key of localKeys) {
+    if (!key.startsWith('contas.')) continue
+    if (preservedKeys.has(key)) continue
+    localStorage.removeItem(key)
+  }
+
+  const sessionKeys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index)).filter(
+    (key): key is string => Boolean(key),
+  )
+  for (const key of sessionKeys) {
+    if (!key.startsWith('contas.')) continue
+    sessionStorage.removeItem(key)
+  }
+}
+
 function cacheProfileFromUser(user: User) {
   writeCachedProfile({
     id: user.id,
@@ -141,7 +164,9 @@ function cacheProfileFromUser(user: User) {
     email: user.email,
     avatar_url: user.avatarUrl ?? user.avatarPath ?? null,
     username: user.username ?? null,
+    role_label: user.roleLabel ?? null,
     job_title: user.jobTitle ?? null,
+    must_reset_password: user.mustResetPassword ?? false,
   })
 }
 
@@ -189,6 +214,8 @@ function mapSupabaseSession(session: Session): AuthSession {
       }
     : createInitialOnboarding({ fullName: name, completed: false })
   const username = cachedProfile?.username ?? (metadata.username as string | undefined) ?? generateUsernameCandidate(name, email)
+  const roleLabel = cachedProfile?.role_label ?? (metadata.role_label as string | undefined)
+  const mustResetPassword = Boolean(cachedProfile?.must_reset_password ?? metadata.must_reset_password ?? false)
   const jobTitle = cachedProfile?.job_title ?? undefined
 
   return {
@@ -197,6 +224,8 @@ function mapSupabaseSession(session: Session): AuthSession {
       email: cachedProfile?.email ?? email,
       name,
       username,
+      roleLabel: roleLabel ?? undefined,
+      mustResetPassword,
       jobTitle,
       avatarUrl,
       avatarPath,
@@ -230,7 +259,6 @@ function createInitialAuthState(): AuthState {
 }
 
 async function upsertProfileRecord(user: User) {
-  const onboarding = user.onboarding ?? createInitialOnboarding({ fullName: user.name, completed: false })
   const avatarUrl = sanitizeAvatarUrl(user.avatarUrl)
   const avatarPath = sanitizeAvatarPath(user.avatarPath)
 
@@ -238,15 +266,11 @@ async function upsertProfileRecord(user: User) {
     id: user.id,
     full_name: user.name,
     username: user.username ?? generateUsernameCandidate(user.name, user.email),
+    role_label: user.roleLabel ?? null,
+    must_reset_password: user.mustResetPassword ?? false,
     job_title: user.jobTitle ?? null,
     email: user.email,
     avatar_url: avatarUrl ?? avatarPath ?? null,
-    onboarding_completed: onboarding.completed,
-    onboarding_step: onboarding.currentStep,
-    onboarding_role: onboarding.role || null,
-    onboarding_work_function: onboarding.workFunction || null,
-    onboarding_use_case: onboarding.useCase || null,
-    onboarding_tools: onboarding.tools,
   })
 
   if (error) throw error
@@ -268,14 +292,29 @@ async function fetchProfileStatus(userId: string) {
 }
 
 async function fetchProfileSnapshot(userId: string) {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, full_name, email, avatar_url, username, job_title')
-    .eq('id', userId)
-    .maybeSingle()
+  const baseSelect = 'id, full_name, email, avatar_url, username, role_label, job_title'
+  const withResetSelect = `${baseSelect}, must_reset_password`
 
-  if (error || !data) return null
-  return data as ProfileSnapshot
+  const withResetResult = await supabase.from('profiles').select(withResetSelect).eq('id', userId).maybeSingle()
+  if (!withResetResult.error && withResetResult.data) {
+    return withResetResult.data as ProfileSnapshot
+  }
+
+  const shouldRetryWithoutResetField =
+    Boolean(withResetResult.error) &&
+    /must_reset_password|column .* does not exist|schema cache/i.test(withResetResult.error?.message ?? '')
+
+  if (!shouldRetryWithoutResetField) {
+    return null
+  }
+
+  const fallbackResult = await supabase.from('profiles').select(baseSelect).eq('id', userId).maybeSingle()
+  if (fallbackResult.error || !fallbackResult.data) return null
+
+  return {
+    ...(fallbackResult.data as Omit<ProfileSnapshot, 'must_reset_password'>),
+    must_reset_password: false,
+  } as ProfileSnapshot
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -357,6 +396,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           name: profile.full_name ?? state.session.user.name,
           email: profile.email ?? state.session.user.email,
           username: profile.username ?? state.session.user.username,
+          roleLabel: profile.role_label ?? state.session.user.roleLabel,
+          mustResetPassword: profile.must_reset_password ?? state.session.user.mustResetPassword,
           jobTitle: profile.job_title ?? state.session.user.jobTitle,
           avatarUrl: sanitizeAvatarUrl(avatarValue) ?? state.session.user.avatarUrl,
           avatarPath: sanitizeAvatarPath(avatarValue) ?? state.session.user.avatarPath,
@@ -490,9 +531,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [setSession, state.session])
 
   const logout = useCallback(async () => {
+    await supabase.auth.signOut().catch(() => undefined)
     localStorage.removeItem(STORAGE_KEYS.supabaseAuthToken)
     localStorage.removeItem(STORAGE_KEYS.supabaseAuthTokenLegacy)
     clearCachedProfile()
+    purgeCachedClientDataOnLogout()
     dispatch({ type: 'CLEAR_SESSION' })
   }, [])
 

@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { MentionRichTextEditor } from '@/components/ui/mention-rich-text-editor'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { dispatchNotificationEmails } from '@/features/notifications/lib/email-delivery'
 import { consumePendingTaskDetailsModalId, peekPendingTaskDetailsModalId } from '@/features/tasks/lib/open-task-details-modal'
 import {
   legacyBoardColumnForStatusKey,
@@ -54,7 +55,7 @@ type TaskRow = {
   created_by: string | null
 }
 
-type Member = { id: string; name: string; username?: string | null; avatarUrl?: string }
+type Member = { id: string; name: string; username?: string | null; email?: string | null; avatarUrl?: string }
 type Project = { id: string; name: string }
 type CommentRow = {
   id: string
@@ -462,6 +463,7 @@ export function UniversalTaskDetailsModal() {
           id: profile.id,
           name: profile.full_name ?? profile.email ?? 'Unknown user',
           username: profile.username ?? undefined,
+          email: profile.email ?? undefined,
           avatarUrl: profile.avatar_url ?? undefined,
         })),
       )
@@ -761,9 +763,26 @@ export function UniversalTaskDetailsModal() {
             message: `You were mentioned in "${task?.title ?? 'a task'}".`,
             metadata: { event: 'task_mentioned', source: 'global_task_modal_comment' },
           }))
-          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+          const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
+            .from('notifications')
+            .insert(mentionNotifications)
+            .select('id, recipient_id, task_id')
           if (mentionNotificationsError) {
             console.error('Failed to create mention notifications from global task modal', mentionNotificationsError)
+          } else {
+            void dispatchNotificationEmails(
+              (insertedMentionNotifications ?? [])
+                .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+                .map((item) => ({
+                  notificationId: item.id,
+                  recipientId: item.recipient_id,
+                  recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
+                  type: 'mention' as const,
+                  taskId: item.task_id as string,
+                  taskTitle: task?.title ?? 'a task',
+                  actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+                })),
+            )
           }
         }
       }
@@ -883,9 +902,26 @@ export function UniversalTaskDetailsModal() {
         message: `You were mentioned in \"${task?.title ?? 'a task'}\".`,
         metadata: { event: 'task_mentioned', source: 'task_reply' },
       }))
-      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+      const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
+        .from('notifications')
+        .insert(mentionNotifications)
+        .select('id, recipient_id, task_id')
       if (mentionNotificationsError) {
         console.error('Failed to create reply mention notifications', mentionNotificationsError)
+      } else {
+        void dispatchNotificationEmails(
+          (insertedMentionNotifications ?? [])
+            .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+            .map((item) => ({
+              notificationId: item.id,
+              recipientId: item.recipient_id,
+              recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
+              type: 'mention' as const,
+              taskId: item.task_id as string,
+              taskTitle: task?.title ?? 'a task',
+              actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+            })),
+        )
       }
     }
   }
@@ -913,7 +949,7 @@ export function UniversalTaskDetailsModal() {
         {!loadingTask && loadError ? <div className='p-6 text-sm text-destructive'>{loadError}</div> : null}
         {!loadingTask && !loadError && task ? (
           <div className='flex max-h-[90vh] min-h-0 flex-col'>
-            <DialogHeader className='border-b px-4 py-3'>
+            <DialogHeader className='border-b border-border/35 px-4 py-3'>
               <div className='flex items-center gap-3'>
                 <div className='flex min-w-0 items-center gap-2'>
                   <DialogTitle className='shrink-0'>Task Details</DialogTitle>
@@ -926,7 +962,7 @@ export function UniversalTaskDetailsModal() {
             </DialogHeader>
 
             <div className='grid min-h-0 flex-1 lg:grid-cols-[minmax(0,2.1fr)_360px]'>
-              <div className='flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain border-r p-4'>
+              <div className='flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain border-r border-border/35 p-4'>
                 <div className='flex flex-1 flex-col gap-4'>
                 <div className='relative'>
                   <Input
@@ -973,7 +1009,7 @@ export function UniversalTaskDetailsModal() {
                       onChange={(event) => setTask((current) => (current ? { ...current, project_id: event.target.value || null } : current))}
                       onBlur={() => task && void saveTask(task, assigneeIds)}
                       disabled={!canEdit}
-                      className='h-10 w-full rounded-md border bg-background px-3 text-sm'
+                      className='h-10 w-full rounded-md bg-muted/40 px-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'
                     >
                       <option value=''>Unassigned project</option>
                       {projects.map((project) => (
@@ -1001,7 +1037,7 @@ export function UniversalTaskDetailsModal() {
                       }
                       onBlur={() => task && void saveTask(task, assigneeIds)}
                       disabled={!canEdit}
-                      className='h-10 w-full rounded-md border bg-background px-3 text-sm'
+                      className='h-10 w-full rounded-md bg-muted/40 px-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'
                     >
                       {statusOptions.map((option) => (
                         <option key={option.id} value={option.id}>
@@ -1020,7 +1056,7 @@ export function UniversalTaskDetailsModal() {
                       onChange={(event) => setTask((current) => (current ? { ...current, priority: event.target.value } : current))}
                       onBlur={() => task && void saveTask(task, assigneeIds)}
                       disabled={!canEdit}
-                      className='h-10 w-full rounded-md border bg-background px-3 text-sm'
+                      className='h-10 w-full rounded-md bg-muted/40 px-3 text-sm shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'
                     >
                       <option value='low'>Low priority</option>
                       <option value='medium'>Medium priority</option>
@@ -1055,7 +1091,7 @@ export function UniversalTaskDetailsModal() {
                   </div>
                 </div>
 
-                <div className='rounded-md border p-2'>
+                <div className='rounded-md bg-muted/30 p-2 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'>
                   <div className='flex min-h-11 items-center justify-between gap-2'>
                     <div className='flex min-w-0 flex-1 flex-wrap items-center gap-1.5'>
                       {selectedAssignees.length === 0 ? (
@@ -1116,7 +1152,7 @@ export function UniversalTaskDetailsModal() {
                   </div>
                 </div>
 
-                <div className='rounded-md border bg-muted/10 p-2.5'>
+                <div className='rounded-md bg-muted/20 p-2.5 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'>
                   <p className='mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground'>Subtasks ({subtasks.length})</p>
                   {subtasks.length === 0 ? (
                     <p className='text-sm text-muted-foreground'>No subtasks yet.</p>
@@ -1157,7 +1193,7 @@ export function UniversalTaskDetailsModal() {
               </div>
 
               <aside className='flex min-h-0 flex-col bg-muted/15'>
-                <div className='border-b px-3 py-3'>
+                <div className='border-b border-border/35 px-3 py-3'>
                   <div className='inline-flex items-center gap-1 text-sm font-semibold'>
                     <MessageSquare className='h-4 w-4' />
                     Comments
@@ -1268,7 +1304,7 @@ export function UniversalTaskDetailsModal() {
                       ))
                     )}
 
-                    <div className='border-t pt-3'>
+                    <div className='border-t border-border/35 pt-3'>
                       <div className='inline-flex items-center gap-1 text-sm font-semibold'>
                         <Activity className='h-4 w-4' />
                         Activity
@@ -1283,7 +1319,7 @@ export function UniversalTaskDetailsModal() {
                     </div>
                   </div>
                 </div>
-                <div className='border-t px-3 py-3'>
+                <div className='border-t border-border/35 px-3 py-3'>
                   <div className='space-y-2'>
                     {pendingVoiceComment ? (
                       <div className='rounded-md border bg-background/70 p-2'>

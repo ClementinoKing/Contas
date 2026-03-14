@@ -13,7 +13,6 @@ import {
   Plug,
   Shield,
   Smartphone,
-  Trophy,
   Trash2,
   UserCircle2,
   UserRoundCog,
@@ -32,7 +31,17 @@ import { uploadAvatarToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
-type SettingsTabKey = 'profile' | 'organization' | 'notifications' | 'account' | 'display' | 'apps'
+type SettingsTabKey = 'profile' | 'organization' | 'notifications' | 'account' | 'display' | 'apps' | 'admin'
+type InvitationRole = 'owner' | 'admin' | 'member' | 'viewer'
+
+type InvitationItem = {
+  id: string
+  email: string
+  role: InvitationRole
+  status: 'pending' | 'accepted' | 'revoked' | 'expired'
+  createdAt: string
+  expiresAt: string | null
+}
 
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
   return (
@@ -98,16 +107,19 @@ const SETTINGS_TABS: Array<{ key: SettingsTabKey; label: string }> = [
   { key: 'account', label: 'Account' },
   { key: 'display', label: 'Display' },
   { key: 'apps', label: 'Apps' },
+  { key: 'admin', label: 'Admin Settings' },
 ]
 
-const MONTHLY_PERFORMANCE = [
-  { month: 'Sep', energy: 28, rank: 21 },
-  { month: 'Oct', energy: 35, rank: 17 },
-  { month: 'Nov', energy: 43, rank: 11 },
-  { month: 'Dec', energy: 39, rank: 13 },
-  { month: 'Jan', energy: 52, rank: 8 },
-  { month: 'Feb', energy: 57, rank: 6 },
-]
+function splitEmails(input: string) {
+  return input
+    .split(/[\n,;]+/g)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+}
 
 export function SettingsPage() {
   const { currentUser, updateCurrentUser } = useAuth()
@@ -131,21 +143,28 @@ export function SettingsPage() {
   const [profileEmail, setProfileEmail] = useState(currentUser?.email ?? 'user@example.com')
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string | undefined>(currentUser?.avatarUrl)
   const [profileAvatarPath, setProfileAvatarPath] = useState<string | undefined>(currentUser?.avatarPath)
-  const [profilePronouns, setProfilePronouns] = useState('She/Her')
-  const [profileJobTitle, setProfileJobTitle] = useState('Product Manager')
-  const [profileDepartment, setProfileDepartment] = useState('Product')
-  const [profileRoleLabel, setProfileRoleLabel] = useState('Admin')
-  const [profileAboutMe, setProfileAboutMe] = useState(
-    'I lead roadmap planning, sprint coordination, and stakeholder communication across teams.',
-  )
+  const [profileJobTitle, setProfileJobTitle] = useState('')
+  const [profileDepartment, setProfileDepartment] = useState('')
+  const [profileRoleLabel, setProfileRoleLabel] = useState('')
+  const [profileAboutMe, setProfileAboutMe] = useState('')
+  const [profileStats, setProfileStats] = useState({ assignedTasks: 0, completedTasks: 0, overdueTasks: 0, activeProjects: 0 })
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [profileSaveMessage, setProfileSaveMessage] = useState<string | null>(null)
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [avatarError, setAvatarError] = useState<string | null>(null)
+  const [organizationProjects, setOrganizationProjects] = useState<Array<{ id: string; name: string }>>([])
+  const [inviteEmailInput, setInviteEmailInput] = useState('')
+  const [inviteFullName, setInviteFullName] = useState('')
+  const [inviteJobTitle, setInviteJobTitle] = useState('')
+  const [inviteDepartment, setInviteDepartment] = useState('')
+  const [inviteRole, setInviteRole] = useState<InvitationRole>('member')
+  const [selectedInviteProjectIds, setSelectedInviteProjectIds] = useState<string[]>([])
+  const [invitingMembers, setInvitingMembers] = useState(false)
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null)
+  const [adminInvitations, setAdminInvitations] = useState<InvitationItem[]>([])
+  const [loadingAdminInvitations, setLoadingAdminInvitations] = useState(false)
+  const isAdmin = (currentUser?.roleLabel ?? '').toLowerCase() === 'admin'
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
-  const currentEnergy = MONTHLY_PERFORMANCE[MONTHLY_PERFORMANCE.length - 1]?.energy ?? 0
-  const currentRank = MONTHLY_PERFORMANCE[MONTHLY_PERFORMANCE.length - 1]?.rank ?? 0
-  const bestRank = Math.min(...MONTHLY_PERFORMANCE.map((entry) => entry.rank))
-  const maxEnergy = Math.max(...MONTHLY_PERFORMANCE.map((entry) => entry.energy), 1)
-
   useEffect(() => {
     setProfileName(currentUser?.name ?? 'Organization User')
     setProfileEmail(currentUser?.email ?? 'user@example.com')
@@ -161,7 +180,7 @@ export function SettingsPage() {
     void supabase
       .from('profiles')
       .select(
-        'full_name, email, avatar_url, pronouns, job_title, department, role_label, about_me, out_of_office, out_of_office_start, out_of_office_end',
+        'full_name, email, avatar_url, job_title, department, role_label, about_me, out_of_office, out_of_office_start, out_of_office_end',
       )
       .eq('id', currentUser.id)
       .maybeSingle()
@@ -172,13 +191,10 @@ export function SettingsPage() {
         setProfileEmail(data.email ?? currentUser.email ?? 'user@example.com')
         setProfileAvatarUrl(isDirectAvatarUrl(data.avatar_url) ? (data.avatar_url ?? undefined) : currentUser.avatarUrl)
         setProfileAvatarPath(!isDirectAvatarUrl(data.avatar_url) ? (data.avatar_url ?? undefined) : currentUser.avatarPath)
-        setProfilePronouns(data.pronouns ?? 'She/Her')
-        setProfileJobTitle(data.job_title ?? 'Product Manager')
-        setProfileDepartment(data.department ?? 'Product')
-        setProfileRoleLabel(data.role_label ?? 'Admin')
-        setProfileAboutMe(
-          data.about_me ?? 'I lead roadmap planning, sprint coordination, and stakeholder communication across teams.',
-        )
+        setProfileJobTitle(data.job_title ?? '')
+        setProfileDepartment(data.department ?? '')
+        setProfileRoleLabel(data.role_label ?? '')
+        setProfileAboutMe(data.about_me ?? '')
         setOutOfOffice(data.out_of_office ?? false)
         setOutOfOfficeStart(data.out_of_office_start ? new Date(data.out_of_office_start) : undefined)
         setOutOfOfficeEnd(data.out_of_office_end ? new Date(data.out_of_office_end) : undefined)
@@ -188,6 +204,214 @@ export function SettingsPage() {
       cancelled = true
     }
   }, [currentUser?.avatarPath, currentUser?.avatarUrl, currentUser?.email, currentUser?.id, currentUser?.name])
+
+  useEffect(() => {
+    if (!currentUser?.id) return
+
+    let cancelled = false
+    void supabase
+      .from('tasks')
+      .select('id, status, completed_at, due_at, project_id')
+      .eq('assigned_to', currentUser.id)
+      .then(({ data, error }) => {
+        if (cancelled || error) return
+        const now = Date.now()
+        const assigned = data ?? []
+        const completed = assigned.filter((task) => Boolean(task.completed_at) || ['done', 'completed', 'closed'].includes((task.status ?? '').toLowerCase())).length
+        const overdue = assigned.filter((task) => {
+          if (task.completed_at || !task.due_at) return false
+          const due = new Date(task.due_at)
+          return !Number.isNaN(due.getTime()) && due.getTime() < now
+        }).length
+        const activeProjects = new Set(assigned.map((task) => task.project_id).filter((value): value is string => Boolean(value))).size
+        setProfileStats({
+          assignedTasks: assigned.length,
+          completedTasks: completed,
+          overdueTasks: overdue,
+          activeProjects,
+        })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    let cancelled = false
+    void supabase
+      .from('projects')
+      .select('id, name')
+      .order('name', { ascending: true })
+      .then(({ data }) => {
+        if (cancelled) return
+        const projects = (data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
+        setOrganizationProjects(projects)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const loadAdminInvitations = async () => {
+    if (!isAdmin) return
+    if (!currentUser?.id) return
+    setLoadingAdminInvitations(true)
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const authHeaders = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined
+    const { data, error } = await supabase.functions.invoke('admin-invite', {
+      body: { action: 'list' },
+      headers: authHeaders,
+    })
+    if (error) {
+      setInviteMessage(error.message)
+      setLoadingAdminInvitations(false)
+      return
+    }
+    setAdminInvitations(
+      ((data?.invitations as Array<{
+        id: string
+        email: string
+        role: InvitationRole
+        status: 'pending' | 'accepted' | 'revoked' | 'expired'
+        createdAt?: string
+        expiresAt?: string | null
+        created_at?: string
+        expires_at?: string | null
+      }> | undefined) ?? []
+      ).map((item) => ({
+        id: item.id,
+        email: item.email,
+        role: item.role,
+        status: item.status,
+        createdAt: item.createdAt ?? item.created_at ?? new Date().toISOString(),
+        expiresAt: item.expiresAt ?? item.expires_at ?? null,
+      })),
+    )
+    setLoadingAdminInvitations(false)
+  }
+
+  useEffect(() => {
+    if (!isAdmin) return
+    if (activeTab !== 'admin') return
+    void loadAdminInvitations()
+  }, [activeTab, currentUser?.id, isAdmin])
+
+  useEffect(() => {
+    if (!isAdmin && activeTab === 'admin') {
+      setActiveTab('profile')
+    }
+  }, [activeTab, isAdmin])
+
+  const toggleInviteProject = (projectId: string) => {
+    setSelectedInviteProjectIds((current) =>
+      current.includes(projectId) ? current.filter((id) => id !== projectId) : [...current, projectId],
+    )
+  }
+
+  const handleInviteMembers = async () => {
+    if (!isAdmin) return
+    if (!currentUser?.id) return
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const authHeaders = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined
+    const emails = splitEmails(inviteEmailInput)
+    if (emails.length === 0) {
+      setInviteMessage('Enter at least one email address.')
+      return
+    }
+    const invalidEmails = emails.filter((email) => !isValidEmail(email))
+    if (invalidEmails.length > 0) {
+      setInviteMessage(`Invalid emails: ${invalidEmails.join(', ')}`)
+      return
+    }
+    if (!inviteFullName.trim()) {
+      setInviteMessage('Full name is required.')
+      return
+    }
+    if (!inviteJobTitle.trim()) {
+      setInviteMessage('Job title is required.')
+      return
+    }
+    if (!inviteDepartment.trim()) {
+      setInviteMessage('Department is required.')
+      return
+    }
+
+    setInvitingMembers(true)
+    setInviteMessage(null)
+    const results = await Promise.all(
+      emails.map(async (email) => {
+        const { data, error } = await supabase.functions.invoke('admin-invite', {
+          body: {
+            action: 'invite',
+            email,
+            role: inviteRole,
+            fullName: inviteFullName.trim(),
+            jobTitle: inviteJobTitle.trim(),
+            department: inviteDepartment.trim(),
+            projectIds: selectedInviteProjectIds,
+          },
+          headers: authHeaders,
+        })
+        return { data, error }
+      }),
+    )
+    const failures = results.filter((result) => result.error || result.data?.ok === false)
+    if (failures.length > 0) {
+      setInviteMessage(`${emails.length - failures.length}/${emails.length} invites sent. Some failed.`)
+    } else {
+      setInviteMessage(`Invites sent to ${emails.length} teammate(s).`)
+      setInviteEmailInput('')
+      setInviteFullName('')
+      setInviteJobTitle('')
+      setInviteDepartment('')
+      setSelectedInviteProjectIds([])
+    }
+    setInvitingMembers(false)
+    void loadAdminInvitations()
+  }
+
+  const handleResendInvite = async (invitationId: string) => {
+    if (!isAdmin) return
+    if (!currentUser?.id) return
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const authHeaders = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined
+    const { data, error } = await supabase.functions.invoke('admin-invite', {
+      body: { action: 'resend', invitationId },
+      headers: authHeaders,
+    })
+    if (error || data?.ok === false) {
+      setInviteMessage(error?.message ?? data?.message ?? 'Failed to resend invite.')
+      return
+    }
+    setInviteMessage('Invite resent.')
+    void loadAdminInvitations()
+  }
+
+  const handleRevokeInvite = async (invitationId: string) => {
+    if (!isAdmin) return
+    if (!currentUser?.id) return
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    const authHeaders = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined
+    const { data, error } = await supabase.functions.invoke('admin-invite', {
+      body: { action: 'revoke', invitationId },
+      headers: authHeaders,
+    })
+    if (error || data?.ok === false) {
+      setInviteMessage(error?.message ?? data?.message ?? 'Failed to revoke invite.')
+      return
+    }
+    setInviteMessage('Invite revoked.')
+    void loadAdminInvitations()
+  }
 
   const handleAvatarFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -215,6 +439,139 @@ export function SettingsPage() {
     setAvatarError(null)
     updateCurrentUser({ avatarUrl: undefined, avatarPath: undefined })
   }
+
+  const handleSaveProfile = async () => {
+    if (!currentUser?.id) return
+    setSavingProfile(true)
+    setProfileSaveMessage(null)
+
+    const avatarValue = profileAvatarPath ?? profileAvatarUrl ?? null
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        full_name: profileName.trim() || 'Organization User',
+        avatar_url: avatarValue,
+        job_title: profileJobTitle.trim() || null,
+        department: profileDepartment.trim() || null,
+        role_label: profileRoleLabel.trim() || null,
+        about_me: profileAboutMe.trim() || null,
+        out_of_office: outOfOffice,
+        out_of_office_start: outOfOfficeStart ? outOfOfficeStart.toISOString() : null,
+        out_of_office_end: outOfOfficeEnd ? outOfOfficeEnd.toISOString() : null,
+      })
+      .eq('id', currentUser.id)
+
+    if (error) {
+      setProfileSaveMessage(error.message)
+      setSavingProfile(false)
+      return
+    }
+
+    updateCurrentUser({
+      name: profileName.trim() || 'Organization User',
+      roleLabel: profileRoleLabel.trim() || undefined,
+      jobTitle: profileJobTitle.trim() || undefined,
+      avatarUrl: profileAvatarUrl,
+      avatarPath: profileAvatarPath,
+    })
+    setProfileSaveMessage('Profile updated.')
+    setSavingProfile(false)
+  }
+
+  const renderAdminInviteForm = (containerClassName?: string) => (
+    <div className={cn('space-y-4 rounded-lg border p-4', containerClassName)}>
+      <div>
+        <p className='font-medium text-foreground'>Invite Team Members</p>
+        <p className='text-sm text-muted-foreground'>Create accounts by sending invite emails to teammates.</p>
+      </div>
+      <div className='grid gap-3 md:grid-cols-2'>
+        <div className='space-y-2 md:col-span-2'>
+          <label className='text-sm font-medium text-foreground'>Email addresses</label>
+          <textarea
+            value={inviteEmailInput}
+            onChange={(event) => setInviteEmailInput(event.target.value)}
+            rows={3}
+            placeholder='name@company.com, teammate@company.com'
+            className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+          />
+        </div>
+        <div className='space-y-2'>
+          <label className='text-sm font-medium text-foreground'>Default role</label>
+          <select
+            value={inviteRole}
+            onChange={(event) => setInviteRole(event.target.value as InvitationRole)}
+            className='h-10 w-full rounded-md border border-input bg-background px-3 text-sm'
+          >
+            <option value='member'>Member</option>
+            <option value='viewer'>Viewer</option>
+            <option value='admin'>Admin</option>
+            <option value='owner'>Owner</option>
+          </select>
+        </div>
+        <div className='space-y-2'>
+          <label className='text-sm font-medium text-foreground'>Full name</label>
+          <Input
+            value={inviteFullName}
+            onChange={(event) => setInviteFullName(event.target.value)}
+            placeholder='Enter teammate full name'
+          />
+          {!inviteFullName.trim() && inviteMessage === 'Full name is required.' ? (
+            <p className='text-xs text-destructive'>Full name is required.</p>
+          ) : null}
+        </div>
+        <div className='space-y-2'>
+          <label className='text-sm font-medium text-foreground'>Job title</label>
+          <Input
+            value={inviteJobTitle}
+            onChange={(event) => setInviteJobTitle(event.target.value)}
+            placeholder='e.g. Finance Manager'
+          />
+          {!inviteJobTitle.trim() && inviteMessage === 'Job title is required.' ? (
+            <p className='text-xs text-destructive'>Job title is required.</p>
+          ) : null}
+        </div>
+        <div className='space-y-2'>
+          <label className='text-sm font-medium text-foreground'>Department</label>
+          <Input
+            value={inviteDepartment}
+            onChange={(event) => setInviteDepartment(event.target.value)}
+            placeholder='e.g. Finance'
+          />
+          {!inviteDepartment.trim() && inviteMessage === 'Department is required.' ? (
+            <p className='text-xs text-destructive'>Department is required.</p>
+          ) : null}
+        </div>
+      </div>
+      <div className='space-y-2'>
+        <label className='text-sm font-medium text-foreground'>Project access</label>
+        <div className='flex flex-wrap gap-2 rounded-md border bg-background p-2'>
+          {organizationProjects.map((project) => {
+            const selected = selectedInviteProjectIds.includes(project.id)
+            return (
+              <button
+                key={project.id}
+                type='button'
+                onClick={() => toggleInviteProject(project.id)}
+                className={cn(
+                  'rounded-md border px-2.5 py-1.5 text-xs',
+                  selected ? 'border-primary/60 bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-accent',
+                )}
+              >
+                {project.name}
+              </button>
+            )
+          })}
+          {organizationProjects.length === 0 ? <p className='text-xs text-muted-foreground'>No projects available.</p> : null}
+        </div>
+      </div>
+      <div className='flex items-center justify-between gap-3'>
+        {inviteMessage ? <p className='text-xs text-muted-foreground'>{inviteMessage}</p> : <span />}
+        <Button onClick={() => void handleInviteMembers()} disabled={invitingMembers}>
+          {invitingMembers ? 'Sending invites...' : 'Send invites'}
+        </Button>
+      </div>
+    </div>
+  )
 
   const renderActiveSection = () => {
     switch (activeTab) {
@@ -271,45 +628,51 @@ export function SettingsPage() {
                     <div className='flex items-center justify-between rounded-md border px-3 py-2'>
                       <span className='inline-flex items-center gap-2 text-sm text-muted-foreground'>
                         <Flame className='h-4 w-4 text-amber-500' />
-                        Energy Points
+                        Assigned Tasks
                       </span>
-                      <span className='font-semibold text-foreground'>{currentEnergy}</span>
+                      <span className='font-semibold text-foreground'>{profileStats.assignedTasks}</span>
                     </div>
                     <div className='flex items-center justify-between rounded-md border px-3 py-2'>
                       <span className='inline-flex items-center gap-2 text-sm text-muted-foreground'>
-                        <Trophy className='h-4 w-4 text-violet-500' />
-                        Current Rank
+                        <Activity className='h-4 w-4 text-emerald-500' />
+                        Completed
                       </span>
-                      <span className='font-semibold text-foreground'>#{currentRank}</span>
+                      <span className='font-semibold text-foreground'>{profileStats.completedTasks}</span>
                     </div>
                     <div className='flex items-center justify-between rounded-md border px-3 py-2'>
                       <span className='inline-flex items-center gap-2 text-sm text-muted-foreground'>
                         <Medal className='h-4 w-4 text-emerald-500' />
-                        Best Rank
+                        Active Projects
                       </span>
-                      <span className='font-semibold text-foreground'>#{bestRank}</span>
+                      <span className='font-semibold text-foreground'>{profileStats.activeProjects}</span>
                     </div>
                   </div>
                 </div>
 
                 <div className='rounded-lg border bg-muted/10 p-4 lg:col-span-2'>
                   <div className='mb-3 flex items-center justify-between'>
-                    <p className='text-sm font-semibold text-foreground'>Energy Points</p>
-                    <p className='text-xs text-muted-foreground'>Monthly</p>
+                    <p className='text-sm font-semibold text-foreground'>Task Completion</p>
+                    <p className='text-xs text-muted-foreground'>Assigned work</p>
                   </div>
-                  <div className='grid h-32 grid-cols-6 items-end gap-2'>
-                    {MONTHLY_PERFORMANCE.map((entry) => (
-                      <div key={entry.month} className='flex h-full flex-col items-center justify-end gap-1.5'>
-                        <div className='text-[11px] text-muted-foreground'>{entry.energy}</div>
-                        <div className='flex h-[85%] w-full items-end rounded bg-muted/50 p-1'>
-                          <div
-                            className='w-full rounded-sm bg-primary/80'
-                            style={{ height: `${(entry.energy / maxEnergy) * 100}%` }}
-                          />
-                        </div>
-                        <div className='text-[11px] text-muted-foreground'>{entry.month}</div>
-                      </div>
-                    ))}
+                  <div className='space-y-3'>
+                    <div className='flex items-center justify-between text-xs text-muted-foreground'>
+                      <span>Completed rate</span>
+                      <span className='font-semibold text-foreground'>
+                        {profileStats.assignedTasks > 0 ? Math.round((profileStats.completedTasks / profileStats.assignedTasks) * 100) : 0}%
+                      </span>
+                    </div>
+                    <div className='h-2 rounded-full bg-muted'>
+                      <div
+                        className='h-full rounded-full bg-primary transition-[width] duration-300'
+                        style={{
+                          width: `${profileStats.assignedTasks > 0 ? Math.round((profileStats.completedTasks / profileStats.assignedTasks) * 100) : 0}%`,
+                        }}
+                      />
+                    </div>
+                    <div className='flex items-center justify-between text-xs text-muted-foreground'>
+                      <span>Overdue tasks</span>
+                      <span className='font-semibold text-foreground'>{profileStats.overdueTasks}</span>
+                    </div>
                   </div>
                 </div>
 
@@ -317,17 +680,23 @@ export function SettingsPage() {
                   <div className='mb-3 flex items-center justify-between'>
                     <p className='inline-flex items-center gap-2 text-sm font-semibold text-foreground'>
                       <Activity className='h-4 w-4 text-blue-500' />
-                      Rank by Month
+                      Profile Snapshot
                     </p>
-                    <p className='text-xs text-muted-foreground'>Lower rank number means better position</p>
+                    <p className='text-xs text-muted-foreground'>Live data from your assigned tasks</p>
                   </div>
                   <div className='grid gap-2 sm:grid-cols-2 xl:grid-cols-3'>
-                    {MONTHLY_PERFORMANCE.map((entry) => (
-                      <div key={`rank-${entry.month}`} className='flex items-center justify-between rounded-md border px-3 py-2'>
-                        <span className='text-sm text-muted-foreground'>{entry.month}</span>
-                        <span className='text-sm font-semibold text-foreground'>#{entry.rank}</span>
-                      </div>
-                    ))}
+                    <div className='flex items-center justify-between rounded-md border px-3 py-2'>
+                      <span className='text-sm text-muted-foreground'>Assigned</span>
+                      <span className='text-sm font-semibold text-foreground'>{profileStats.assignedTasks}</span>
+                    </div>
+                    <div className='flex items-center justify-between rounded-md border px-3 py-2'>
+                      <span className='text-sm text-muted-foreground'>Completed</span>
+                      <span className='text-sm font-semibold text-foreground'>{profileStats.completedTasks}</span>
+                    </div>
+                    <div className='flex items-center justify-between rounded-md border px-3 py-2'>
+                      <span className='text-sm text-muted-foreground'>Overdue</span>
+                      <span className='text-sm font-semibold text-foreground'>{profileStats.overdueTasks}</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -338,11 +707,7 @@ export function SettingsPage() {
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Email</label>
-                <Input type='email' value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} />
-              </div>
-              <div className='space-y-2'>
-                <label className='text-sm font-medium text-foreground'>Pronouns</label>
-                <Input value={profilePronouns} onChange={(event) => setProfilePronouns(event.target.value)} />
+                <Input type='email' value={profileEmail} readOnly disabled className='cursor-not-allowed opacity-70' />
               </div>
               <div className='space-y-2'>
                 <label className='text-sm font-medium text-foreground'>Job Title</label>
@@ -397,19 +762,12 @@ export function SettingsPage() {
                 </div>
               </div>
               <div className='flex justify-end md:col-span-2'>
-                <Button
-                  onClick={() =>
-                    updateCurrentUser({
-                      name: profileName.trim() || 'Organization User',
-                      email: profileEmail.trim() || 'user@example.com',
-                      jobTitle: profileJobTitle.trim() || 'Product Manager',
-                      avatarUrl: profileAvatarUrl,
-                      avatarPath: profileAvatarPath,
-                    })
-                  }
-                >
-                  Save profile
-                </Button>
+                <div className='flex items-center gap-3'>
+                  {profileSaveMessage ? <p className='text-xs text-muted-foreground'>{profileSaveMessage}</p> : null}
+                  <Button onClick={() => void handleSaveProfile()} disabled={savingProfile}>
+                    {savingProfile ? 'Saving...' : 'Save profile'}
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </>
@@ -467,6 +825,7 @@ export function SettingsPage() {
               <div className='flex justify-end'>
                 <Button variant='outline'>Update organization</Button>
               </div>
+              {isAdmin ? renderAdminInviteForm() : null}
             </CardContent>
           </>
         )
@@ -518,15 +877,15 @@ export function SettingsPage() {
                 <div className='grid gap-3 md:grid-cols-3'>
                   <div className='space-y-2'>
                     <label className='text-sm font-medium text-foreground'>Work Email</label>
-                    <Input type='email' defaultValue={currentUser?.email ?? 'work@example.com'} />
+                    <Input type='email' defaultValue={currentUser?.email ?? 'work@example.com'} readOnly disabled className='cursor-not-allowed opacity-70' />
                   </div>
                   <div className='space-y-2'>
                     <label className='text-sm font-medium text-foreground'>Personal Email</label>
-                    <Input type='email' defaultValue='personal@example.com' />
+                    <Input type='email' defaultValue='personal@example.com' readOnly disabled className='cursor-not-allowed opacity-70' />
                   </div>
                   <div className='space-y-2'>
                     <label className='text-sm font-medium text-foreground'>Other Email</label>
-                    <Input type='email' defaultValue='other@example.com' />
+                    <Input type='email' defaultValue='other@example.com' readOnly disabled className='cursor-not-allowed opacity-70' />
                   </div>
                 </div>
               </div>
@@ -694,6 +1053,66 @@ export function SettingsPage() {
           </>
         )
 
+      case 'admin':
+        return (
+          <>
+            <CardHeader>
+              <SectionHeader icon={Shield} title='Admin Settings' description='Manage invitations and account provisioning.' />
+            </CardHeader>
+            <CardContent className='space-y-4'>
+              {!isAdmin ? (
+                <div className='rounded-lg border border-dashed p-4 text-sm text-muted-foreground'>Admin access required.</div>
+              ) : (
+                <>
+                  {renderAdminInviteForm('border-border/80')}
+                  <div className='flex items-center justify-between'>
+                    <p className='text-sm font-medium text-foreground'>Invitation History</p>
+                    <Button variant='outline' size='sm' onClick={() => void loadAdminInvitations()}>
+                      Refresh
+                    </Button>
+                  </div>
+                  <div className='space-y-2'>
+                    {loadingAdminInvitations ? (
+                      <p className='text-sm text-muted-foreground'>Loading invites...</p>
+                    ) : adminInvitations.length === 0 ? (
+                      <p className='text-sm text-muted-foreground'>No invitations yet.</p>
+                    ) : (
+                      adminInvitations.map((invite) => (
+                        <div key={invite.id} className='flex flex-wrap items-center justify-between gap-3 rounded-md border p-3'>
+                          <div>
+                            <p className='text-sm font-medium text-foreground'>{invite.email}</p>
+                            <p className='text-xs text-muted-foreground'>
+                              {invite.role} • {invite.status} • {new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(invite.createdAt))}
+                            </p>
+                          </div>
+                          <div className='flex items-center gap-2'>
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              onClick={() => void handleResendInvite(invite.id)}
+                              disabled={invite.status !== 'pending'}
+                            >
+                              Resend
+                            </Button>
+                            <Button
+                              size='sm'
+                              variant='outline'
+                              onClick={() => void handleRevokeInvite(invite.id)}
+                              disabled={invite.status !== 'pending'}
+                            >
+                              Revoke
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </>
+        )
+
       default:
         return null
     }
@@ -706,6 +1125,7 @@ export function SettingsPage() {
           <div className='overflow-x-auto'>
             <div className='inline-flex min-w-full gap-1 rounded-lg bg-muted/35 p-1'>
               {SETTINGS_TABS.map((tab) => (
+                (tab.key !== 'admin' || isAdmin) ? (
                 <button
                   key={tab.key}
                   type='button'
@@ -719,6 +1139,7 @@ export function SettingsPage() {
                 >
                   {tab.label}
                 </button>
+                ) : null
               ))}
             </div>
           </div>

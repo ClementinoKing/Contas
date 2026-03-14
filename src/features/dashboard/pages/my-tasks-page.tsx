@@ -13,8 +13,6 @@ import {
   Lock,
   Loader2,
   MessageCircle,
-  NotebookPen,
-  Paperclip,
   Pencil,
   Play,
   Search,
@@ -42,6 +40,7 @@ import { Input } from '@/components/ui/input'
 import { MentionRichTextEditor } from '@/components/ui/mention-rich-text-editor'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { dispatchNotificationEmails } from '@/features/notifications/lib/email-delivery'
 import { CreateTaskDialog, type CreatedTaskPayload } from '@/features/tasks/components/create-task-dialog'
 import { openTaskDetailsModal } from '@/features/tasks/lib/open-task-details-modal'
 import {
@@ -56,7 +55,7 @@ import { resolveAvatarUrl, resolveR2ObjectUrl, uploadVoiceToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
-type TaskTab = 'list' | 'board' | 'calendar' | 'notes'
+type TaskTab = 'list' | 'board' | 'calendar'
 type CalendarView = 'daily' | 'weekly' | 'monthly' | 'yearly'
 type BoardSavedView = 'all' | 'my-open' | 'due-soon'
 type BoardDueFilter = 'all' | 'today' | 'upcoming' | 'overdue' | 'none'
@@ -169,7 +168,6 @@ const TABS: Array<{ key: TaskTab; label: string; icon: ComponentType<{ className
   { key: 'list', label: 'List', icon: List },
   { key: 'board', label: 'Board', icon: KanbanSquare },
   { key: 'calendar', label: 'Calendar', icon: CalendarDays },
-  { key: 'notes', label: 'Notes', icon: NotebookPen },
 ]
 
 const BOARD_SAVED_VIEWS: Array<{ key: BoardSavedView; label: string }> = [
@@ -1052,7 +1050,7 @@ export function MyTasksPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState<TaskTab>(() => {
     const storedTab = localStorage.getItem(MY_TASKS_ACTIVE_TAB_KEY)
-    return storedTab === 'board' || storedTab === 'calendar' || storedTab === 'notes' || storedTab === 'list' ? storedTab : 'list'
+    return storedTab === 'board' || storedTab === 'calendar' || storedTab === 'list' ? storedTab : 'list'
   })
   const [calendarView, setCalendarView] = useState<CalendarView>('monthly')
   const [calendarDate, setCalendarDate] = useState<Date>(() => startOfDay(new Date()))
@@ -1061,7 +1059,7 @@ export function MyTasksPage() {
   const [taskRows, setTaskRows] = useState<TaskRow[]>([])
   const [commentsByTaskId, setCommentsByTaskId] = useState<Record<string, BoardComment[]>>({})
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([])
-  const [members, setMembers] = useState<Array<{ id: string; name: string; username?: string; avatarUrl?: string }>>([])
+  const [members, setMembers] = useState<Array<{ id: string; name: string; username?: string; email?: string; avatarUrl?: string }>>([])
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const [createTaskColumnId, setCreateTaskColumnId] = useState('planned')
   const [createTaskParentTaskId, setCreateTaskParentTaskId] = useState<string | undefined>(undefined)
@@ -1348,6 +1346,7 @@ export function MyTasksPage() {
           id: profile.id,
           name: profile.full_name ?? profile.email ?? 'Unknown member',
           username: profile.username ?? undefined,
+          email: profile.email ?? undefined,
           avatarUrl: rawAvatar && isDirectAvatarUrl(rawAvatar) ? rawAvatar : undefined,
         }
       })
@@ -2003,9 +2002,26 @@ export function MyTasksPage() {
             metadata: { event: 'task_assigned', source: 'board_bulk_assign' },
           }
         })
-        const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+        const { data: insertedNotifications, error: notificationsError } = await supabase
+          .from('notifications')
+          .insert(notifications)
+          .select('id, recipient_id, task_id')
         if (notificationsError) {
           console.error('Failed to create assignment notifications', notificationsError)
+        } else {
+          void dispatchNotificationEmails(
+            (insertedNotifications ?? [])
+              .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+              .map((item) => ({
+                notificationId: item.id,
+                recipientId: item.recipient_id,
+                recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
+                type: 'task_assigned' as const,
+                taskId: item.task_id as string,
+                taskTitle: previousRows.find((task) => task.id === item.task_id)?.title ?? 'a task',
+                actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+              })),
+          )
         }
       }
 
@@ -2551,9 +2567,26 @@ export function MyTasksPage() {
           message: `You were assigned "${title}".`,
           metadata: { event: 'task_assigned', source: 'task_edit' },
         }))
-        const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+        const { data: insertedNotifications, error: notificationsError } = await supabase
+          .from('notifications')
+          .insert(notifications)
+          .select('id, recipient_id, task_id')
         if (notificationsError) {
           console.error('Failed to create assignment notifications', notificationsError)
+        } else {
+          void dispatchNotificationEmails(
+            (insertedNotifications ?? [])
+              .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+              .map((item) => ({
+                notificationId: item.id,
+                recipientId: item.recipient_id,
+                recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
+                type: 'task_assigned' as const,
+                taskId: item.task_id as string,
+                taskTitle: title,
+                actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+              })),
+          )
         }
       }
     }
@@ -2574,9 +2607,26 @@ export function MyTasksPage() {
           message: `You were mentioned in "${title}".`,
           metadata: { event: 'task_mentioned', source: 'task_edit_description' },
         }))
-        const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+        const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
+          .from('notifications')
+          .insert(mentionNotifications)
+          .select('id, recipient_id, task_id')
         if (mentionNotificationsError) {
           console.error('Failed to create mention notifications', mentionNotificationsError)
+        } else {
+          void dispatchNotificationEmails(
+            (insertedMentionNotifications ?? [])
+              .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+              .map((item) => ({
+                notificationId: item.id,
+                recipientId: item.recipient_id,
+                recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
+                type: 'mention' as const,
+                taskId: item.task_id as string,
+                taskTitle: title,
+                actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+              })),
+          )
         }
       }
     }
@@ -3033,9 +3083,26 @@ export function MyTasksPage() {
         message: `You were mentioned in "${taskTitle}".`,
         metadata: { event: 'task_mentioned', source: 'task_comment' },
       }))
-      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+      const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
+        .from('notifications')
+        .insert(mentionNotifications)
+        .select('id, recipient_id, task_id')
       if (mentionNotificationsError) {
         console.error('Failed to create comment mention notifications', mentionNotificationsError)
+      } else {
+        void dispatchNotificationEmails(
+          (insertedMentionNotifications ?? [])
+            .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+            .map((item) => ({
+              notificationId: item.id,
+              recipientId: item.recipient_id,
+              recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
+              type: 'mention' as const,
+              taskId: item.task_id as string,
+              taskTitle,
+              actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+            })),
+        )
       }
     }
 
@@ -3163,9 +3230,26 @@ export function MyTasksPage() {
         message: `You were mentioned in "${taskTitle}".`,
         metadata: { event: 'task_mentioned', source: 'task_reply' },
       }))
-      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+      const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
+        .from('notifications')
+        .insert(mentionNotifications)
+        .select('id, recipient_id, task_id')
       if (mentionNotificationsError) {
         console.error('Failed to create reply mention notifications', mentionNotificationsError)
+      } else {
+        void dispatchNotificationEmails(
+          (insertedMentionNotifications ?? [])
+            .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
+            .map((item) => ({
+              notificationId: item.id,
+              recipientId: item.recipient_id,
+              recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
+              type: 'mention' as const,
+              taskId: item.task_id as string,
+              taskTitle,
+              actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+            })),
+        )
       }
     }
   }
@@ -4149,31 +4233,6 @@ export function MyTasksPage() {
 
             {renderCalendarContent()}
           </div>
-        )
-
-      case 'notes':
-        return (
-          <Card>
-            <CardHeader className='pb-3'>
-              <CardTitle className='text-base'>Notes</CardTitle>
-              <CardDescription>Capture quick updates and context for your tasks.</CardDescription>
-            </CardHeader>
-            <CardContent className='space-y-3'>
-              <Input placeholder='Note title' />
-              <textarea
-                rows={6}
-                placeholder='Write your task note here...'
-                className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
-              />
-              <div className='flex items-center justify-between'>
-                <Button variant='outline' size='sm' className='gap-1.5'>
-                  <Paperclip className='h-4 w-4' aria-hidden='true' />
-                  Attach file
-                </Button>
-                <Button size='sm'>Save note</Button>
-              </div>
-            </CardContent>
-          </Card>
         )
 
       default:

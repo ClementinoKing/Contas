@@ -8,13 +8,10 @@ import { ReportingPage } from '@/features/dashboard/pages/reporting-page'
 import { PortfolioPage } from '@/features/dashboard/pages/portfolio-page'
 import { GoalsPage } from '@/features/dashboard/pages/goals-page'
 import { WorkspacePage } from '@/features/dashboard/pages/workspace-page'
-import { OnboardingNamePage } from '@/features/onboarding/pages/onboarding-name-page'
-import { OnboardingToolsPage } from '@/features/onboarding/pages/onboarding-tools-page'
-import { OnboardingWorkPage } from '@/features/onboarding/pages/onboarding-work-page'
 import { ProjectDetailPage } from '@/features/dashboard/pages/project-detail-page'
 import { ProjectsPage } from '@/features/dashboard/pages/projects-page'
 import { LoginPage } from '@/features/auth/pages/login-page'
-import { RegisterPage } from '@/features/auth/pages/register-page'
+import { ResetPasswordPage } from '@/features/auth/pages/reset-password-page'
 import { AppShellLayout } from '@/features/layout/components/app-shell-layout'
 import { SettingsPage } from '@/features/settings/pages/settings-page'
 
@@ -45,15 +42,12 @@ export const router = createBrowserRouter([
     element: <AuthRedirectRoute />,
     children: [
       { path: '/login', element: <LoginPage /> },
-      { path: '/register', element: <RegisterPage /> },
     ],
   },
   {
     element: <ProtectedRoute />,
     children: [
-      { path: '/onboarding/name', element: <OnboardingNamePage /> },
-      { path: '/onboarding/work', element: <OnboardingWorkPage /> },
-      { path: '/onboarding/tools', element: <OnboardingToolsPage /> },
+      { path: '/reset-password', element: <ResetPasswordPage /> },
       {
         path: '/dashboard',
         element: <AppShellLayout />,

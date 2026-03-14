@@ -1,5 +1,5 @@
 import { AtSign, Bell, CheckCheck, Filter, MessageSquareText, ShieldAlert } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { Badge } from '@/components/ui/badge'
@@ -170,16 +170,28 @@ export function NotificationsPage() {
     localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
   }
 
-  const markReadInBackground = (id: string) => {
+  const markReadAndPersist = async (id: string) => {
+    const item = items.find((entry) => entry.id === id)
+    if (!item || item.read) return
+
     setItems((current) => {
-      const next = current.map((item) => (item.id === id ? { ...item, read: true } : item))
+      const next = current.map((entry) => (entry.id === id ? { ...entry, read: true } : entry))
       cacheNotificationItems(next)
       return next
     })
-    void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id)
+
+    const { error } = await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id)
+    if (error) {
+      console.error('Failed to mark notification as read', error)
+      setItems((current) => {
+        const next = current.map((entry) => (entry.id === id ? { ...entry, read: false } : entry))
+        cacheNotificationItems(next)
+        return next
+      })
+    }
   }
 
-  const resolveTaskId = async (item: NotificationItem) => {
+  const resolveTaskId = useCallback(async (item: NotificationItem) => {
     if (item.taskId) return item.taskId
     const { data, error } = await supabase.from('notifications').select('task_id').eq('id', item.id).single()
     if (error) {
@@ -195,11 +207,11 @@ export function NotificationsPage() {
       return next
     })
     return resolvedTaskId
-  }
+  }, [])
 
   const openNotificationTask = async (item: NotificationItem) => {
     if (!item.read) {
-      markReadInBackground(item.id)
+      await markReadAndPersist(item.id)
     }
     const taskId = item.taskId ?? (await resolveTaskId(item))
     if (!taskId) return
@@ -219,7 +231,7 @@ export function NotificationsPage() {
     if (redirectTaskId) {
       handledNotificationRedirectRef.current = redirectKey
       if (redirectNotificationId) {
-        markReadInBackground(redirectNotificationId)
+        void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', redirectNotificationId)
       }
       openTaskDetailsModal(redirectTaskId)
       const nextParams = new URLSearchParams(searchParams)
@@ -231,18 +243,23 @@ export function NotificationsPage() {
 
     if (loading) return
 
-    const fromList = redirectNotificationId ? items.find((item) => item.id === redirectNotificationId) : undefined
-    const target: NotificationItem | null = fromList ?? null
-
+    const target = redirectNotificationId ? items.find((item) => item.id === redirectNotificationId) : null
     if (!target) return
     handledNotificationRedirectRef.current = redirectKey
-    void openNotificationTask(target)
+    if (!target.read) {
+      void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', target.id)
+    }
+    void (async () => {
+      const taskId = target.taskId ?? (await resolveTaskId(target))
+      if (!taskId) return
+      openTaskDetailsModal(taskId)
+    })()
 
     const nextParams = new URLSearchParams(searchParams)
     nextParams.delete('openNotificationId')
     nextParams.delete('openTaskId')
     setSearchParams(nextParams, { replace: true })
-  }, [items, loading, openNotificationTask, searchParams, setSearchParams])
+  }, [items, loading, resolveTaskId, searchParams, setSearchParams])
 
   return (
     <div className='space-y-4'>

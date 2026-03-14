@@ -297,10 +297,6 @@ export function DashboardHomePage() {
     }
   }, [cacheKey])
 
-  if (loading) {
-    return <DashboardHomeSkeleton />
-  }
-
   const totalTasks = tasks.length
   const totalProjects = projects.length
   const totalOwners = useMemo(
@@ -393,6 +389,10 @@ export function DashboardHomePage() {
   const trendChartPaddingTop = 16
   const trendChartPaddingBottom = 32
   const trendChartUsableHeight = trendChartHeight - trendChartPaddingTop - trendChartPaddingBottom
+
+  if (loading) {
+    return <DashboardHomeSkeleton />
+  }
 
   return (
     <div className='space-y-5'>

@@ -1,0 +1,45 @@
+import { supabase } from '@/lib/supabase'
+
+type NotificationEmailType = 'task_assigned' | 'mention'
+
+type NotificationDispatchItem = {
+  notificationId: string
+  recipientId: string
+  recipientEmail?: string
+  type: NotificationEmailType
+  taskId: string
+  taskTitle: string
+  actorName: string
+}
+
+function resolveAppUrl(taskId: string) {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.origin}/dashboard/notifications?openTaskId=${encodeURIComponent(taskId)}`
+}
+
+export async function dispatchNotificationEmails(items: NotificationDispatchItem[]) {
+  if (items.length === 0) return
+
+  await Promise.allSettled(
+    items.map((item) =>
+      supabase.functions
+        .invoke('notify-teammates', {
+          body: {
+            type: item.type,
+            recipientId: item.recipientId,
+            recipientEmail: item.recipientEmail,
+            taskId: item.taskId,
+            taskTitle: item.taskTitle,
+            actorName: item.actorName,
+            appUrl: resolveAppUrl(item.taskId),
+            notificationId: item.notificationId,
+          },
+        })
+        .then(({ error }) => {
+          if (error) {
+            console.error('Failed to dispatch notification email', error)
+          }
+        }),
+    ),
+  )
+}

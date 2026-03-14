@@ -5,9 +5,15 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   build: {
+    chunkSizeWarningLimit: 650,
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (id.includes('/src/features/dashboard/pages/my-tasks-page')) return 'page-my-tasks'
+          if (id.includes('/src/features/dashboard/pages/project-detail-page')) return 'page-project-detail'
+          if (id.includes('/src/features/tasks/components/universal-task-details-modal')) return 'task-modal'
+          if (id.includes('/src/components/ui/mention-rich-text-editor')) return 'mention-editor'
+
           if (!id.includes('node_modules')) return
 
           if (
