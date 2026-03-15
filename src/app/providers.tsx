@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Toaster } from 'sonner'
 
 import { AuthProvider } from '@/features/auth/context/auth-context'
 import { ShellProvider } from '@/features/layout/context/shell-context'
@@ -8,7 +9,10 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <AuthProvider>
       <OrganizationProvider>
-        <ShellProvider>{children}</ShellProvider>
+        <ShellProvider>
+          {children}
+          <Toaster richColors closeButton />
+        </ShellProvider>
       </OrganizationProvider>
     </AuthProvider>
   )

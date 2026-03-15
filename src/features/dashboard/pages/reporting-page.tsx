@@ -154,6 +154,45 @@ type ReportingActionsRpcRow = {
   recent_changes: unknown
 }
 
+type ReportingCachePayload = {
+  cachedAt: number
+  tasks: ReportingTaskRow[]
+  goals: GoalRow[]
+  goalLinks: GoalLinkRow[]
+  checkins: GoalCheckinRow[]
+  profiles: ProfileRow[]
+  projects: ProjectRow[]
+}
+
+const REPORTING_CACHE_KEY = 'contas.reporting.page.v1'
+const REPORTING_CACHE_TTL_MS = 3 * 60 * 1000
+
+function readReportingCache(): ReportingCachePayload | null {
+  try {
+    const raw = localStorage.getItem(REPORTING_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as ReportingCachePayload
+    if (!parsed || typeof parsed.cachedAt !== 'number') return null
+    if (Date.now() - parsed.cachedAt > REPORTING_CACHE_TTL_MS) return null
+    if (!Array.isArray(parsed.tasks) || !Array.isArray(parsed.goals)) return null
+    if (!Array.isArray(parsed.goalLinks) || !Array.isArray(parsed.checkins)) return null
+    if (!Array.isArray(parsed.profiles) || !Array.isArray(parsed.projects)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeReportingCache(payload: Omit<ReportingCachePayload, 'cachedAt'>) {
+  localStorage.setItem(
+    REPORTING_CACHE_KEY,
+    JSON.stringify({
+      cachedAt: Date.now(),
+      ...payload,
+    } satisfies ReportingCachePayload),
+  )
+}
+
 function safeNumber(value: unknown, fallback = 0) {
   if (typeof value !== 'number' || Number.isNaN(value)) return fallback
   return value
@@ -301,14 +340,99 @@ function parseRpcActions(data: ReportingActionsRpcRow | null): ReportingActionPa
   return { overdueByOwner, atRiskGoals, recentChanges }
 }
 
+function ReportingPageSkeleton() {
+  return (
+    <div className='space-y-3 pb-3'>
+      <div className='rounded-xl border bg-card p-3'>
+        <div className='flex items-center justify-between gap-3'>
+          <div className='space-y-2'>
+            <div className='h-2.5 w-32 rounded bg-muted/50 animate-pulse' />
+            <div className='h-4 w-52 rounded bg-muted/60 animate-pulse' />
+          </div>
+          <div className='flex items-center gap-2'>
+            <div className='h-9 w-28 rounded-md bg-muted/50 animate-pulse' />
+            <div className='h-9 w-24 rounded-md bg-muted/50 animate-pulse' />
+            <div className='h-9 w-24 rounded-md bg-muted/50 animate-pulse' />
+          </div>
+        </div>
+      </div>
+      <div className='rounded-xl border bg-card p-2.5'>
+        <div className='flex items-center gap-2'>
+          <div className='h-8 flex-1 rounded-md bg-muted/50 animate-pulse' />
+          <div className='h-8 w-8 rounded-md bg-muted/50 animate-pulse' />
+        </div>
+      </div>
+      <section className='grid gap-2 md:grid-cols-2 xl:grid-cols-4'>
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div key={`reporting-kpi-skeleton-${index}`} className='rounded-xl border bg-card p-4'>
+            <div className='flex items-center justify-between'>
+              <div className='h-2.5 w-20 rounded bg-muted/50 animate-pulse' />
+              <div className='h-3.5 w-3.5 rounded bg-muted/40 animate-pulse' />
+            </div>
+            <div className='mt-4 h-8 w-20 rounded bg-muted/60 animate-pulse' />
+            <div className='mt-2 h-3 w-28 rounded bg-muted/40 animate-pulse' />
+          </div>
+        ))}
+      </section>
+      <section className='grid gap-3 xl:grid-cols-[1.35fr_1fr]'>
+        <div className='rounded-xl border bg-card p-4'>
+          <div className='h-4 w-44 rounded bg-muted/60 animate-pulse' />
+          <div className='mt-1.5 h-3 w-56 rounded bg-muted/40 animate-pulse' />
+          <div className='mt-5 flex h-[220px] items-end justify-between gap-2 rounded-lg border border-border/70 px-4 pb-3 pt-6'>
+            {Array.from({ length: 8 }).map((_, index) => (
+              <div key={`reporting-chart-col-${index}`} className='flex items-end gap-1'>
+                <div className='w-2 rounded bg-muted/45 animate-pulse' style={{ height: `${48 + ((index * 17) % 80)}px` }} />
+                <div className='w-2 rounded bg-muted/55 animate-pulse' style={{ height: `${36 + ((index * 13) % 100)}px` }} />
+                <div className='w-2 rounded bg-muted/35 animate-pulse' style={{ height: `${28 + ((index * 11) % 92)}px` }} />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className='rounded-xl border bg-card p-4'>
+          <div className='h-4 w-36 rounded bg-muted/60 animate-pulse' />
+          <div className='mt-1.5 h-3 w-48 rounded bg-muted/40 animate-pulse' />
+          <div className='mt-4 space-y-2.5'>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <div key={`reporting-status-row-${index}`} className='rounded-md border p-2'>
+                <div className='flex items-center justify-between'>
+                  <div className='h-3 w-24 rounded bg-muted/50 animate-pulse' />
+                  <div className='h-3 w-14 rounded bg-muted/40 animate-pulse' />
+                </div>
+                <div className='mt-2 h-1.5 w-full rounded bg-muted/35 animate-pulse' />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+      <section className='grid gap-3 lg:grid-cols-3'>
+        {Array.from({ length: 3 }).map((_, index) => (
+          <div key={`reporting-panel-skeleton-${index}`} className='rounded-xl border bg-card p-4'>
+            <div className='h-4 w-36 rounded bg-muted/60 animate-pulse' />
+            <div className='mt-1.5 h-3 w-48 rounded bg-muted/40 animate-pulse' />
+            <div className='mt-4 space-y-2'>
+              {Array.from({ length: 4 }).map((__, rowIndex) => (
+                <div key={`reporting-panel-row-${index}-${rowIndex}`} className='rounded-md border p-2'>
+                  <div className='h-3 w-2/3 rounded bg-muted/50 animate-pulse' />
+                  <div className='mt-1.5 h-2.5 w-1/2 rounded bg-muted/35 animate-pulse' />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+    </div>
+  )
+}
+
 export function ReportingPage() {
-  const [tasks, setTasks] = useState<ReportingTaskRow[]>([])
-  const [goals, setGoals] = useState<GoalRow[]>([])
-  const [goalLinks, setGoalLinks] = useState<GoalLinkRow[]>([])
-  const [checkins, setCheckins] = useState<GoalCheckinRow[]>([])
-  const [profiles, setProfiles] = useState<ProfileRow[]>([])
-  const [projects, setProjects] = useState<ProjectRow[]>([])
-  const [loading, setLoading] = useState(true)
+  const cached = readReportingCache()
+  const [tasks, setTasks] = useState<ReportingTaskRow[]>(cached?.tasks ?? [])
+  const [goals, setGoals] = useState<GoalRow[]>(cached?.goals ?? [])
+  const [goalLinks, setGoalLinks] = useState<GoalLinkRow[]>(cached?.goalLinks ?? [])
+  const [checkins, setCheckins] = useState<GoalCheckinRow[]>(cached?.checkins ?? [])
+  const [profiles, setProfiles] = useState<ProfileRow[]>(cached?.profiles ?? [])
+  const [projects, setProjects] = useState<ProjectRow[]>(cached?.projects ?? [])
+  const [loading, setLoading] = useState(() => !cached)
   const [refreshKey, setRefreshKey] = useState(0)
 
   const [filters, setFilters] = useState<ReportingFilters>({
@@ -346,12 +470,27 @@ export function ReportingPage() {
       supabase.from('projects').select('id,name').order('name', { ascending: true }),
     ]).then(([tasksResult, goalsResult, linksResult, checkinsResult, profilesResult, projectsResult]) => {
       if (cancelled) return
-      setTasks((tasksResult.data as ReportingTaskRow[] | null) ?? [])
-      setGoals((goalsResult.data as GoalRow[] | null) ?? [])
-      setGoalLinks((linksResult.data as GoalLinkRow[] | null) ?? [])
-      setCheckins((checkinsResult.data as GoalCheckinRow[] | null) ?? [])
-      setProfiles((profilesResult.data as ProfileRow[] | null) ?? [])
-      setProjects((projectsResult.data as ProjectRow[] | null) ?? [])
+      const nextTasks = (tasksResult.data as ReportingTaskRow[] | null) ?? []
+      const nextGoals = (goalsResult.data as GoalRow[] | null) ?? []
+      const nextGoalLinks = (linksResult.data as GoalLinkRow[] | null) ?? []
+      const nextCheckins = (checkinsResult.data as GoalCheckinRow[] | null) ?? []
+      const nextProfiles = (profilesResult.data as ProfileRow[] | null) ?? []
+      const nextProjects = (projectsResult.data as ProjectRow[] | null) ?? []
+
+      setTasks(nextTasks)
+      setGoals(nextGoals)
+      setGoalLinks(nextGoalLinks)
+      setCheckins(nextCheckins)
+      setProfiles(nextProfiles)
+      setProjects(nextProjects)
+      writeReportingCache({
+        tasks: nextTasks,
+        goals: nextGoals,
+        goalLinks: nextGoalLinks,
+        checkins: nextCheckins,
+        profiles: nextProfiles,
+        projects: nextProjects,
+      })
       setLoading(false)
     })
 
@@ -812,6 +951,10 @@ export function ReportingPage() {
     setFilters((current) => ({ ...current, statusKey: 'all' }))
   }
 
+  if (loading && tasks.length === 0 && goals.length === 0) {
+    return <ReportingPageSkeleton />
+  }
+
   return (
     <div className='space-y-3 pb-3'>
       <Card className='border-border/80'>
@@ -1101,70 +1244,62 @@ export function ReportingPage() {
           <div className='mt-3 space-y-3'>
             <div className='space-y-1'>
               <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Cycle</p>
-              <div className='w-[230px] max-w-full'>
-                <select
-                  value={filters.cycle}
-                  onChange={(event) => setFilters((current) => ({ ...current, cycle: event.target.value }))}
-                  className='h-9 !w-full rounded-md border bg-background px-2.5 text-sm text-foreground outline-none transition focus:border-primary'
-                >
-                  {cycleOptions.map((cycle) => (
-                    <option key={cycle} value={cycle}>
-                      {cycle === 'all' ? 'All cycles' : cycle}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={filters.cycle}
+                onChange={(event) => setFilters((current) => ({ ...current, cycle: event.target.value }))}
+                className='h-10 w-full rounded-md border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary'
+              >
+                {cycleOptions.map((cycle) => (
+                  <option key={cycle} value={cycle}>
+                    {cycle === 'all' ? 'All cycles' : cycle}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className='space-y-1'>
               <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Owner</p>
-              <div className='w-[230px] max-w-full'>
-                <select
-                  value={filters.ownerId}
-                  onChange={(event) => setFilters((current) => ({ ...current, ownerId: event.target.value }))}
-                  className='h-9 !w-full rounded-md border bg-background px-2.5 text-sm text-foreground outline-none transition focus:border-primary'
-                >
-                  {ownerOptions.map((owner) => (
-                    <option key={owner.id} value={owner.id}>
-                      {owner.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={filters.ownerId}
+                onChange={(event) => setFilters((current) => ({ ...current, ownerId: event.target.value }))}
+                className='h-10 w-full rounded-md border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary'
+              >
+                {ownerOptions.map((owner) => (
+                  <option key={owner.id} value={owner.id}>
+                    {owner.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className='space-y-1'>
               <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Department</p>
-              <div className='w-[230px] max-w-full'>
-                <select
-                  value={filters.department}
-                  onChange={(event) => setFilters((current) => ({ ...current, department: event.target.value }))}
-                  className='h-9 !w-full rounded-md border bg-background px-2.5 text-sm text-foreground outline-none transition focus:border-primary'
-                >
-                  {departmentOptions.map((department) => (
-                    <option key={department} value={department}>
-                      {department === 'all' ? 'All departments' : department}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={filters.department}
+                onChange={(event) => setFilters((current) => ({ ...current, department: event.target.value }))}
+                className='h-10 w-full rounded-md border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary'
+              >
+                {departmentOptions.map((department) => (
+                  <option key={department} value={department}>
+                    {department === 'all' ? 'All departments' : department}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className='space-y-1'>
               <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Project</p>
-              <div className='w-[230px] max-w-full'>
-                <select
-                  value={filters.projectId}
-                  onChange={(event) => setFilters((current) => ({ ...current, projectId: event.target.value }))}
-                  className='h-9 !w-full rounded-md border bg-background px-2.5 text-sm text-foreground outline-none transition focus:border-primary'
-                >
-                  {projectOptions.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <select
+                value={filters.projectId}
+                onChange={(event) => setFilters((current) => ({ ...current, projectId: event.target.value }))}
+                className='h-10 w-full rounded-md border bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary'
+              >
+                {projectOptions.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className='space-y-1'>

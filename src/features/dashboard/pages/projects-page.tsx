@@ -1,5 +1,5 @@
 import { formatDistanceToNowStrict } from 'date-fns'
-import { ArrowUpRight, BriefcaseBusiness, Copy, FolderOpen, ListFilter, Loader2, Lock, MoreHorizontal, PencilLine, Plus, Search, SlidersHorizontal } from 'lucide-react'
+import { ArrowUpRight, BriefcaseBusiness, Copy, FolderOpen, ListFilter, Lock, MoreHorizontal, PencilLine, Plus, Search, SlidersHorizontal } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -67,6 +67,14 @@ type ProjectCard = {
   team: ProjectMember[]
 }
 
+type ProjectsCachePayload = {
+  cachedAt: number
+  projects: ProjectRow[]
+  tasks: TaskRow[]
+  taskAssignees: Array<{ task_id: string; assignee_id: string }>
+  profiles: ProjectMember[]
+}
+
 const STATUS_TONE: Record<string, string> = {
   planned: 'border-sky-400/35 bg-sky-500/10 text-sky-400',
   in_progress: 'border-amber-400/35 bg-amber-500/10 text-amber-400',
@@ -74,6 +82,34 @@ const STATUS_TONE: Record<string, string> = {
   blocked: 'border-rose-400/35 bg-rose-500/10 text-rose-400',
   done: 'border-emerald-400/35 bg-emerald-500/10 text-emerald-400',
   completed: 'border-emerald-400/35 bg-emerald-500/10 text-emerald-400',
+}
+
+const PROJECTS_CACHE_KEY = 'contas.projects.page.v1'
+const PROJECTS_CACHE_TTL_MS = 3 * 60 * 1000
+
+function readProjectsCache(): ProjectsCachePayload | null {
+  try {
+    const raw = localStorage.getItem(PROJECTS_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as ProjectsCachePayload
+    if (!parsed || typeof parsed.cachedAt !== 'number') return null
+    if (Date.now() - parsed.cachedAt > PROJECTS_CACHE_TTL_MS) return null
+    if (!Array.isArray(parsed.projects) || !Array.isArray(parsed.tasks)) return null
+    if (!Array.isArray(parsed.taskAssignees) || !Array.isArray(parsed.profiles)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeProjectsCache(payload: Omit<ProjectsCachePayload, 'cachedAt'>) {
+  localStorage.setItem(
+    PROJECTS_CACHE_KEY,
+    JSON.stringify({
+      cachedAt: Date.now(),
+      ...payload,
+    } satisfies ProjectsCachePayload),
+  )
 }
 
 function statusLabel(value: string | null) {
@@ -100,13 +136,44 @@ function initialsFor(name: string) {
   )
 }
 
+function ProjectsGridSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 8 }).map((_, index) => (
+        <article key={`project-skeleton-${index}`} className='rounded-xl border bg-card p-3 shadow-sm'>
+          <div className='h-4 w-3/5 rounded bg-muted/60 animate-pulse' />
+          <div className='mt-2 h-3 w-1/4 rounded bg-muted/50 animate-pulse' />
+          <div className='mt-3 h-6 w-24 rounded-full bg-muted/50 animate-pulse' />
+          <div className='mt-3 space-y-1.5'>
+            <div className='h-3 w-full rounded bg-muted/40 animate-pulse' />
+            <div className='h-3 w-4/5 rounded bg-muted/40 animate-pulse' />
+          </div>
+          <div className='mt-3 space-y-1.5'>
+            <div className='h-2 w-full rounded bg-muted/40 animate-pulse' />
+            <div className='h-1.5 w-full rounded bg-muted/30 animate-pulse' />
+          </div>
+          <div className='mt-4 flex items-center justify-between'>
+            <div className='flex -space-x-1'>
+              <div className='h-6 w-6 rounded-full border border-background bg-muted/50 animate-pulse' />
+              <div className='h-6 w-6 rounded-full border border-background bg-muted/50 animate-pulse' />
+              <div className='h-6 w-6 rounded-full border border-background bg-muted/50 animate-pulse' />
+            </div>
+            <div className='h-3 w-12 rounded bg-muted/40 animate-pulse' />
+          </div>
+        </article>
+      ))}
+    </>
+  )
+}
+
 export function ProjectsPage() {
   const { currentUser } = useAuth()
-  const [projects, setProjects] = useState<ProjectRow[]>([])
-  const [tasks, setTasks] = useState<TaskRow[]>([])
-  const [taskAssignees, setTaskAssignees] = useState<Array<{ task_id: string; assignee_id: string }>>([])
-  const [profiles, setProfiles] = useState<ProjectMember[]>([])
-  const [loading, setLoading] = useState(true)
+  const cached = readProjectsCache()
+  const [projects, setProjects] = useState<ProjectRow[]>(cached?.projects ?? [])
+  const [tasks, setTasks] = useState<TaskRow[]>(cached?.tasks ?? [])
+  const [taskAssignees, setTaskAssignees] = useState<Array<{ task_id: string; assignee_id: string }>>(cached?.taskAssignees ?? [])
+  const [profiles, setProfiles] = useState<ProjectMember[]>(cached?.profiles ?? [])
+  const [loading, setLoading] = useState(() => !cached)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [sortBy, setSortBy] = useState<'updated' | 'progress' | 'tasks' | 'name'>('updated')
@@ -134,10 +201,21 @@ export function ProjectsPage() {
       ])
       if (cancelled) return
 
-      setProjects(projectsResult.error ? [] : ((projectsResult.data as ProjectRow[] | null) ?? []))
-      setTasks(tasksResult.error ? [] : ((tasksResult.data as TaskRow[] | null) ?? []))
-      setTaskAssignees(assigneesResult.error ? [] : (assigneesResult.data ?? []))
-      setProfiles(profilesResult.error ? [] : ((profilesResult.data as ProjectMember[] | null) ?? []))
+      const nextProjects = projectsResult.error ? [] : ((projectsResult.data as ProjectRow[] | null) ?? [])
+      const nextTasks = tasksResult.error ? [] : ((tasksResult.data as TaskRow[] | null) ?? [])
+      const nextTaskAssignees = assigneesResult.error ? [] : (assigneesResult.data ?? [])
+      const nextProfiles = profilesResult.error ? [] : ((profilesResult.data as ProjectMember[] | null) ?? [])
+
+      setProjects(nextProjects)
+      setTasks(nextTasks)
+      setTaskAssignees(nextTaskAssignees)
+      setProfiles(nextProfiles)
+      writeProjectsCache({
+        projects: nextProjects,
+        tasks: nextTasks,
+        taskAssignees: nextTaskAssignees,
+        profiles: nextProfiles,
+      })
       setLoading(false)
     }
 
@@ -387,10 +465,7 @@ export function ProjectsPage() {
 
       <section className='grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
         {loading ? (
-          <div className='col-span-full flex min-h-[180px] items-center justify-center rounded-xl border bg-card/60 text-sm text-muted-foreground'>
-            <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-            Loading projects...
-          </div>
+          <ProjectsGridSkeleton />
         ) : null}
 
         {!loading && filteredCards.length === 0 ? (

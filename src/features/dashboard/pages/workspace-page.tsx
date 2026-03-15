@@ -143,11 +143,59 @@ function formatTimelineTime(startsAt: string) {
   return `${dateLabel} • ${timeLabel}`
 }
 
+function WorkspacePageSkeleton() {
+  return (
+    <div className='space-y-4'>
+      <Card>
+        <CardContent className='flex items-center justify-between gap-3 p-3'>
+          <div className='space-y-2'>
+            <div className='h-4 w-40 rounded bg-muted/60 animate-pulse' />
+            <div className='h-3 w-72 max-w-[70vw] rounded bg-muted/40 animate-pulse' />
+          </div>
+          <div className='h-9 w-40 rounded-md bg-muted/50 animate-pulse' />
+        </CardContent>
+      </Card>
+      <section className='grid gap-4 xl:grid-cols-[1.35fr_1fr]'>
+        <Card>
+          <CardHeader className='pb-3'>
+            <div className='h-5 w-32 rounded bg-muted/50 animate-pulse' />
+          </CardHeader>
+          <CardContent className='space-y-2'>
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div key={`workspace-member-skeleton-${index}`} className='h-14 rounded-md border bg-muted/20 animate-pulse' />
+            ))}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className='pb-3'>
+            <div className='h-5 w-40 rounded bg-muted/50 animate-pulse' />
+          </CardHeader>
+          <CardContent className='space-y-3'>
+            <div className='h-20 rounded-md border bg-muted/20 animate-pulse' />
+            <div className='h-20 rounded-md border bg-muted/20 animate-pulse' />
+          </CardContent>
+        </Card>
+      </section>
+      <Card>
+        <CardHeader className='pb-3'>
+          <div className='h-5 w-56 rounded bg-muted/50 animate-pulse' />
+        </CardHeader>
+        <CardContent className='space-y-2'>
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={`workspace-timeline-skeleton-${index}`} className='h-14 rounded-md border bg-muted/20 animate-pulse' />
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 export function WorkspacePage() {
   const [members, setMembers] = useState<TeamMember[]>([])
   const [presenceSessions, setPresenceSessions] = useState<PresenceSession[]>([])
   const [timelineEvents, setTimelineEvents] = useState<OrganizationTimelineEvent[]>([])
   const [clockMs, setClockMs] = useState(() => Date.now())
+  const [loadingWorkspace, setLoadingWorkspace] = useState(true)
 
   useEffect(() => {
     const cachedMembers = readCachedArray<TeamMember>(WORKSPACE_MEMBERS_CACHE_KEY)
@@ -158,6 +206,9 @@ export function WorkspacePage() {
 
     const cachedTimeline = readCachedArray<OrganizationTimelineEvent>(WORKSPACE_TIMELINE_CACHE_KEY)
     if (cachedTimeline.length > 0) setTimelineEvents(cachedTimeline)
+    if (cachedMembers.length > 0 || cachedPresence.length > 0 || cachedTimeline.length > 0) {
+      setLoadingWorkspace(false)
+    }
 
     let cancelled = false
     let refreshTimer: number | null = null
@@ -195,6 +246,9 @@ export function WorkspacePage() {
       if (!cancelled && !timelineResult.error && timelineResult.data) {
         setTimelineEvents(timelineResult.data as OrganizationTimelineEvent[])
         writeCachedArray(WORKSPACE_TIMELINE_CACHE_KEY, timelineResult.data as OrganizationTimelineEvent[])
+      }
+      if (!cancelled) {
+        setLoadingWorkspace(false)
       }
     }
 
@@ -262,6 +316,10 @@ export function WorkspacePage() {
     () => members.filter((member) => isMemberOnline(member.id, presenceSessions, clockMs)).length,
     [clockMs, members, presenceSessions],
   )
+
+  if (loadingWorkspace) {
+    return <WorkspacePageSkeleton />
+  }
 
   return (
     <div className='space-y-4'>

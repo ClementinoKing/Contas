@@ -1,18 +1,17 @@
 import { useEffect, useState } from 'react'
 
 import { useAuth } from '@/features/auth/context/auth-context'
+import { getCachedUnreadCount, onUnreadCountUpdated, setCachedUnreadCount } from '@/features/layout/lib/unread-notifications-sync'
 import { supabase } from '@/lib/supabase'
-
-const UNREAD_NOTIFICATIONS_CACHE_KEY = 'contas.notifications.unread-count.v1'
 
 export function useUnreadNotifications() {
   const { currentUser } = useAuth()
-  const [unreadCount, setUnreadCount] = useState(() => {
-    const raw = localStorage.getItem(UNREAD_NOTIFICATIONS_CACHE_KEY)
-    if (!raw) return 0
-    const parsed = Number(raw)
-    return Number.isFinite(parsed) ? parsed : 0
-  })
+  const [unreadCount, setUnreadCount] = useState(() => getCachedUnreadCount())
+
+  useEffect(() => {
+    const unsubscribe = onUnreadCountUpdated((count) => setUnreadCount(count))
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
     if (!currentUser?.id) {
@@ -31,7 +30,7 @@ export function useUnreadNotifications() {
       if (cancelled || error) return
       const next = count ?? 0
       setUnreadCount(next)
-      localStorage.setItem(UNREAD_NOTIFICATIONS_CACHE_KEY, String(next))
+      setCachedUnreadCount(next)
     }
 
     void loadUnreadCount()

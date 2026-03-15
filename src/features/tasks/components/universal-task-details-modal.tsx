@@ -360,6 +360,7 @@ export function UniversalTaskDetailsModal() {
   const commentMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const commentVoiceChunksRef = useRef<Blob[]>([])
   const commentVoiceStartAtRef = useRef<number>(0)
+  const pendingLikeCommentIdsRef = useRef<Set<string>>(new Set())
   const commentMicStreamRef = useRef<MediaStream | null>(null)
   const commentAudioContextRef = useRef<AudioContext | null>(null)
   const commentAnimationFrameRef = useRef<number | null>(null)
@@ -878,6 +879,9 @@ export function UniversalTaskDetailsModal() {
 
   const toggleCommentLike = async (commentId: string) => {
     if (!currentUser?.id || !taskId) return
+    if (pendingLikeCommentIdsRef.current.has(commentId)) return
+
+    pendingLikeCommentIdsRef.current.add(commentId)
 
     let wasLikedByMe = false
     setComments((current) =>
@@ -898,7 +902,7 @@ export function UniversalTaskDetailsModal() {
         .eq('user_id', currentUser.id)
         .eq('reaction', 'like')
       if (!error) {
-        void loadTask(taskId)
+        pendingLikeCommentIdsRef.current.delete(commentId)
         return
       }
       console.error('Failed to remove like', error)
@@ -909,7 +913,7 @@ export function UniversalTaskDetailsModal() {
         reaction: 'like',
       })
       if (!error) {
-        void loadTask(taskId)
+        pendingLikeCommentIdsRef.current.delete(commentId)
         return
       }
       console.error('Failed to add like', error)
@@ -923,6 +927,7 @@ export function UniversalTaskDetailsModal() {
         return { ...comment, likedByMe, likes }
       }),
     )
+    pendingLikeCommentIdsRef.current.delete(commentId)
   }
 
   const addReplyToComment = async (commentId: string) => {

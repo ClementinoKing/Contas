@@ -126,6 +126,70 @@ type InvitationItem = {
   expiresAt: string | null
 }
 
+type SettingsProfileCachePayload = {
+  cachedAt: number
+  fullName: string
+  email: string
+  avatarUrl?: string
+  avatarPath?: string
+  jobTitle: string
+  department: string
+  roleLabel: string
+  aboutMe: string
+  availabilitySchedule: AvailabilityBlock[]
+}
+
+type SettingsStatsCachePayload = {
+  cachedAt: number
+  assignedTasks: number
+  completedTasks: number
+  overdueTasks: number
+  activeProjects: number
+}
+
+type SettingsProjectsCachePayload = {
+  cachedAt: number
+  projects: Array<{ id: string; name: string }>
+}
+
+type SettingsInvitesCachePayload = {
+  cachedAt: number
+  invitations: InvitationItem[]
+}
+
+const SETTINGS_PROFILE_CACHE_PREFIX = 'contas.settings.profile.v1'
+const SETTINGS_STATS_CACHE_PREFIX = 'contas.settings.stats.v1'
+const SETTINGS_PROJECTS_CACHE_KEY = 'contas.settings.projects.v1'
+const SETTINGS_INVITES_CACHE_PREFIX = 'contas.settings.invites.v1'
+
+const SETTINGS_PROFILE_CACHE_TTL_MS = 10 * 60 * 1000
+const SETTINGS_STATS_CACHE_TTL_MS = 3 * 60 * 1000
+const SETTINGS_PROJECTS_CACHE_TTL_MS = 10 * 60 * 1000
+const SETTINGS_INVITES_CACHE_TTL_MS = 2 * 60 * 1000
+
+function readTimedCache<T>(key: string, ttlMs: number): T | null {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { cachedAt?: number } & T
+    if (!parsed || typeof parsed.cachedAt !== 'number') return null
+    if (Date.now() - parsed.cachedAt > ttlMs) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeTimedCache<T extends Record<string, unknown>>(key: string, payload: T) {
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      cachedAt: Date.now(),
+      ...payload,
+    }),
+  )
+}
+
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
   return (
     <button
@@ -167,6 +231,19 @@ function SectionHeader({
         <h3 className='text-base font-semibold text-foreground'>{title}</h3>
         <p className='text-sm text-muted-foreground'>{description}</p>
       </div>
+    </div>
+  )
+}
+
+function AdminInvitesSkeleton() {
+  return (
+    <div className='space-y-2'>
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div key={`admin-invite-skeleton-${index}`} className='rounded-md border p-3'>
+          <div className='h-3.5 w-44 rounded bg-muted/60 animate-pulse' />
+          <div className='mt-2 h-3 w-64 max-w-[80vw] rounded bg-muted/40 animate-pulse' />
+        </div>
+      ))}
     </div>
   )
 }
@@ -250,12 +327,57 @@ export function SettingsPage() {
   const [loadingAdminInvitations, setLoadingAdminInvitations] = useState(false)
   const isAdmin = (currentUser?.roleLabel ?? '').toLowerCase() === 'admin'
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
+  const profileCacheKey = currentUser?.id ? `${SETTINGS_PROFILE_CACHE_PREFIX}:${currentUser.id}` : null
+  const statsCacheKey = currentUser?.id ? `${SETTINGS_STATS_CACHE_PREFIX}:${currentUser.id}` : null
+  const invitesCacheKey = currentUser?.id ? `${SETTINGS_INVITES_CACHE_PREFIX}:${currentUser.id}` : null
+
   useEffect(() => {
     setProfileName(currentUser?.name ?? 'Organization User')
     setProfileEmail(currentUser?.email ?? 'user@example.com')
     setProfileAvatarUrl(currentUser?.avatarUrl)
     setProfileAvatarPath(currentUser?.avatarPath)
   }, [currentUser?.avatarPath, currentUser?.avatarUrl, currentUser?.email, currentUser?.name])
+
+  useEffect(() => {
+    const cachedProjects = readTimedCache<SettingsProjectsCachePayload>(SETTINGS_PROJECTS_CACHE_KEY, SETTINGS_PROJECTS_CACHE_TTL_MS)
+    if (cachedProjects?.projects) {
+      setOrganizationProjects(cachedProjects.projects)
+    }
+
+    if (profileCacheKey) {
+      const cachedProfile = readTimedCache<SettingsProfileCachePayload>(profileCacheKey, SETTINGS_PROFILE_CACHE_TTL_MS)
+      if (cachedProfile) {
+        setProfileName(cachedProfile.fullName)
+        setProfileEmail(cachedProfile.email)
+        setProfileAvatarUrl(cachedProfile.avatarUrl)
+        setProfileAvatarPath(cachedProfile.avatarPath)
+        setProfileJobTitle(cachedProfile.jobTitle)
+        setProfileDepartment(cachedProfile.department)
+        setProfileRoleLabel(cachedProfile.roleLabel)
+        setProfileAboutMe(cachedProfile.aboutMe)
+        setAvailabilitySchedule(cachedProfile.availabilitySchedule)
+      }
+    }
+
+    if (statsCacheKey) {
+      const cachedStats = readTimedCache<SettingsStatsCachePayload>(statsCacheKey, SETTINGS_STATS_CACHE_TTL_MS)
+      if (cachedStats) {
+        setProfileStats({
+          assignedTasks: cachedStats.assignedTasks,
+          completedTasks: cachedStats.completedTasks,
+          overdueTasks: cachedStats.overdueTasks,
+          activeProjects: cachedStats.activeProjects,
+        })
+      }
+    }
+
+    if (invitesCacheKey) {
+      const cachedInvites = readTimedCache<SettingsInvitesCachePayload>(invitesCacheKey, SETTINGS_INVITES_CACHE_TTL_MS)
+      if (cachedInvites?.invitations) {
+        setAdminInvitations(cachedInvites.invitations)
+      }
+    }
+  }, [invitesCacheKey, profileCacheKey, statsCacheKey])
 
   useEffect(() => {
     if (!currentUser?.id) return
@@ -280,13 +402,27 @@ export function SettingsPage() {
         setProfileDepartment(data.department ?? '')
         setProfileRoleLabel(data.role_label ?? '')
         setProfileAboutMe(data.about_me ?? '')
-        setAvailabilitySchedule(normalizeAvailabilitySchedule(data.availability_schedule))
+        const normalizedAvailability = normalizeAvailabilitySchedule(data.availability_schedule)
+        setAvailabilitySchedule(normalizedAvailability)
+        if (profileCacheKey) {
+          writeTimedCache(profileCacheKey, {
+            fullName: data.full_name ?? currentUser.name ?? 'Organization User',
+            email: data.email ?? currentUser.email ?? 'user@example.com',
+            avatarUrl: isDirectAvatarUrl(data.avatar_url) ? (data.avatar_url ?? undefined) : currentUser.avatarUrl,
+            avatarPath: !isDirectAvatarUrl(data.avatar_url) ? (data.avatar_url ?? undefined) : currentUser.avatarPath,
+            jobTitle: data.job_title ?? '',
+            department: data.department ?? '',
+            roleLabel: data.role_label ?? '',
+            aboutMe: data.about_me ?? '',
+            availabilitySchedule: normalizedAvailability,
+          } satisfies Omit<SettingsProfileCachePayload, 'cachedAt'>)
+        }
       })
 
     return () => {
       cancelled = true
     }
-  }, [currentUser?.avatarPath, currentUser?.avatarUrl, currentUser?.email, currentUser?.id, currentUser?.name])
+  }, [currentUser?.avatarPath, currentUser?.avatarUrl, currentUser?.email, currentUser?.id, currentUser?.name, profileCacheKey])
 
   useEffect(() => {
     if (!currentUser?.id) return
@@ -313,12 +449,20 @@ export function SettingsPage() {
           overdueTasks: overdue,
           activeProjects,
         })
+        if (statsCacheKey) {
+          writeTimedCache(statsCacheKey, {
+            assignedTasks: assigned.length,
+            completedTasks: completed,
+            overdueTasks: overdue,
+            activeProjects,
+          } satisfies Omit<SettingsStatsCachePayload, 'cachedAt'>)
+        }
       })
 
     return () => {
       cancelled = true
     }
-  }, [currentUser?.id])
+  }, [currentUser?.id, statsCacheKey])
 
   useEffect(() => {
     let cancelled = false
@@ -330,6 +474,9 @@ export function SettingsPage() {
         if (cancelled) return
         const projects = (data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
         setOrganizationProjects(projects)
+        writeTimedCache(SETTINGS_PROJECTS_CACHE_KEY, {
+          projects,
+        } satisfies Omit<SettingsProjectsCachePayload, 'cachedAt'>)
       })
     return () => {
       cancelled = true
@@ -353,8 +500,7 @@ export function SettingsPage() {
       setLoadingAdminInvitations(false)
       return
     }
-    setAdminInvitations(
-      ((data?.invitations as Array<{
+    const mappedInvitations = ((data?.invitations as Array<{
         id: string
         email: string
         role: InvitationRole
@@ -371,8 +517,13 @@ export function SettingsPage() {
         status: item.status,
         createdAt: item.createdAt ?? item.created_at ?? new Date().toISOString(),
         expiresAt: item.expiresAt ?? item.expires_at ?? null,
-      })),
-    )
+      }))
+    setAdminInvitations(mappedInvitations)
+    if (invitesCacheKey) {
+      writeTimedCache(invitesCacheKey, {
+        invitations: mappedInvitations,
+      } satisfies Omit<SettingsInvitesCachePayload, 'cachedAt'>)
+    }
     setLoadingAdminInvitations(false)
   }
 
@@ -572,6 +723,19 @@ export function SettingsPage() {
       avatarUrl: profileAvatarUrl,
       avatarPath: profileAvatarPath,
     })
+    if (profileCacheKey) {
+      writeTimedCache(profileCacheKey, {
+        fullName: profileName.trim() || 'Organization User',
+        email: profileEmail.trim() || currentUser.email || 'user@example.com',
+        avatarUrl: profileAvatarUrl,
+        avatarPath: profileAvatarPath,
+        jobTitle: profileJobTitle.trim(),
+        department: profileDepartment.trim(),
+        roleLabel: profileRoleLabel.trim(),
+        aboutMe: profileAboutMe.trim(),
+        availabilitySchedule,
+      } satisfies Omit<SettingsProfileCachePayload, 'cachedAt'>)
+    }
     setProfileSaveMessage('Profile updated.')
     setSavingProfile(false)
   }
@@ -1306,7 +1470,7 @@ export function SettingsPage() {
                   </div>
                   <div className='space-y-2'>
                     {loadingAdminInvitations ? (
-                      <p className='text-sm text-muted-foreground'>Loading invites...</p>
+                      <AdminInvitesSkeleton />
                     ) : adminInvitations.length === 0 ? (
                       <p className='text-sm text-muted-foreground'>No invitations yet.</p>
                     ) : (

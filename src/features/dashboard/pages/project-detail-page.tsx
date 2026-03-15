@@ -103,6 +103,42 @@ function initialsForName(name: string) {
   )
 }
 
+function ProjectDetailSkeleton() {
+  return (
+    <div className='space-y-4'>
+      <Card className='overflow-hidden'>
+        <CardContent className='space-y-4 p-5'>
+          <div className='h-6 w-56 rounded bg-muted/60 animate-pulse' />
+          <div className='h-3.5 w-80 max-w-[75vw] rounded bg-muted/50 animate-pulse' />
+          <div className='grid gap-3 md:grid-cols-[1.4fr_1fr]'>
+            <div className='h-20 rounded-lg bg-muted/40 animate-pulse' />
+            <div className='h-20 rounded-lg bg-muted/40 animate-pulse' />
+          </div>
+        </CardContent>
+      </Card>
+      <Card className='overflow-hidden'>
+        <CardContent className='space-y-4 p-4'>
+          <div className='flex flex-wrap gap-2'>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <div key={`project-tab-skeleton-${index}`} className='h-8 w-20 rounded-md bg-muted/50 animate-pulse' />
+            ))}
+          </div>
+          <div className='grid gap-2 md:grid-cols-[1.2fr_repeat(4,minmax(0,1fr))]'>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <div key={`project-filter-skeleton-${index}`} className='h-10 rounded-md bg-muted/40 animate-pulse' />
+            ))}
+          </div>
+          <div className='grid gap-2 md:grid-cols-2 xl:grid-cols-3'>
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div key={`project-task-skeleton-${index}`} className='h-24 rounded-lg border bg-muted/20 animate-pulse' />
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 export function ProjectDetailPage() {
   const { currentUser } = useAuth()
   const { projectId } = useParams()
@@ -540,11 +576,7 @@ export function ProjectDetailPage() {
   if (!projectId) return <Navigate to='/dashboard/projects' replace />
 
   if (loading) {
-    return (
-      <Card>
-        <CardContent className='p-6 text-sm text-muted-foreground'>Loading project...</CardContent>
-      </Card>
-    )
+    return <ProjectDetailSkeleton />
   }
 
   if (!project) return <Navigate to='/dashboard/projects' replace />

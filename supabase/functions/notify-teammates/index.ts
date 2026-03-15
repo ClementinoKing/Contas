@@ -58,22 +58,79 @@ function subjectForType(type: NotificationEmailType) {
   return type === 'mention' ? 'You were mentioned in a task' : 'You were assigned a task'
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 function bodyForType(type: NotificationEmailType, actorName: string, taskTitle: string, appUrl: string) {
+  const safeActorName = escapeHtml(actorName)
+  const safeTaskTitle = escapeHtml(taskTitle)
+  const safeAppUrl = escapeHtml(appUrl)
+  const heading = type === 'mention' ? 'You were mentioned' : 'You were assigned a task'
   const intro =
     type === 'mention'
-      ? `${actorName} mentioned you in <strong>${taskTitle}</strong>.`
-      : `${actorName} assigned you to <strong>${taskTitle}</strong>.`
+      ? `<strong>${safeActorName}</strong> mentioned you in <strong>${safeTaskTitle}</strong>.`
+      : `<strong>${safeActorName}</strong> assigned you to <strong>${safeTaskTitle}</strong>.`
+  const bodyText =
+    type === 'mention'
+      ? 'Open the task to view the comment and respond.'
+      : 'Open the task to review the details and begin work.'
+  const footerText =
+    type === 'mention'
+      ? 'This notification was sent by Contas because a task update requires your attention.'
+      : 'This notification was sent by Contas because a new task was assigned to you.'
 
   return `
-    <div style="font-family: Inter, Arial, sans-serif; line-height: 1.5; color: #0f172a;">
-      <p>${intro}</p>
-      <p>
-        <a href="${appUrl}" style="display:inline-block;padding:10px 16px;border-radius:8px;background:#1d4ed8;color:#ffffff;text-decoration:none;font-weight:600;">
-          Open task
-        </a>
-      </p>
-      <p style="font-size: 13px; color: #475569;">Direct link: ${appUrl}</p>
-    </div>
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
+  <table width="100%" style="background:#f4f7fb;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table width="100%" style="max-width:600px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+          <tr>
+            <td style="padding:28px;border-bottom:1px solid #e2e8f0;text-align:center;">
+              <img src="https://pub-791bdd6d3ff446a8b7e0c43576b708fb.r2.dev/img/Contas%20Logo.png" alt="Contas Logo" style="height:42px;">
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 28px 16px 28px;">
+              <h1 style="margin:0 0 12px 0;font-size:24px;color:#0f172a;">${heading}</h1>
+              <p style="margin:0 0 16px 0;font-size:15px;line-height:1.7;color:#334155;">${intro}</p>
+              <p style="margin:0;font-size:15px;color:#334155;">${bodyText}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 28px;">
+              <a href="${safeAppUrl}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#1f2f6f;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;">
+                Open task
+              </a>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 28px;">
+              <p style="font-size:13px;color:#64748b;margin:0;">Direct link:</p>
+              <p style="font-size:13px;margin:6px 0 0 0;">
+                <a href="${safeAppUrl}" style="color:#2563eb;text-decoration:underline;">${safeAppUrl}</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:20px 28px 28px 28px;border-top:1px solid #e2e8f0;">
+              <p style="font-size:12px;color:#94a3b8;margin:0;">${footerText}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
   `
 }
 
@@ -133,9 +190,6 @@ Deno.serve(async (req) => {
   }
 
   const accessToken = resolveBearerToken(req)
-  if (!accessToken) {
-    return json({ ok: false, message: 'Missing bearer token.' }, 401)
-  }
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return json({ ok: false, message: 'Missing Supabase environment variables.' }, 500)

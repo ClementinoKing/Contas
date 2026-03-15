@@ -1142,6 +1142,7 @@ export function MyTasksPage() {
   const queuedDetailDraftRef = useRef<BoardTaskDraft | null>(null)
   const commentMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const commentVoiceChunksRef = useRef<BlobPart[]>([])
+  const pendingLikeCommentIdsRef = useRef<Set<string>>(new Set())
   const commentVoiceStartAtRef = useRef(0)
   const commentMicStreamRef = useRef<MediaStream | null>(null)
   const commentAudioContextRef = useRef<AudioContext | null>(null)
@@ -3133,6 +3134,9 @@ export function MyTasksPage() {
   const toggleCommentLike = async (commentId: string) => {
     if (!activeTaskRef) return
     if (!currentUser?.id) return
+    if (pendingLikeCommentIdsRef.current.has(commentId)) return
+
+    pendingLikeCommentIdsRef.current.add(commentId)
 
     let wasLikedByMe = false
     setCommentsByTaskId((current) => {
@@ -3156,7 +3160,10 @@ export function MyTasksPage() {
         .eq('comment_id', commentId)
         .eq('user_id', currentUser.id)
         .eq('reaction', 'like')
-      if (!error) return
+      if (!error) {
+        pendingLikeCommentIdsRef.current.delete(commentId)
+        return
+      }
       console.error('Failed to remove like', error)
     } else {
       const { error } = await supabase.from('task_comment_reactions').insert({
@@ -3164,7 +3171,10 @@ export function MyTasksPage() {
         user_id: currentUser.id,
         reaction: 'like',
       })
-      if (!error) return
+      if (!error) {
+        pendingLikeCommentIdsRef.current.delete(commentId)
+        return
+      }
       console.error('Failed to add like', error)
     }
 
@@ -3180,6 +3190,7 @@ export function MyTasksPage() {
         }),
       }
     })
+    pendingLikeCommentIdsRef.current.delete(commentId)
   }
 
   const addReplyToComment = async (commentId: string) => {

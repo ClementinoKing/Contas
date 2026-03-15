@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { notify } from '@/lib/notify'
 
 import { useAuth } from '../context/auth-context'
 import { AuthInputGroup } from '../components/auth-input-group'
@@ -43,11 +44,17 @@ export function LoginPage() {
     setSubmitting(true)
     try {
       await login(values)
+      notify.success('Signed in successfully', {
+        description: 'Welcome back. Redirecting to your dashboard...',
+      })
       const savedPath = sessionStorage.getItem(LAST_DASHBOARD_PATH_KEY)
       const target =
         location.state?.from?.pathname ??
         (savedPath && savedPath.startsWith('/dashboard/') ? savedPath : '/dashboard/home')
       navigate(target, { replace: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Please check your email and password, then try again.'
+      notify.error('Sign in failed', { description: message })
     } finally {
       setSubmitting(false)
     }

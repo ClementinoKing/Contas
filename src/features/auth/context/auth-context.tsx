@@ -438,7 +438,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [setSession])
 
   const register = useCallback(async ({ name, email, password }: RegisterPayload) => {
-    const onboarding = createInitialOnboarding({ fullName: name, completed: false })
+    const onboarding = createInitialOnboarding({ fullName: name, completed: true })
     const username = generateUsernameCandidate(name, email)
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -459,7 +459,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!activeSession) {
       const signInResult = await supabase.auth.signInWithPassword({ email, password })
       if (signInResult.error) {
-        throw new Error('Supabase did not create an active session. Confirm the email or disable email confirmation before onboarding.')
+        throw new Error('Supabase did not create an active session. Confirm the email or disable email confirmation.')
       }
       activeSession = signInResult.data.session
     }

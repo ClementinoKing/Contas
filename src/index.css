@@ -20,6 +20,8 @@
   --border: 214 26% 94.6%;
   --input: 214 26% 95.2%;
   --ring: 221 78% 31%;
+  --onboarding-cyan-ring: 190 98% 42%;
+  --onboarding-cyan-glow: 190 98% 50%;
   --radius: 0.75rem;
   --elevation-sm: 0 1px 2px hsl(222 35% 8% / 0.08);
   --elevation-md: 0 12px 28px hsl(222 35% 8% / 0.16);
@@ -44,6 +46,8 @@
   --border: 220 7% 26%;
   --input: 220 7% 24%;
   --ring: 210 35% 78%;
+  --onboarding-cyan-ring: 188 100% 64%;
+  --onboarding-cyan-glow: 188 100% 70%;
   --elevation-sm: 0 1px 2px hsl(220 45% 2% / 0.55);
   --elevation-md: 0 14px 34px hsl(220 45% 2% / 0.62);
   --elevation-lg: 0 18px 56px hsl(220 45% 2% / 0.72);
@@ -59,6 +63,13 @@ body {
 
 #root {
   @apply min-h-screen;
+}
+
+.onboarding-highlight {
+  border-color: hsl(var(--onboarding-cyan-ring) / 0.78) !important;
+  box-shadow:
+    0 0 0 2px hsl(var(--onboarding-cyan-ring) / 0.72),
+    0 0 0 8px hsl(var(--onboarding-cyan-glow) / 0.18);
 }
 
 @layer base {

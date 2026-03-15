@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { useUnreadNotifications } from '@/features/layout/hooks/use-unread-notifications'
+import { adjustCachedUnreadCount } from '@/features/layout/lib/unread-notifications-sync'
 import { Input } from '@/components/ui/input'
 import { CreateTaskDialog } from '@/features/tasks/components/create-task-dialog'
 import { DEFAULT_PROJECT_COLOR, PROJECT_COLOR_OPTIONS, normalizeProjectColor, projectDotStyle } from '@/features/projects/lib/project-colors'
@@ -223,14 +224,25 @@ export function AppHeader({
   const unreadPreviewCount = useMemo(() => notificationItems.filter((item) => !item.read).length, [notificationItems])
 
   const markNotificationRead = async (id: string, read: boolean) => {
-    setNotificationItems((current) => current.map((item) => (item.id === id ? { ...item, read } : item)))
+    let changed = false
+    setNotificationItems((current) => {
+      const target = current.find((item) => item.id === id)
+      if (!target || target.read === read) return current
+      changed = true
+      const next = current.map((item) => (item.id === id ? { ...item, read } : item))
+      return next
+    })
+    if (changed) {
+      adjustCachedUnreadCount(read ? -1 : 1)
+    }
     const { error } = await supabase
       .from('notifications')
       .update({ read_at: read ? new Date().toISOString() : null })
       .eq('id', id)
 
-    if (error) {
+    if (error && changed) {
       console.error('Failed to update notification state', error)
+      adjustCachedUnreadCount(read ? 1 : -1)
       setNotificationItems((current) => current.map((item) => (item.id === id ? { ...item, read: !read } : item)))
     }
   }
@@ -241,9 +253,11 @@ export function AppHeader({
 
     const nowIso = new Date().toISOString()
     setNotificationItems((current) => current.map((item) => ({ ...item, read: true })))
+    adjustCachedUnreadCount(-unreadIds.length)
     const { error } = await supabase.from('notifications').update({ read_at: nowIso }).in('id', unreadIds)
     if (error) {
       console.error('Failed to mark all notifications read', error)
+      adjustCachedUnreadCount(unreadIds.length)
       setNotificationItems((current) => current.map((item) => (unreadIds.includes(item.id) ? { ...item, read: false } : item)))
     }
   }
@@ -375,13 +389,14 @@ export function AppHeader({
                   <Button
                     type='button'
                     variant='ghost'
-                    size='sm'
-                    className='h-7 px-2 text-xs'
+                    size='icon'
+                    className='h-7 w-7'
+                    aria-label='Mark all read'
+                    title='Mark all read'
                     onClick={() => void markAllNotificationsRead()}
                     disabled={unreadPreviewCount === 0}
                   >
-                    <CheckCheck className='mr-1 h-3.5 w-3.5' aria-hidden='true' />
-                    Mark all read
+                    <CheckCheck className='h-3.5 w-3.5' aria-hidden='true' />
                   </Button>
                 </div>
                 <div className='max-h-[420px] space-y-1 overflow-y-auto p-1'>
@@ -499,11 +514,11 @@ export function AppHeader({
                   </div>
                   <div className='space-y-2'>
                     <label className='text-sm font-medium text-foreground'>Start Date</label>
-                    <DatePicker value={projectStartDate} onChange={setProjectStartDate} placeholder='Pick start date' />
+                    <DatePicker value={projectStartDate} onChange={setProjectStartDate} placeholder='Pick start date' withTime={false} />
                   </div>
                   <div className='space-y-2'>
                     <label className='text-sm font-medium text-foreground'>Target End Date</label>
-                    <DatePicker value={projectEndDate} onChange={setProjectEndDate} placeholder='Pick end date' />
+                    <DatePicker value={projectEndDate} onChange={setProjectEndDate} placeholder='Pick end date' withTime={false} />
                   </div>
                   <div className='space-y-2 md:col-span-2'>
                     <label className='text-sm font-medium text-foreground'>Project Color</label>

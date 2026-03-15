@@ -1,4 +1,4 @@
-import { AtSign, Bell, CheckCheck, Filter, MessageSquareText, ShieldAlert } from 'lucide-react'
+import { AtSign, Bell, Check, CheckCheck, Circle, Filter, MessageSquareText, ShieldAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { setCachedUnreadCount } from '@/features/layout/lib/unread-notifications-sync'
 import { openTaskDetailsModal } from '@/features/tasks/lib/open-task-details-modal'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -49,6 +50,28 @@ function NotificationIcon({ type }: { type: NotificationType }) {
   if (type === 'mention') return <AtSign className='h-4 w-4 text-blue-400' aria-hidden='true' />
   if (type === 'system') return <ShieldAlert className='h-4 w-4 text-amber-400' aria-hidden='true' />
   return <MessageSquareText className='h-4 w-4 text-emerald-400' aria-hidden='true' />
+}
+
+function NotificationsListSkeleton() {
+  return (
+    <div className='space-y-2'>
+      {Array.from({ length: 6 }).map((_, index) => (
+        <div key={`notification-skeleton-${index}`} className='rounded-md border bg-muted/10 px-3 py-3'>
+          <div className='flex items-start justify-between gap-3'>
+            <div className='flex min-w-0 items-start gap-2.5'>
+              <div className='mt-0.5 h-8 w-8 rounded-md bg-muted/60 animate-pulse' />
+              <div className='min-w-0 space-y-2 pt-0.5'>
+                <div className='h-3.5 w-36 rounded bg-muted/60 animate-pulse' />
+                <div className='h-3 w-56 max-w-[70vw] rounded bg-muted/50 animate-pulse' />
+                <div className='h-2.5 w-28 rounded bg-muted/40 animate-pulse' />
+              </div>
+            </div>
+            <div className='h-8 w-8 rounded-md bg-muted/50 animate-pulse' />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 export function NotificationsPage() {
@@ -103,6 +126,7 @@ export function NotificationsPage() {
       )
       setItems(mapped)
       localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(mapped))
+      setCachedUnreadCount(mapped.filter((item) => !item.read).length)
       setLoading(false)
     }
 
@@ -138,6 +162,7 @@ export function NotificationsPage() {
     setItems((current) => {
       const next = current.map((item) => ({ ...item, read: true }))
       localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+      setCachedUnreadCount(0)
       return next
     })
     const { error } = await supabase.from('notifications').update({ read_at: now }).in('id', unreadIds)
@@ -146,6 +171,7 @@ export function NotificationsPage() {
       setItems((current) => {
         const next = current.map((item) => (unreadIds.includes(item.id) ? { ...item, read: false } : item))
         localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+        setCachedUnreadCount(next.filter((item) => !item.read).length)
         return next
       })
     }
@@ -159,6 +185,7 @@ export function NotificationsPage() {
     setItems((current) => {
       const next = current.map((item) => (item.id === id ? { ...item, read: nextRead } : item))
       localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+      setCachedUnreadCount(next.filter((item) => !item.read).length)
       return next
     })
     const { error } = await supabase
@@ -171,6 +198,7 @@ export function NotificationsPage() {
       setItems((current) => {
         const next = current.map((item) => (item.id === id ? { ...item, read: currentItem.read } : item))
         localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
+        setCachedUnreadCount(next.filter((item) => !item.read).length)
         return next
       })
     }
@@ -187,6 +215,7 @@ export function NotificationsPage() {
     setItems((current) => {
       const next = current.map((entry) => (entry.id === id ? { ...entry, read: true } : entry))
       cacheNotificationItems(next)
+      setCachedUnreadCount(next.filter((entry) => !entry.read).length)
       return next
     })
 
@@ -196,6 +225,7 @@ export function NotificationsPage() {
       setItems((current) => {
         const next = current.map((entry) => (entry.id === id ? { ...entry, read: false } : entry))
         cacheNotificationItems(next)
+        setCachedUnreadCount(next.filter((entry) => !entry.read).length)
         return next
       })
     }
@@ -241,6 +271,12 @@ export function NotificationsPage() {
     if (redirectTaskId) {
       handledNotificationRedirectRef.current = redirectKey
       if (redirectNotificationId) {
+        setItems((current) => {
+          const next = current.map((item) => (item.id === redirectNotificationId ? { ...item, read: true } : item))
+          cacheNotificationItems(next)
+          setCachedUnreadCount(next.filter((item) => !item.read).length)
+          return next
+        })
         void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', redirectNotificationId)
       }
       openTaskDetailsModal(redirectTaskId)
@@ -257,6 +293,12 @@ export function NotificationsPage() {
     if (!target) return
     handledNotificationRedirectRef.current = redirectKey
     if (!target.read) {
+      setItems((current) => {
+        const next = current.map((item) => (item.id === target.id ? { ...item, read: true } : item))
+        cacheNotificationItems(next)
+        setCachedUnreadCount(next.filter((item) => !item.read).length)
+        return next
+      })
       void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', target.id)
     }
     void (async () => {
@@ -298,9 +340,16 @@ export function NotificationsPage() {
               <Bell className='h-3.5 w-3.5' aria-hidden='true' />
               {unreadCount} unread
             </Badge>
-            <Button type='button' size='sm' variant='outline' onClick={markAllRead}>
-              <CheckCheck className='mr-1.5 h-4 w-4' aria-hidden='true' />
-              Mark all read
+            <Button
+              type='button'
+              size='icon'
+              variant='outline'
+              className='h-8 w-8'
+              onClick={markAllRead}
+              aria-label='Mark all read'
+              title='Mark all read'
+            >
+              <CheckCheck className='h-4 w-4' aria-hidden='true' />
             </Button>
           </div>
         </CardContent>
@@ -313,9 +362,7 @@ export function NotificationsPage() {
         </CardHeader>
         <CardContent className='space-y-2'>
           {loading ? (
-            <div className='rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground'>
-              Loading notifications...
-            </div>
+            <NotificationsListSkeleton />
           ) : null}
           {!loading && visibleItems.length === 0 ? (
             <div className='rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground'>
@@ -359,15 +406,17 @@ export function NotificationsPage() {
 
                   <Button
                     type='button'
-                    size='sm'
+                    size='icon'
                     variant='ghost'
-                    className='h-8 px-2 text-xs'
+                    className='h-8 w-8'
+                    aria-label={item.read ? 'Mark unread' : 'Mark read'}
+                    title={item.read ? 'Mark unread' : 'Mark read'}
                     onClick={(event) => {
                       event.stopPropagation()
                       void toggleRead(item.id)
                     }}
                   >
-                    {item.read ? 'Mark unread' : 'Mark read'}
+                    {item.read ? <Circle className='h-4 w-4' aria-hidden='true' /> : <Check className='h-4 w-4' aria-hidden='true' />}
                   </Button>
                 </div>
               </article>
