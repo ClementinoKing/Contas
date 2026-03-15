@@ -86,6 +86,15 @@ function myTasksCacheStorageKey(userId: string) {
   return `${MY_TASKS_CACHE_KEY}:${userId}`
 }
 
+function dedupeTaskRowsById(rows: TaskRow[]) {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    if (seen.has(row.id)) return false
+    seen.add(row.id)
+    return true
+  })
+}
+
 function createBaseWaveLevels(count: number) {
   return Array.from({ length: count }, (_, index) => {
     const curve = Math.sin(index * 0.68) * 0.22
@@ -411,8 +420,13 @@ function extractMentionedMemberIds(text: string, members: Array<{ id: string; na
   const mentioned = new Set<string>()
   for (const member of members) {
     const handleToken = `@${mentionHandleForMember(member).toLowerCase()}`
+    const normalizedNameHandle = `@${member.name
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9._-]/g, '')}`
     const nameToken = `@${member.name.toLowerCase()}`
-    if (normalized.includes(handleToken) || normalized.includes(nameToken)) {
+    if (normalized.includes(handleToken) || normalized.includes(normalizedNameHandle) || normalized.includes(nameToken)) {
       mentioned.add(member.id)
     }
   }
@@ -1145,6 +1159,7 @@ export function MyTasksPage() {
   const inflightActionKeysRef = useRef<Set<string>>(new Set())
   const hasLoadedTasksOnceRef = useRef(false)
   const realtimeReloadDebounceRef = useRef<number | null>(null)
+  const profileRowsCacheRef = useRef<Array<{ id: string; full_name: string | null; username: string | null; email: string | null; avatar_url: string | null }>>([])
   const dynamicStatusOptions = useMemo(() => {
     const source = statusCatalog.length > 0 ? statusCatalog : resolveProjectStatusOptions([], null)
     const seen = new Set<string>()
@@ -1258,7 +1273,7 @@ export function MyTasksPage() {
       const isStale = Date.now() - parsed.updatedAt > MY_TASKS_CACHE_MAX_AGE_MS
       if (isStale || parsed.userId !== userId) return
 
-      setTaskRows(parsed.taskRows ?? [])
+      setTaskRows(dedupeTaskRowsById(parsed.taskRows ?? []))
       setCommentsByTaskId(parsed.commentsByTaskId ?? {})
       setProjects(parsed.projects ?? [])
       setMembers(parsed.members ?? [])
@@ -1312,6 +1327,14 @@ export function MyTasksPage() {
       setBackgroundSync('syncing')
     }
 
+    const useCachedProfiles = hasLoadedTasksOnceRef.current && profileRowsCacheRef.current.length > 0
+    const profilesPromise = useCachedProfiles
+      ? Promise.resolve({
+          data: profileRowsCacheRef.current,
+          error: null,
+        })
+      : supabase.from('profiles').select('id, full_name, username, email, avatar_url').order('full_name', { ascending: true })
+
     void Promise.all([
       fetchStatusCatalog(),
       supabase
@@ -1325,7 +1348,7 @@ export function MyTasksPage() {
         .order('created_at', { ascending: false }),
       supabase.from('task_comment_reactions').select('comment_id, user_id, reaction'),
       supabase.from('projects').select('id, name').order('name', { ascending: true }),
-      supabase.from('profiles').select('id, full_name, username, email, avatar_url').order('full_name', { ascending: true }),
+      profilesPromise,
     ]).then(
       ([
         fetchedStatuses,
@@ -1339,7 +1362,16 @@ export function MyTasksPage() {
       if (cancelled) return
 
       const projects = (projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
-      const profileRows = profilesResult.data ?? []
+      if (!useCachedProfiles && !profilesResult.error && profilesResult.data) {
+        profileRowsCacheRef.current = profilesResult.data
+      }
+      const profileRows = (profilesResult.data ?? profileRowsCacheRef.current ?? []) as Array<{
+        id: string
+        full_name: string | null
+        username: string | null
+        email: string | null
+        avatar_url: string | null
+      }>
       const members = profileRows.map((profile) => {
         const rawAvatar = profile.avatar_url ?? undefined
         return {
@@ -1480,7 +1512,7 @@ export function MyTasksPage() {
       })
 
       setCommentsByTaskId(mappedCommentsByTaskId)
-      setTaskRows(mappedTaskRows)
+      setTaskRows(dedupeTaskRowsById(mappedTaskRows))
       if (currentUser?.id) {
         const payload: MyTasksCachePayload = {
           updatedAt: Date.now(),
@@ -1501,7 +1533,7 @@ export function MyTasksPage() {
         const rawAvatar = profile.avatar_url ?? undefined
         return Boolean(rawAvatar && !isDirectAvatarUrl(rawAvatar))
       })
-      if (profilesNeedingAvatarResolution.length > 0) {
+      if (!useCachedProfiles && profilesNeedingAvatarResolution.length > 0) {
         void Promise.all(
           profilesNeedingAvatarResolution.map(async (profile) => {
             const rawAvatar = profile.avatar_url ?? undefined
@@ -1698,7 +1730,10 @@ export function MyTasksPage() {
     const sectionById = new Map(sections.map((section) => [section.id, section]))
     const sectionByKey = new Map(definitions.map((definition, index) => [definition.key, sections[index]]))
 
+    const seenTaskIds = new Set<string>()
     listFilteredTasks.forEach((task) => {
+      if (seenTaskIds.has(task.id)) return
+      seenTaskIds.add(task.id)
       const statusKey = (task.statusKey ?? '').trim().toLowerCase()
       const statusId = task.statusId ?? boardColumnIdFromTask(task)
       let section = (statusKey ? sectionByKey.get(statusKey) : undefined) ?? sectionById.get(statusId)
@@ -1769,29 +1804,31 @@ export function MyTasksPage() {
     const startDate = new Date(task.startAt)
     const endDate = task.dueAt ? new Date(task.dueAt) : startDate
 
-    setTaskRows((rows) => [
-      {
-        id: task.id,
-        parentTaskId: task.parentTaskId,
-        title: task.title,
-        description: task.description,
-        createdById: task.createdById ?? currentUser?.id ?? '',
-        owner: task.assigneeName,
-        assigneeIds: task.assigneeIds,
-        due: formatTaskDueLabel(task.dueAt),
-        completed: false,
-        status: mapTaskStatus(task.statusKey ?? task.status),
-        statusId: task.statusId ?? undefined,
-        statusKey: task.statusKey ?? task.status ?? undefined,
-        priority: mapTaskPriority(task.priority),
-        boardColumn: task.statusId ?? task.boardColumn ?? 'planned',
-        projectId: task.projectId,
-        projectName: task.projectName,
-        startDate: startDate.toISOString().slice(0, 10),
-        endDate: endDate.toISOString().slice(0, 10),
-      },
-      ...rows,
-    ])
+    setTaskRows((rows) =>
+      dedupeTaskRowsById([
+        {
+          id: task.id,
+          parentTaskId: task.parentTaskId,
+          title: task.title,
+          description: task.description,
+          createdById: task.createdById ?? currentUser?.id ?? '',
+          owner: task.assigneeName,
+          assigneeIds: task.assigneeIds,
+          due: formatTaskDueLabel(task.dueAt),
+          completed: false,
+          status: mapTaskStatus(task.statusKey ?? task.status),
+          statusId: task.statusId ?? undefined,
+          statusKey: task.statusKey ?? task.status ?? undefined,
+          priority: mapTaskPriority(task.priority),
+          boardColumn: task.statusId ?? task.boardColumn ?? 'planned',
+          projectId: task.projectId,
+          projectName: task.projectName,
+          startDate: startDate.toISOString().slice(0, 10),
+          endDate: endDate.toISOString().slice(0, 10),
+        },
+        ...rows,
+      ]),
+    )
   }
 
   const moveCalendar = (direction: 'prev' | 'next') => {
@@ -1993,6 +2030,7 @@ export function MyTasksPage() {
         const notifications = selectedIds.map((taskId) => {
           const taskTitle = previousRows.find((task) => task.id === taskId)?.title ?? 'a task'
           return {
+            id: crypto.randomUUID(),
             recipient_id: assigneeMember.id,
             actor_id: currentUser.id,
             task_id: taskId,
@@ -2002,17 +2040,12 @@ export function MyTasksPage() {
             metadata: { event: 'task_assigned', source: 'board_bulk_assign' },
           }
         })
-        const { data: insertedNotifications, error: notificationsError } = await supabase
-          .from('notifications')
-          .insert(notifications)
-          .select('id, recipient_id, task_id')
+        const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
         if (notificationsError) {
           console.error('Failed to create assignment notifications', notificationsError)
         } else {
           void dispatchNotificationEmails(
-            (insertedNotifications ?? [])
-              .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-              .map((item) => ({
+            notifications.map((item) => ({
                 notificationId: item.id,
                 recipientId: item.recipient_id,
                 recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
@@ -2559,6 +2592,7 @@ export function MyTasksPage() {
       )
       if (addedAssigneeIds.length > 0) {
         const notifications = addedAssigneeIds.map((recipientId) => ({
+          id: crypto.randomUUID(),
           recipient_id: recipientId,
           actor_id: currentUser.id,
           task_id: taskId,
@@ -2567,17 +2601,12 @@ export function MyTasksPage() {
           message: `You were assigned "${title}".`,
           metadata: { event: 'task_assigned', source: 'task_edit' },
         }))
-        const { data: insertedNotifications, error: notificationsError } = await supabase
-          .from('notifications')
-          .insert(notifications)
-          .select('id, recipient_id, task_id')
+        const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
         if (notificationsError) {
           console.error('Failed to create assignment notifications', notificationsError)
         } else {
           void dispatchNotificationEmails(
-            (insertedNotifications ?? [])
-              .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-              .map((item) => ({
+            notifications.map((item) => ({
                 notificationId: item.id,
                 recipientId: item.recipient_id,
                 recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
@@ -2599,6 +2628,7 @@ export function MyTasksPage() {
       )
       if (addedMentionIds.length > 0) {
         const mentionNotifications = addedMentionIds.map((recipientId) => ({
+          id: crypto.randomUUID(),
           recipient_id: recipientId,
           actor_id: currentUser.id,
           task_id: taskId,
@@ -2607,17 +2637,12 @@ export function MyTasksPage() {
           message: `You were mentioned in "${title}".`,
           metadata: { event: 'task_mentioned', source: 'task_edit_description' },
         }))
-        const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
-          .from('notifications')
-          .insert(mentionNotifications)
-          .select('id, recipient_id, task_id')
+        const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
         if (mentionNotificationsError) {
           console.error('Failed to create mention notifications', mentionNotificationsError)
         } else {
           void dispatchNotificationEmails(
-            (insertedMentionNotifications ?? [])
-              .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-              .map((item) => ({
+            mentionNotifications.map((item) => ({
                 notificationId: item.id,
                 recipientId: item.recipient_id,
                 recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
@@ -3075,6 +3100,7 @@ export function MyTasksPage() {
     if (mentionedMemberIds.length > 0) {
       const taskTitle = activeTaskRow?.title ?? 'a task'
       const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+        id: crypto.randomUUID(),
         recipient_id: recipientId,
         actor_id: currentUser.id,
         task_id: activeTaskRef.taskId,
@@ -3083,17 +3109,12 @@ export function MyTasksPage() {
         message: `You were mentioned in "${taskTitle}".`,
         metadata: { event: 'task_mentioned', source: 'task_comment' },
       }))
-      const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
-        .from('notifications')
-        .insert(mentionNotifications)
-        .select('id, recipient_id, task_id')
+      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
       if (mentionNotificationsError) {
         console.error('Failed to create comment mention notifications', mentionNotificationsError)
       } else {
         void dispatchNotificationEmails(
-          (insertedMentionNotifications ?? [])
-            .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-            .map((item) => ({
+          mentionNotifications.map((item) => ({
               notificationId: item.id,
               recipientId: item.recipient_id,
               recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,
@@ -3222,6 +3243,7 @@ export function MyTasksPage() {
     if (mentionedMemberIds.length > 0) {
       const taskTitle = activeTaskRow?.title ?? 'a task'
       const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+        id: crypto.randomUUID(),
         recipient_id: recipientId,
         actor_id: currentUser.id,
         task_id: activeTaskRef.taskId,
@@ -3230,17 +3252,12 @@ export function MyTasksPage() {
         message: `You were mentioned in "${taskTitle}".`,
         metadata: { event: 'task_mentioned', source: 'task_reply' },
       }))
-      const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
-        .from('notifications')
-        .insert(mentionNotifications)
-        .select('id, recipient_id, task_id')
+      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
       if (mentionNotificationsError) {
         console.error('Failed to create reply mention notifications', mentionNotificationsError)
       } else {
         void dispatchNotificationEmails(
-          (insertedMentionNotifications ?? [])
-            .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-            .map((item) => ({
+          mentionNotifications.map((item) => ({
               notificationId: item.id,
               recipientId: item.recipient_id,
               recipientEmail: members.find((member) => member.id === item.recipient_id)?.email,

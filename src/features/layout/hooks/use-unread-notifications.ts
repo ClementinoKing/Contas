@@ -25,6 +25,7 @@ export function useUnreadNotifications() {
       const { count, error } = await supabase
         .from('notifications')
         .select('id', { count: 'exact', head: true })
+        .eq('recipient_id', currentUser.id)
         .is('read_at', null)
 
       if (cancelled || error) return

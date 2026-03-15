@@ -20,10 +20,31 @@ function resolveAppUrl(taskId: string) {
 export async function dispatchNotificationEmails(items: NotificationDispatchItem[]) {
   if (items.length === 0) return
 
+  const {
+    data: { session: initialSession },
+  } = await supabase.auth.getSession()
+  let accessToken = initialSession?.access_token ?? null
+
+  if (!accessToken) {
+    const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession()
+    if (refreshError) {
+      console.error('Failed to refresh session before notification dispatch', refreshError)
+    }
+    accessToken = refreshed.session?.access_token ?? null
+  }
+
+  if (!accessToken) {
+    console.error('Failed to dispatch notification email: missing active access token')
+    return
+  }
+
   await Promise.allSettled(
     items.map((item) =>
       supabase.functions
         .invoke('notify-teammates', {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
           body: {
             type: item.type,
             recipientId: item.recipientId,

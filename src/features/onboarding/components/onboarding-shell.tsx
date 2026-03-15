@@ -73,7 +73,7 @@ export function OnboardingShell({
             <div className='rounded-xl border bg-background/70 p-5 backdrop-blur'>
               <p className='text-xs uppercase tracking-wide text-muted-foreground'>Productivity stack</p>
               <div className='mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground'>
-                {['Tasks', 'Projects', 'Goals', 'Portfolio', 'Reports', 'Organization'].map((item) => (
+                {['Tasks', 'Projects', 'Goals', 'Reports', 'Organization'].map((item) => (
                   <span key={item} className='rounded-md border bg-muted/30 px-2 py-1 text-center'>
                     {item}
                   </span>

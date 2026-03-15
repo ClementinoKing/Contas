@@ -1,9 +1,28 @@
-import { AlertTriangle, CalendarClock, CheckCircle2, Flag, Link2, Plus, RefreshCw, Target, TrendingUp, UserRound, Zap } from 'lucide-react'
+import {
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  Building2,
+  CalendarClock,
+  CheckCircle2,
+  Clock3,
+  Flag,
+  FolderKanban,
+  Link2,
+  Plus,
+  RefreshCw,
+  Search,
+  Target,
+  TrendingUp,
+  UserRound,
+  Zap,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { supabase } from '@/lib/supabase'
@@ -15,6 +34,9 @@ type MetricType = 'percentage' | 'number' | 'currency' | 'boolean'
 type MetricCadence = 'weekly' | 'monthly'
 type KrSource = 'manual' | 'auto'
 type LinkType = 'project' | 'task'
+type DetailPanelMode = 'overview' | 'checkin'
+type HealthFilter = 'all' | GoalHealth
+type OwnerFilter = 'all' | 'mine' | 'unowned'
 
 type GoalRow = {
   id: string
@@ -86,8 +108,6 @@ type TaskRow = {
   completed_at: string | null
 }
 
-type GoalViewFilter = 'all' | 'mine' | 'department' | 'at_risk' | 'unowned'
-
 type GoalStatePayload = {
   goals: GoalRow[]
   keyResults: KrRow[]
@@ -113,18 +133,18 @@ const GOALS_ONBOARDING_STEPS = [
     target: 'create',
   },
   {
-    title: 'Track outcomes with key results',
-    description: 'Each goal should have measurable key results so progress can be rolled up accurately.',
+    title: 'Scan the portfolio',
+    description: 'The main board should stay lightweight so leaders can review progress and open details only when action is needed.',
     target: 'main',
   },
   {
-    title: 'Watch risks early',
-    description: 'Use Needs attention and Recent updates to catch stale check-ins and slipping execution.',
+    title: 'Watch the decision rail',
+    description: 'Needs attention and recent updates should help you focus the weekly operating rhythm.',
     target: 'rail',
   },
   {
-    title: 'Operate weekly',
-    description: 'Update KR values, add weekly check-ins, and link tasks/projects to keep strategy tied to execution.',
+    title: 'Update from the detail view',
+    description: 'Use the detail drawer to add check-ins, adjust KR progress, and connect execution work.',
     target: 'actions',
   },
 ] as const
@@ -167,26 +187,37 @@ function formatStatusLabel(value: GoalStatus) {
 function statusTone(value: GoalStatus) {
   switch (value) {
     case 'completed':
-      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+      return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
     case 'paused':
-      return 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+      return 'border-amber-500/25 bg-amber-500/10 text-amber-300'
     case 'draft':
-      return 'border-sky-500/30 bg-sky-500/10 text-sky-400'
+      return 'border-sky-500/25 bg-sky-500/10 text-sky-300'
     case 'archived':
-      return 'border-muted-foreground/20 bg-muted/20 text-muted-foreground'
+      return 'border-white/10 bg-white/[0.04] text-muted-foreground'
     default:
-      return 'border-primary/30 bg-primary/10 text-primary'
+      return 'border-cyan-400/25 bg-cyan-400/10 text-cyan-200'
   }
 }
 
 function healthTone(value: GoalHealth) {
   switch (value) {
     case 'on_track':
-      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+      return 'border-emerald-500/30 bg-emerald-500/12 text-emerald-300'
     case 'at_risk':
-      return 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+      return 'border-amber-500/30 bg-amber-500/12 text-amber-300'
     default:
-      return 'border-rose-500/30 bg-rose-500/10 text-rose-400'
+      return 'border-rose-500/30 bg-rose-500/12 text-rose-300'
+  }
+}
+
+function progressBarTone(value: GoalHealth) {
+  switch (value) {
+    case 'on_track':
+      return 'bg-emerald-400'
+    case 'at_risk':
+      return 'bg-amber-400'
+    default:
+      return 'bg-rose-400'
   }
 }
 
@@ -227,11 +258,59 @@ function formatDateLabel(value?: string | null) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(parsed)
 }
 
+function formatDateTimeLabel(value?: string | null) {
+  if (!value) return 'Just now'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Just now'
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(parsed)
+}
+
+function formatRelativeTime(value?: string | null) {
+  if (!value) return 'Just now'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Just now'
+
+  const diffMs = Date.now() - parsed.getTime()
+  const diffMinutes = Math.floor(diffMs / (1000 * 60))
+  if (diffMinutes < 60) return `${Math.max(diffMinutes, 1)}m ago`
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours}h ago`
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) return `${diffDays}d ago`
+  return formatDateLabel(value)
+}
+
 function daysSince(value?: string | null) {
   if (!value) return Number.POSITIVE_INFINITY
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return Number.POSITIVE_INFINITY
   return Math.floor((Date.now() - parsed.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function metricTypeLabel(value: MetricType) {
+  switch (value) {
+    case 'percentage':
+      return 'Percent'
+    case 'currency':
+      return 'Currency'
+    case 'boolean':
+      return 'Milestone'
+    default:
+      return 'Number'
+  }
+}
+
+function formatMetricValue(value: number | null, metricType: MetricType, unit?: string | null) {
+  const numeric = safeNumber(value)
+  if (metricType === 'currency') return new Intl.NumberFormat('en-US', { style: 'currency', currency: unit || 'USD', maximumFractionDigits: 0 }).format(numeric)
+  if (metricType === 'percentage') return `${numeric}%`
+  if (metricType === 'boolean') return numeric >= 1 ? 'Done' : 'Pending'
+  return `${numeric}${unit ? ` ${unit}` : ''}`
 }
 
 export function GoalsPage() {
@@ -248,12 +327,18 @@ export function GoalsPage() {
   const [loading, setLoading] = useState(() => !cached)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [currentTimestamp] = useState(() => Date.now())
 
   const [selectedCycle, setSelectedCycle] = useState(getCurrentQuarterCycle())
-  const [viewFilter, setViewFilter] = useState<GoalViewFilter>('all')
   const [search, setSearch] = useState('')
+  const [healthFilter, setHealthFilter] = useState<HealthFilter>('all')
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all')
+  const [departmentFilter, setDepartmentFilter] = useState('all')
 
   const [createOpen, setCreateOpen] = useState(false)
+  const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null)
+  const [detailMode, setDetailMode] = useState<DetailPanelMode>('overview')
+
   const [newGoalTitle, setNewGoalTitle] = useState('')
   const [newGoalDescription, setNewGoalDescription] = useState('')
   const [newGoalOwnerId, setNewGoalOwnerId] = useState('')
@@ -272,15 +357,7 @@ export function GoalsPage() {
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      const [
-        goalsResult,
-        keyResultsResult,
-        checkinsResult,
-        linksResult,
-        profilesResult,
-        projectsResult,
-        tasksResult,
-      ] = await Promise.all([
+      const [goalsResult, keyResultsResult, checkinsResult, linksResult, profilesResult, projectsResult, tasksResult] = await Promise.all([
         supabase.from('goals').select('id,title,description,owner_id,cycle,status,health,confidence,department,due_at,created_at').order('created_at', { ascending: false }),
         supabase.from('goal_key_results').select('id,goal_id,title,metric_type,baseline_value,current_value,target_value,unit,cadence,due_at,owner_id,source,allow_over_target').order('created_at', { ascending: false }),
         supabase.from('goal_checkins').select('id,goal_id,author_id,progress_delta,confidence,blockers,next_actions,created_at').order('created_at', { ascending: false }),
@@ -328,6 +405,38 @@ export function GoalsPage() {
 
   const profileById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles])
   const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks])
+  const keyResultsByGoal = useMemo(() => {
+    const map = new Map<string, KrRow[]>()
+    for (const kr of keyResults) {
+      const current = map.get(kr.goal_id) ?? []
+      current.push(kr)
+      map.set(kr.goal_id, current)
+    }
+    return map
+  }, [keyResults])
+  const linksByGoal = useMemo(() => {
+    const map = new Map<string, LinkRow[]>()
+    for (const link of links) {
+      const current = map.get(link.goal_id) ?? []
+      current.push(link)
+      map.set(link.goal_id, current)
+    }
+    return map
+  }, [links])
+  const checkinsByGoal = useMemo(() => {
+    const map = new Map<string, CheckinRow[]>()
+    for (const checkin of checkins) {
+      const current = map.get(checkin.goal_id) ?? []
+      current.push(checkin)
+      map.set(checkin.goal_id, current)
+    }
+    for (const [goalId, list] of map.entries()) {
+      list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      map.set(goalId, list)
+    }
+    return map
+  }, [checkins])
+
   const cycleOptions = useMemo(() => {
     const unique = new Set<string>([getCurrentQuarterCycle()])
     for (const goal of goals) unique.add(goal.cycle)
@@ -347,19 +456,20 @@ export function GoalsPage() {
       const value = profile.department?.trim()
       if (value) unique.add(value)
     }
+    for (const goal of goals) {
+      const value = goal.department?.trim()
+      if (value) unique.add(value)
+    }
     return Array.from(unique).sort((a, b) => a.localeCompare(b))
-  }, [profiles])
+  }, [goals, profiles])
 
-  useEffect(() => {
-    if (cycleOptions.includes(selectedCycle)) return
-    setSelectedCycle(cycleOptions[0] ?? getCurrentQuarterCycle())
-  }, [cycleOptions, selectedCycle])
+  const currentUserDepartment = useMemo(() => {
+    if (!currentUser?.id) return null
+    return profileById.get(currentUser.id)?.department ?? null
+  }, [currentUser?.id, profileById])
 
-  useEffect(() => {
-    if (onboardingStep !== 1) return
-    if (createOpen) return
-    setCreateOpen(true)
-  }, [createOpen, onboardingStep])
+  const activeCycle = cycleOptions.includes(selectedCycle) ? selectedCycle : cycleOptions[0] ?? getCurrentQuarterCycle()
+  const createPanelOpen = onboardingStep === 1 ? true : createOpen
 
   const onboardingTarget = onboardingStep >= 0 ? GOALS_ONBOARDING_STEPS[onboardingStep]?.target : null
   const closeOnboarding = () => {
@@ -396,9 +506,9 @@ export function GoalsPage() {
     >()
 
     for (const goal of goals) {
-      const goalKrs = keyResults.filter((kr) => kr.goal_id === goal.id)
-      const goalLinks = links.filter((link) => link.goal_id === goal.id)
-      const goalCheckins = checkins.filter((checkin) => checkin.goal_id === goal.id).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      const goalKrs = keyResultsByGoal.get(goal.id) ?? []
+      const goalLinks = linksByGoal.get(goal.id) ?? []
+      const goalCheckins = checkinsByGoal.get(goal.id) ?? []
       const latestCheckin = goalCheckins[0] ?? null
 
       const linkedTaskIds = goalLinks.filter((link) => link.link_type === 'task' && link.task_id).map((link) => link.task_id as string)
@@ -411,7 +521,9 @@ export function GoalsPage() {
         }
       }
 
-      const autoTasks = Array.from(autoTaskUniverse).map((taskId) => tasksById.get(taskId)).filter((task): task is TaskRow => Boolean(task))
+      const autoTasks = Array.from(autoTaskUniverse)
+        .map((taskId) => tasksById.get(taskId))
+        .filter((task): task is TaskRow => Boolean(task))
       const autoCompleted = autoTasks.filter((task) => Boolean(task.completed_at) || ['done', 'completed', 'closed'].includes((task.status ?? '').toLowerCase())).length
       const autoPercent = autoTasks.length > 0 ? (autoCompleted / autoTasks.length) * 100 : undefined
 
@@ -430,8 +542,7 @@ export function GoalsPage() {
         if (!kr.due_at) return false
         const due = new Date(kr.due_at)
         if (Number.isNaN(due.getTime())) return false
-        const isOverdue = due.getTime() < Date.now()
-        if (!isOverdue) return false
+        if (due.getTime() >= currentTimestamp) return false
         return calculateKrProgress(kr, autoPercent) < 100
       }).length
 
@@ -454,44 +565,10 @@ export function GoalsPage() {
     }
 
     return result
-  }, [checkins, goals, keyResults, links, tasks, tasksById])
-
-  const filteredGoals = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return goals.filter((goal) => {
-      if (goal.cycle !== selectedCycle) return false
-
-      const derived = derivedByGoal.get(goal.id)
-      const owner = goal.owner_id ? profileById.get(goal.owner_id) : null
-      const ownerDepartment = owner?.department ?? goal.department ?? ''
-
-      if (viewFilter === 'mine' && goal.owner_id !== currentUser?.id) return false
-      if (viewFilter === 'department') {
-        const currentDepartment = currentUser?.jobTitle ? profiles.find((profile) => profile.id === currentUser.id)?.department : null
-        if (!currentDepartment) return false
-        if ((ownerDepartment ?? '').toLowerCase() !== currentDepartment.toLowerCase()) return false
-      }
-      if (viewFilter === 'at_risk' && (derived?.autoHealth ?? goal.health) === 'on_track') return false
-      if (viewFilter === 'unowned' && goal.owner_id && !(derived?.stale ?? false)) return false
-
-      if (!query) return true
-      const combined = `${goal.title} ${goal.description ?? ''} ${owner?.full_name ?? ''} ${goal.department ?? ''}`.toLowerCase()
-      return combined.includes(query)
-    })
-  }, [currentUser?.id, currentUser?.jobTitle, derivedByGoal, goals, profileById, profiles, search, selectedCycle, viewFilter])
-
-  const groupedGoals = useMemo(() => {
-    const groups: Record<GoalHealth, GoalRow[]> = { on_track: [], at_risk: [], off_track: [] }
-    for (const goal of filteredGoals) {
-      const derived = derivedByGoal.get(goal.id)
-      const health = derived?.autoHealth ?? goal.health
-      groups[health].push(goal)
-    }
-    return groups
-  }, [derivedByGoal, filteredGoals])
+  }, [checkinsByGoal, currentTimestamp, goals, keyResultsByGoal, linksByGoal, tasks, tasksById])
 
   const summary = useMemo(() => {
-    const inCycle = goals.filter((goal) => goal.cycle === selectedCycle)
+    const inCycle = goals.filter((goal) => goal.cycle === activeCycle)
     const counts = { on_track: 0, at_risk: 0, off_track: 0 }
     for (const goal of inCycle) {
       const health = derivedByGoal.get(goal.id)?.autoHealth ?? goal.health
@@ -503,17 +580,61 @@ export function GoalsPage() {
       atRisk: counts.at_risk,
       offTrack: counts.off_track,
     }
-  }, [derivedByGoal, goals, selectedCycle])
+  }, [activeCycle, derivedByGoal, goals])
+
+  const filteredGoals = useMemo(() => {
+    const query = search.trim().toLowerCase()
+
+    return goals
+      .filter((goal) => goal.cycle === activeCycle)
+      .filter((goal) => {
+        const derived = derivedByGoal.get(goal.id)
+        const owner = goal.owner_id ? profileById.get(goal.owner_id) : null
+        const goalDepartment = goal.department ?? owner?.department ?? 'No department'
+        const effectiveHealth = derived?.autoHealth ?? goal.health
+
+        if (healthFilter !== 'all' && effectiveHealth !== healthFilter) return false
+        if (ownerFilter === 'mine' && goal.owner_id !== currentUser?.id) return false
+        if (ownerFilter === 'unowned' && goal.owner_id) return false
+        if (departmentFilter !== 'all' && goalDepartment !== departmentFilter) return false
+
+        if (!query) return true
+        const combined = [goal.title, goal.description ?? '', owner?.full_name ?? '', goalDepartment, effectiveHealth].join(' ').toLowerCase()
+        return combined.includes(query)
+      })
+      .sort((a, b) => {
+        const healthRank: Record<GoalHealth, number> = { off_track: 0, at_risk: 1, on_track: 2 }
+        const aHealth = derivedByGoal.get(a.id)?.autoHealth ?? a.health
+        const bHealth = derivedByGoal.get(b.id)?.autoHealth ?? b.health
+        if (healthRank[aHealth] !== healthRank[bHealth]) return healthRank[aHealth] - healthRank[bHealth]
+        return (derivedByGoal.get(b.id)?.progress ?? 0) - (derivedByGoal.get(a.id)?.progress ?? 0)
+      })
+  }, [activeCycle, currentUser?.id, departmentFilter, derivedByGoal, goals, healthFilter, ownerFilter, profileById, search])
+
+  const highlightedDepartments = useMemo(() => {
+    const preferred = [
+      currentUserDepartment,
+      ...departmentOptions.filter((item) => item !== currentUserDepartment),
+    ].filter((value): value is string => Boolean(value))
+    return preferred.slice(0, 5)
+  }, [currentUserDepartment, departmentOptions])
 
   const needsAttention = useMemo(() => {
     return goals
+      .filter((goal) => goal.cycle === activeCycle)
       .map((goal) => ({ goal, derived: derivedByGoal.get(goal.id) }))
       .filter((item) => item.derived && (item.derived.overdueKrCount > 0 || item.derived.stale || item.derived.autoHealth === 'off_track'))
+      .sort((a, b) => {
+        const aScore = (a.derived?.autoHealth === 'off_track' ? 3 : 0) + (a.derived?.stale ? 2 : 0) + (a.derived?.overdueKrCount ?? 0)
+        const bScore = (b.derived?.autoHealth === 'off_track' ? 3 : 0) + (b.derived?.stale ? 2 : 0) + (b.derived?.overdueKrCount ?? 0)
+        return bScore - aScore
+      })
       .slice(0, 6)
-  }, [derivedByGoal, goals])
+  }, [activeCycle, derivedByGoal, goals])
 
   const recentUpdates = useMemo(() => {
     return [...checkins]
+      .filter((checkin) => goals.find((goal) => goal.id === checkin.goal_id)?.cycle === activeCycle)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, 8)
       .map((checkin) => ({
@@ -521,7 +642,22 @@ export function GoalsPage() {
         goal: goals.find((goal) => goal.id === checkin.goal_id) ?? null,
         author: checkin.author_id ? profileById.get(checkin.author_id) : null,
       }))
-  }, [checkins, goals, profileById])
+  }, [activeCycle, checkins, goals, profileById])
+
+  const selectedGoal = selectedGoalId ? goals.find((goal) => goal.id === selectedGoalId) ?? null : null
+  const selectedGoalOwner = selectedGoal?.owner_id ? profileById.get(selectedGoal.owner_id) : null
+  const selectedGoalDerived = selectedGoal ? derivedByGoal.get(selectedGoal.id) : null
+  const selectedGoalKrs = selectedGoal ? keyResultsByGoal.get(selectedGoal.id) ?? [] : []
+  const selectedGoalLinks = selectedGoal ? linksByGoal.get(selectedGoal.id) ?? [] : []
+  const selectedGoalCheckins = selectedGoal ? checkinsByGoal.get(selectedGoal.id) ?? [] : []
+  const selectedKrDraft = selectedGoal ? krDraftByGoal[selectedGoal.id] ?? { title: '', metricType: 'number' as MetricType, target: '100', source: 'manual' as KrSource } : null
+  const selectedCheckinDraft = selectedGoal ? checkinDraftByGoal[selectedGoal.id] ?? { blockers: '', nextActions: '', confidence: '' } : null
+  const selectedLinkDraft = selectedGoal ? linkDraftByGoal[selectedGoal.id] ?? { linkType: 'project' as LinkType, targetId: '' } : null
+
+  const openGoalDetail = (goalId: string, nextMode: DetailPanelMode = 'overview') => {
+    setSelectedGoalId(goalId)
+    setDetailMode(nextMode)
+  }
 
   const handleCreateGoal = async () => {
     if (!currentUser?.id) return
@@ -537,7 +673,7 @@ export function GoalsPage() {
       description: newGoalDescription.trim() || null,
       owner_id: newGoalOwnerId || currentUser.id,
       created_by: currentUser.id,
-      cycle: selectedCycle,
+      cycle: activeCycle,
       status: 'active',
       health: 'on_track',
       confidence: Number(newGoalConfidence) || null,
@@ -678,45 +814,77 @@ export function GoalsPage() {
   }
 
   return (
-    <div className='space-y-4'>
-      <Card className={cn(onboardingTarget === 'header' ? 'ring-2 ring-primary/50' : null)}>
-        <CardContent className='flex flex-wrap items-center justify-between gap-3 p-3'>
-          <div>
-            <p className='text-sm font-semibold text-foreground'>Goals Strategy Layer</p>
-            <p className='text-xs text-muted-foreground'>Align organizational outcomes to projects and tasks.</p>
+    <div className='space-y-5 pb-2'>
+      <Card
+        className={cn(
+          'border-white/10 bg-card',
+          onboardingTarget === 'header' ? 'ring-2 ring-cyan-400/40' : null,
+        )}
+      >
+        <CardContent className='flex flex-col gap-5 p-5 lg:flex-row lg:items-end lg:justify-between'>
+          <div className='space-y-3'>
+            <Badge variant='outline' className='border-cyan-400/20 bg-cyan-400/10 text-cyan-200'>
+              Goals Strategy Layer
+            </Badge>
+            <div className='space-y-1'>
+              <h1 className='text-2xl font-semibold tracking-tight text-foreground'>Strategy execution for {activeCycle}</h1>
+              <p className='max-w-2xl text-sm text-muted-foreground'>
+                Review portfolio health, open compact goal summaries, and drive updates through a dedicated detail workspace.
+              </p>
+            </div>
+            <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
+              <span className='inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-background px-3 py-1.5'>
+                <Target className='h-3.5 w-3.5 text-cyan-200' /> {summary.total} active goals
+              </span>
+              <span className='inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-background px-3 py-1.5'>
+                <Activity className='h-3.5 w-3.5 text-emerald-300' /> {summary.onTrack} on track
+              </span>
+              <span className='inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-background px-3 py-1.5'>
+                <Clock3 className='h-3.5 w-3.5 text-amber-300' /> Weekly operating rhythm
+              </span>
+            </div>
           </div>
-          <div className='flex items-center gap-2'>
-            <select
-              value={selectedCycle}
-              onChange={(event) => setSelectedCycle(event.target.value)}
-              className='h-9 rounded-md border border-input bg-background px-3 text-xs'
-            >
-              {cycleOptions.map((cycle) => (
-                <option key={cycle} value={cycle}>
-                  {cycle}
-                </option>
-              ))}
-            </select>
-            <Button size='sm' variant='outline' onClick={() => setCreateOpen((value) => !value)}>
-              <Plus className='mr-1.5 h-4 w-4' />
-              New Goal
-            </Button>
+
+          <div className='flex flex-col gap-3 sm:min-w-[320px]'>
+            <div className='rounded-2xl border border-white/10 bg-background p-3'>
+              <p className='text-[11px] uppercase tracking-[0.24em] text-muted-foreground'>Planning cycle</p>
+              <div className='mt-2 flex items-center gap-2'>
+                <select
+                  value={activeCycle}
+                  onChange={(event) => setSelectedCycle(event.target.value)}
+                  className='h-11 flex-1 rounded-xl border border-white/10 bg-background px-4 text-sm font-medium text-foreground outline-none'
+                >
+                  {cycleOptions.map((cycle) => (
+                    <option key={cycle} value={cycle}>
+                      {cycle}
+                    </option>
+                  ))}
+                </select>
+                <Button size='sm' className='h-11 rounded-xl' onClick={() => setCreateOpen((value) => !value)}>
+                  <Plus className='mr-1.5 h-4 w-4' />
+                  New Goal
+                </Button>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {createOpen ? (
-        <Card className={cn(onboardingTarget === 'create' ? 'ring-2 ring-primary/50' : null)}>
-          <CardContent className='grid gap-3 p-3 md:grid-cols-2'>
-            <Input value={newGoalTitle} onChange={(event) => setNewGoalTitle(event.target.value)} placeholder='Goal title' className='md:col-span-2' />
+      {createPanelOpen ? (
+        <Card className={cn('border-white/10 bg-card', onboardingTarget === 'create' ? 'ring-2 ring-cyan-400/35' : null)}>
+          <CardHeader className='border-b border-white/10 pb-4'>
+            <CardTitle className='text-base'>Create strategic goal</CardTitle>
+          </CardHeader>
+          <CardContent className='grid gap-3 p-4 md:grid-cols-2'>
+            <Input value={newGoalTitle} onChange={(event) => setNewGoalTitle(event.target.value)} placeholder='Goal title' className='md:col-span-2 bg-background/60' />
             <textarea
               value={newGoalDescription}
               onChange={(event) => setNewGoalDescription(event.target.value)}
               rows={3}
-              placeholder='Goal description'
-              className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm md:col-span-2'
+              placeholder='Describe the executive outcome and why it matters'
+              className='flex w-full rounded-xl border border-input bg-background/60 px-3 py-2 text-sm text-foreground md:col-span-2'
             />
-            <select value={newGoalOwnerId} onChange={(event) => setNewGoalOwnerId(event.target.value)} className='h-10 rounded-md border border-input bg-background px-3 text-sm'>
+            <select value={newGoalOwnerId} onChange={(event) => setNewGoalOwnerId(event.target.value)} className='h-10 rounded-xl border border-input bg-background/60 px-3 text-sm'>
               <option value=''>Owner (Me)</option>
               {profiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
@@ -727,7 +895,7 @@ export function GoalsPage() {
             <select
               value={newGoalDepartment}
               onChange={(event) => setNewGoalDepartment(event.target.value)}
-              className='h-10 rounded-md border border-input bg-background px-3 text-sm'
+              className='h-10 rounded-xl border border-input bg-background/60 px-3 text-sm'
             >
               <option value=''>Select department</option>
               {departmentOptions.map((department) => (
@@ -736,9 +904,12 @@ export function GoalsPage() {
                 </option>
               ))}
             </select>
-            <Input type='number' min={1} max={10} value={newGoalConfidence} onChange={(event) => setNewGoalConfidence(event.target.value)} placeholder='Confidence 1-10' />
-            <Input type='date' value={newGoalDueAt} onChange={(event) => setNewGoalDueAt(event.target.value)} />
-            <div className='md:col-span-2 flex justify-end'>
+            <Input type='number' min={1} max={10} value={newGoalConfidence} onChange={(event) => setNewGoalConfidence(event.target.value)} placeholder='Confidence 1-10' className='bg-background/60' />
+            <Input type='date' value={newGoalDueAt} onChange={(event) => setNewGoalDueAt(event.target.value)} className='bg-background/60' />
+            <div className='flex justify-end gap-2 md:col-span-2'>
+              <Button variant='ghost' onClick={() => setCreateOpen(false)}>
+                Cancel
+              </Button>
               <Button onClick={() => void handleCreateGoal()} disabled={saving}>
                 {saving ? 'Saving...' : 'Create Goal'}
               </Button>
@@ -747,383 +918,819 @@ export function GoalsPage() {
         </Card>
       ) : null}
 
-      <section className='grid gap-4 md:grid-cols-2 xl:grid-cols-4'>
-        <Card>
-          <CardHeader className='pb-2'>
-            <CardTitle className='text-2xl'>{summary.total}</CardTitle>
-          </CardHeader>
-          <CardContent className='pt-0 text-xs text-muted-foreground'>Active goals in {selectedCycle}</CardContent>
-        </Card>
-        <Card>
-          <CardHeader className='pb-2'>
-            <CardTitle className='text-2xl text-emerald-400'>{summary.onTrack}</CardTitle>
-          </CardHeader>
-          <CardContent className='pt-0 text-xs text-muted-foreground'>On track</CardContent>
-        </Card>
-        <Card>
-          <CardHeader className='pb-2'>
-            <CardTitle className='text-2xl text-amber-400'>{summary.atRisk}</CardTitle>
-          </CardHeader>
-          <CardContent className='pt-0 text-xs text-muted-foreground'>At risk</CardContent>
-        </Card>
-        <Card>
-          <CardHeader className='pb-2'>
-            <CardTitle className='text-2xl text-rose-400'>{summary.offTrack}</CardTitle>
-          </CardHeader>
-          <CardContent className='pt-0 text-xs text-muted-foreground'>Off track</CardContent>
-        </Card>
+      <section className='grid gap-3 md:grid-cols-2 xl:grid-cols-4'>
+        {[
+          {
+            key: 'all' as HealthFilter,
+            label: 'Active Goals',
+            value: summary.total,
+            helper: 'All goals in cycle',
+            icon: Target,
+            tone: 'text-white',
+          },
+          {
+            key: 'on_track' as HealthFilter,
+            label: 'On Track',
+            value: summary.onTrack,
+            helper: 'Healthy execution pace',
+            icon: CheckCircle2,
+            tone: 'text-emerald-300',
+          },
+          {
+            key: 'at_risk' as HealthFilter,
+            label: 'At Risk',
+            value: summary.atRisk,
+            helper: 'Needs management attention',
+            icon: AlertTriangle,
+            tone: 'text-amber-300',
+          },
+          {
+            key: 'off_track' as HealthFilter,
+            label: 'Off Track',
+            value: summary.offTrack,
+            helper: 'Intervention required',
+            icon: Flag,
+            tone: 'text-rose-300',
+          },
+        ].map((item) => {
+          const Icon = item.icon
+          const active = healthFilter === item.key
+          return (
+            <button
+              key={item.label}
+              type='button'
+              onClick={() => setHealthFilter(item.key)}
+              className={cn(
+                'group rounded-2xl border p-0 text-left transition duration-200',
+                active ? 'border-cyan-400/40 bg-cyan-400/10' : 'border-white/10 bg-card hover:border-white/20',
+              )}
+            >
+              <div className='flex items-center justify-between p-4'>
+                <div>
+                  <p className='text-xs uppercase tracking-[0.22em] text-muted-foreground'>{item.label}</p>
+                  <p className={cn('mt-3 text-3xl font-semibold tracking-tight', item.tone)}>{item.value}</p>
+                  <p className='mt-1 text-xs text-muted-foreground'>{item.helper}</p>
+                </div>
+                <div className={cn('rounded-2xl border border-white/10 bg-white/[0.04] p-3 transition group-hover:bg-white/[0.07]', active ? 'text-cyan-200' : 'text-muted-foreground')}>
+                  <Icon className='h-5 w-5' />
+                </div>
+              </div>
+            </button>
+          )
+        })}
       </section>
 
-      <section className='grid gap-4 xl:grid-cols-[1.35fr_1fr]'>
-        <div className={cn('space-y-4', onboardingTarget === 'main' ? 'rounded-lg ring-2 ring-primary/50' : null)}>
-          <Card>
-            <CardContent className='flex flex-wrap items-center gap-2 p-3'>
-              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder='Search goals, owner, department' className='min-w-[220px] flex-1' />
-              <select value={viewFilter} onChange={(event) => setViewFilter(event.target.value as GoalViewFilter)} className='h-10 rounded-md border border-input bg-background px-3 text-sm'>
-                <option value='all'>All Goals</option>
-                <option value='mine'>My Goals</option>
-                <option value='department'>Department Goals</option>
-                <option value='at_risk'>At Risk</option>
-                <option value='unowned'>Unowned / No check-in</option>
-              </select>
-              <Button size='sm' variant='outline' onClick={() => window.dispatchEvent(new CustomEvent('contas:realtime-change', { detail: { table: 'goals', eventType: 'manual' } }))}>
-                <RefreshCw className='mr-1.5 h-4 w-4' />
-                Refresh
-              </Button>
+      <section className='grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_360px]'>
+        <div className={cn('space-y-4', onboardingTarget === 'main' ? 'rounded-2xl ring-2 ring-cyan-400/35' : null)}>
+          <Card className='border-white/10 bg-card'>
+            <CardContent className='space-y-4 p-4'>
+              <div className='flex flex-col gap-3 lg:flex-row lg:items-center'>
+                <div className='relative flex-1'>
+                  <Search className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
+                  <Input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder='Search goals, owners, departments, or milestones'
+                    className='h-11 rounded-xl border-white/10 bg-background/60 pl-9'
+                  />
+                </div>
+                <Button
+                  size='sm'
+                  variant='outline'
+                  className='h-11 rounded-xl border-white/10 bg-background/50 px-4'
+                  onClick={() => window.dispatchEvent(new CustomEvent('contas:realtime-change', { detail: { table: 'goals', eventType: 'manual' } }))}
+                >
+                  <RefreshCw className='mr-1.5 h-4 w-4' />
+                  Sync
+                </Button>
+              </div>
+
+              <div className='flex flex-wrap gap-2'>
+                {[
+                  { key: 'all' as OwnerFilter, label: 'All owners' },
+                  { key: 'mine' as OwnerFilter, label: 'My goals' },
+                  { key: 'unowned' as OwnerFilter, label: 'Unowned' },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type='button'
+                    onClick={() => setOwnerFilter(item.key)}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-xs transition',
+                      ownerFilter === item.key ? 'border-cyan-400/35 bg-cyan-400/12 text-cyan-100' : 'border-white/10 bg-background text-muted-foreground hover:border-white/20 hover:text-foreground',
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className='space-y-2'>
+                <p className='text-[11px] uppercase tracking-[0.24em] text-muted-foreground'>Department</p>
+                <div className='flex flex-wrap gap-2'>
+                  <button
+                    type='button'
+                    onClick={() => setDepartmentFilter('all')}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-xs transition',
+                      departmentFilter === 'all' ? 'border-cyan-400/35 bg-cyan-400/12 text-cyan-100' : 'border-white/10 bg-background text-muted-foreground hover:border-white/20 hover:text-foreground',
+                    )}
+                  >
+                    All departments
+                  </button>
+                  {highlightedDepartments.map((department) => (
+                    <button
+                      key={department}
+                      type='button'
+                      onClick={() => setDepartmentFilter(department)}
+                      className={cn(
+                        'rounded-full border px-3 py-1.5 text-xs transition',
+                        departmentFilter === department ? 'border-cyan-400/35 bg-cyan-400/12 text-cyan-100' : 'border-white/10 bg-background text-muted-foreground hover:border-white/20 hover:text-foreground',
+                      )}
+                    >
+                      {department}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </CardContent>
           </Card>
 
-          {loading ? <p className='text-sm text-muted-foreground'>Loading goals...</p> : null}
+          <div className='flex items-center justify-between px-1'>
+            <div>
+              <p className='text-sm font-semibold text-foreground'>Goal portfolio</p>
+              <p className='text-xs text-muted-foreground'>
+                {filteredGoals.length} goal{filteredGoals.length === 1 ? '' : 's'} matching current filters
+              </p>
+            </div>
+            {loading ? <p className='text-xs text-muted-foreground'>Refreshing data...</p> : null}
+          </div>
 
-          {(['on_track', 'at_risk', 'off_track'] as GoalHealth[]).map((groupKey) => {
-            const groupGoals = groupedGoals[groupKey]
-            return (
-              <Card key={groupKey}>
-                <CardHeader className='pb-2'>
-                  <CardTitle className='text-base'>{formatHealthLabel(groupKey)}</CardTitle>
-                </CardHeader>
-                <CardContent className='space-y-3'>
-                  {groupGoals.length === 0 ? <p className='text-sm text-muted-foreground'>No goals in this group.</p> : null}
-                  {groupGoals.map((goal) => {
-                    const owner = goal.owner_id ? profileById.get(goal.owner_id) : null
-                    const derived = derivedByGoal.get(goal.id)
-                    const goalKrs = keyResults.filter((kr) => kr.goal_id === goal.id)
-                    const goalLinks = links.filter((link) => link.goal_id === goal.id)
-                    const krDraft = krDraftByGoal[goal.id] ?? { title: '', metricType: 'number' as MetricType, target: '100', source: 'manual' as KrSource }
-                    const checkinDraft = checkinDraftByGoal[goal.id] ?? { blockers: '', nextActions: '', confidence: '' }
-                    const linkDraft = linkDraftByGoal[goal.id] ?? { linkType: 'project' as LinkType, targetId: '' }
+          <div className='grid gap-3'>
+            {!loading && filteredGoals.length === 0 ? (
+              <Card className='border-dashed border-white/10 bg-card'>
+                <CardContent className='flex min-h-[180px] flex-col items-center justify-center gap-2 text-center'>
+                  <Target className='h-8 w-8 text-muted-foreground' />
+                  <p className='text-sm font-medium text-foreground'>No goals match these filters</p>
+                  <p className='max-w-sm text-xs text-muted-foreground'>Try broadening the owner or department chips, or switch the KPI filter back to Active Goals.</p>
+                </CardContent>
+              </Card>
+            ) : null}
 
-                    return (
-                      <article key={goal.id} className={cn('rounded-md border bg-muted/10 p-3', onboardingTarget === 'actions' ? 'ring-1 ring-primary/40' : null)}>
-                        <div className='flex flex-wrap items-start justify-between gap-3'>
-                          <div>
-                            <p className='text-sm font-semibold text-foreground'>{goal.title}</p>
-                            <p className='mt-1 text-xs text-muted-foreground'>
-                              <span className='inline-flex items-center gap-1.5'><UserRound className='h-3.5 w-3.5' />{owner?.full_name ?? 'Unowned'}</span>
-                              <span className='mx-2'>•</span>
-                              <span>{goal.department ?? owner?.department ?? 'No department'}</span>
-                            </p>
-                          </div>
-                          <div className='flex flex-wrap gap-2'>
-                            <Badge variant='outline' className={cn('capitalize', statusTone(goal.status))}>{formatStatusLabel(goal.status)}</Badge>
-                            <Badge variant='outline' className={cn(healthTone(derived?.autoHealth ?? goal.health))}>{formatHealthLabel(derived?.autoHealth ?? goal.health)}</Badge>
-                          </div>
+            {filteredGoals.map((goal) => {
+              const owner = goal.owner_id ? profileById.get(goal.owner_id) : null
+              const derived = derivedByGoal.get(goal.id)
+              const goalKrs = keyResultsByGoal.get(goal.id) ?? []
+              const effectiveHealth = derived?.autoHealth ?? goal.health
+              const active = selectedGoalId === goal.id
+              const confidence = goal.confidence ?? derived?.latestCheckin?.confidence ?? null
+              const goalDepartment = goal.department ?? owner?.department ?? 'No department'
+
+              return (
+                <article
+                  key={goal.id}
+                  className={cn(
+                    'rounded-2xl border bg-card transition',
+                    active ? 'border-cyan-400/35' : 'border-white/10 hover:border-white/20',
+                    onboardingTarget === 'actions' && active ? 'ring-2 ring-cyan-400/35' : null,
+                  )}
+                >
+                  <div className='p-4'>
+                    <div className='flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between'>
+                      <div className='space-y-3'>
+                        <div className='flex flex-wrap items-center gap-2'>
+                          <Badge variant='outline' className={cn('rounded-full', healthTone(effectiveHealth))}>
+                            {formatHealthLabel(effectiveHealth)}
+                          </Badge>
+                          <Badge variant='outline' className={cn('rounded-full', statusTone(goal.status))}>
+                            {formatStatusLabel(goal.status)}
+                          </Badge>
+                          {derived?.stale ? (
+                            <Badge variant='outline' className='rounded-full border-rose-500/30 bg-rose-500/10 text-rose-300'>
+                              Check-in overdue
+                            </Badge>
+                          ) : null}
                         </div>
 
-                        <div className='mt-3 space-y-1.5'>
-                          <div className='flex items-center justify-between text-xs'>
-                            <span className='text-muted-foreground'>Progress</span>
-                            <span className='font-medium text-foreground'>{derived?.progress ?? 0}%</span>
-                          </div>
-                          <div className='h-2 rounded-full bg-muted'>
-                            <div className='h-full rounded-full bg-primary transition-[width] duration-300' style={{ width: `${derived?.progress ?? 0}%` }} />
+                        <div>
+                          <h3 className='text-lg font-semibold tracking-tight text-foreground'>{goal.title}</h3>
+                          <div className='mt-2 flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground'>
+                            <span className='inline-flex items-center gap-1.5'>
+                              <UserRound className='h-3.5 w-3.5' /> {owner?.full_name ?? 'Unowned'}
+                            </span>
+                            <span className='inline-flex items-center gap-1.5'>
+                              <Building2 className='h-3.5 w-3.5' /> {goalDepartment}
+                            </span>
+                            <span className='inline-flex items-center gap-1.5'>
+                              <CalendarClock className='h-3.5 w-3.5' /> Next milestone {formatDateLabel(derived?.nextMilestone)}
+                            </span>
                           </div>
                         </div>
+                      </div>
 
-                        <div className='mt-3 flex flex-wrap items-center gap-2 text-xs'>
-                          <span className='inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-muted-foreground'>
-                            <Zap className='h-3.5 w-3.5' /> Confidence {goal.confidence ?? derived?.latestCheckin?.confidence ?? 'N/A'}/10
-                          </span>
-                          <span className='inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-muted-foreground'>
-                            <CalendarClock className='h-3.5 w-3.5' /> Next milestone {formatDateLabel(derived?.nextMilestone)}
-                          </span>
-                          <span className='inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-muted-foreground'>
-                            <Link2 className='h-3.5 w-3.5' /> {derived?.linkedProjects ?? 0} project links • {derived?.linkedTasks ?? 0} task links
-                          </span>
-                        </div>
+                      <div className='flex items-center gap-2'>
+                        <Button size='sm' variant='outline' className='rounded-xl border-white/10 bg-background' onClick={() => openGoalDetail(goal.id, 'overview')}>
+                          View Goal
+                        </Button>
+                        <Button size='sm' className='rounded-xl' onClick={() => openGoalDetail(goal.id, 'checkin')}>
+                          Update Check-in
+                        </Button>
+                      </div>
+                    </div>
 
-                        <div className='mt-3 grid gap-2 md:grid-cols-3'>
-                          <div className='rounded-md border p-2'>
-                            <p className='mb-1 text-xs font-semibold text-foreground'>Update progress</p>
-                            {goalKrs.length === 0 ? <p className='text-xs text-muted-foreground'>No key results yet.</p> : null}
-                            <div className='space-y-1.5'>
-                              {goalKrs.slice(0, 3).map((kr) => (
-                                <div key={kr.id} className='flex items-center gap-2'>
-                                  <p className='line-clamp-1 flex-1 text-xs text-muted-foreground'>{kr.title}</p>
-                                  <Input
-                                    type='number'
-                                    defaultValue={safeNumber(kr.current_value)}
-                                    className='h-7 w-20 text-xs'
-                                    onBlur={(event) => void updateKrCurrent(kr.id, event.target.value)}
-                                    disabled={kr.source === 'auto'}
-                                  />
-                                </div>
-                              ))}
+                    <div className='mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_340px]'>
+                      <div className='space-y-4'>
+                        <div className='rounded-2xl border border-white/10 bg-background p-4'>
+                          <div className='flex items-end justify-between gap-3'>
+                            <div>
+                              <p className='text-xs uppercase tracking-[0.22em] text-muted-foreground'>Progress</p>
+                              <p className='mt-1 text-3xl font-semibold tracking-tight text-foreground'>{derived?.progress ?? 0}%</p>
+                            </div>
+                            <div className='grid grid-cols-2 gap-2 text-xs text-muted-foreground'>
+                              <div className='rounded-xl border border-white/10 bg-muted/20 px-3 py-2'>
+                                <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Confidence</p>
+                                <p className='mt-1 text-sm font-medium text-foreground'>{confidence ? `${confidence}/10` : 'N/A'}</p>
+                              </div>
+                              <div className='rounded-xl border border-white/10 bg-muted/20 px-3 py-2'>
+                                <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Linked work</p>
+                                <p className='mt-1 text-sm font-medium text-foreground'>
+                                  {derived?.linkedProjects ?? 0} proj / {derived?.linkedTasks ?? 0} tasks
+                                </p>
+                              </div>
                             </div>
                           </div>
-
-                          <div className='rounded-md border p-2'>
-                            <p className='mb-1 text-xs font-semibold text-foreground'>Add check-in</p>
-                            <Input
-                              value={checkinDraft.confidence}
-                              onChange={(event) =>
-                                setCheckinDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...checkinDraft, confidence: event.target.value },
-                                }))
-                              }
-                              placeholder='Confidence (1-10)'
-                              type='number'
-                              min={1}
-                              max={10}
-                              className='mb-1 h-7 text-xs'
+                          <div className='mt-3 h-3 rounded-full bg-muted/50'>
+                            <div
+                              className={cn('h-full rounded-full transition-[width] duration-300', progressBarTone(effectiveHealth))}
+                              style={{ width: `${derived?.progress ?? 0}%` }}
                             />
-                            <textarea
-                              value={checkinDraft.blockers}
-                              onChange={(event) =>
-                                setCheckinDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...checkinDraft, blockers: event.target.value },
-                                }))
-                              }
-                              rows={2}
-                              placeholder='Blockers'
-                              className='mb-1 w-full rounded-md border border-input bg-background px-2 py-1 text-xs'
-                            />
-                            <textarea
-                              value={checkinDraft.nextActions}
-                              onChange={(event) =>
-                                setCheckinDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...checkinDraft, nextActions: event.target.value },
-                                }))
-                              }
-                              rows={2}
-                              placeholder='Next actions'
-                              className='mb-1 w-full rounded-md border border-input bg-background px-2 py-1 text-xs'
-                            />
-                            <Button size='sm' variant='outline' className='h-7 text-xs' onClick={() => void addCheckin(goal.id)}>
-                              Add check-in
-                            </Button>
-                          </div>
-
-                          <div className='rounded-md border p-2'>
-                            <p className='mb-1 text-xs font-semibold text-foreground'>View linked work</p>
-                            <div className='mb-1 flex gap-1'>
-                              <select
-                                value={linkDraft.linkType}
-                                onChange={(event) =>
-                                  setLinkDraftByGoal((current) => ({
-                                    ...current,
-                                    [goal.id]: { linkType: event.target.value as LinkType, targetId: '' },
-                                  }))
-                                }
-                                className='h-7 flex-1 rounded-md border border-input bg-background px-2 text-xs'
-                              >
-                                <option value='project'>Project</option>
-                                <option value='task'>Task</option>
-                              </select>
-                              <select
-                                value={linkDraft.targetId}
-                                onChange={(event) =>
-                                  setLinkDraftByGoal((current) => ({
-                                    ...current,
-                                    [goal.id]: { ...linkDraft, targetId: event.target.value },
-                                  }))
-                                }
-                                className='h-7 flex-[2] rounded-md border border-input bg-background px-2 text-xs'
-                              >
-                                <option value=''>Select</option>
-                                {(linkDraft.linkType === 'project' ? projects : tasks).map((item) => (
-                                  <option key={item.id} value={item.id}>
-                                    {'name' in item ? item.name ?? 'Untitled project' : item.title ?? 'Untitled task'}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <Button size='sm' variant='outline' className='mb-1 h-7 text-xs' onClick={() => void addLink(goal.id)}>
-                              Link
-                            </Button>
-                            <p className='text-xs text-muted-foreground'>
-                              {goalLinks.length} link(s)
-                            </p>
                           </div>
                         </div>
 
-                        <div className='mt-3 rounded-md border p-2'>
-                          <p className='mb-1 text-xs font-semibold text-foreground'>Key Results</p>
-                          <div className='mb-2 grid gap-1 md:grid-cols-[1.5fr_1fr_1fr_1fr_auto]'>
-                            <Input
-                              value={krDraft.title}
-                              onChange={(event) =>
-                                setKrDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...krDraft, title: event.target.value },
-                                }))
-                              }
-                              placeholder='KR title'
-                              className='h-7 text-xs'
-                            />
-                            <select
-                              value={krDraft.metricType}
-                              onChange={(event) =>
-                                setKrDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...krDraft, metricType: event.target.value as MetricType },
-                                }))
-                              }
-                              className='h-7 rounded-md border border-input bg-background px-2 text-xs'
-                            >
-                              <option value='percentage'>Percentage</option>
-                              <option value='number'>Number</option>
-                              <option value='currency'>Currency</option>
-                              <option value='boolean'>Boolean milestone</option>
-                            </select>
-                            <Input
-                              value={krDraft.target}
-                              onChange={(event) =>
-                                setKrDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...krDraft, target: event.target.value },
-                                }))
-                              }
-                              placeholder='Target'
-                              type='number'
-                              className='h-7 text-xs'
-                            />
-                            <select
-                              value={krDraft.source}
-                              onChange={(event) =>
-                                setKrDraftByGoal((current) => ({
-                                  ...current,
-                                  [goal.id]: { ...krDraft, source: event.target.value as KrSource },
-                                }))
-                              }
-                              className='h-7 rounded-md border border-input bg-background px-2 text-xs'
-                            >
-                              <option value='manual'>Manual</option>
-                              <option value='auto'>Auto</option>
-                            </select>
-                            <Button size='sm' variant='outline' className='h-7 text-xs' onClick={() => void addKeyResult(goal.id)}>
-                              Add KR
-                            </Button>
+                        <div className='grid gap-2'>
+                          <div className='flex items-center justify-between'>
+                            <p className='text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground'>Key results</p>
+                            <p className='text-xs text-muted-foreground'>{goalKrs.length} linked outcome metric{goalKrs.length === 1 ? '' : 's'}</p>
                           </div>
-
-                          <div className='space-y-1'>
-                            {goalKrs.length === 0 ? <p className='text-xs text-muted-foreground'>No KRs yet.</p> : null}
-                            {goalKrs.map((kr) => {
+                          <div className='grid gap-2'>
+                            {goalKrs.length === 0 ? (
+                              <div className='rounded-2xl border border-dashed border-white/10 bg-background px-4 py-3 text-xs text-muted-foreground'>
+                                No KRs attached yet. Add them from the goal detail workspace.
+                              </div>
+                            ) : null}
+                            {goalKrs.slice(0, 3).map((kr) => {
                               const krProgress = calculateKrProgress(kr)
                               return (
-                                <div key={kr.id} className='flex items-center justify-between gap-2 rounded-md border bg-background/40 px-2 py-1.5'>
-                                  <div>
-                                    <p className='text-xs font-medium text-foreground'>{kr.title}</p>
-                                    <p className='text-[11px] text-muted-foreground'>
-                                      {kr.metric_type} • {safeNumber(kr.current_value)} / {safeNumber(kr.target_value)} • {kr.source}
-                                    </p>
+                                <div key={kr.id} className='grid gap-3 rounded-2xl border border-white/10 bg-background px-4 py-3 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] md:items-center'>
+                                  <div className='min-w-0'>
+                                    <p className='truncate text-sm font-medium text-foreground'>{kr.title}</p>
+                                    <p className='mt-1 text-xs text-muted-foreground'>{metricTypeLabel(kr.metric_type)} KR</p>
                                   </div>
-                                  <Badge variant='outline' className='text-[11px]'>
-                                    {krProgress}%
+                                  <p className='text-xs text-muted-foreground'>
+                                    {formatMetricValue(kr.current_value, kr.metric_type, kr.unit)} / {formatMetricValue(kr.target_value, kr.metric_type, kr.unit)}
+                                  </p>
+                                  <p className='text-xs text-muted-foreground'>{krProgress}% complete</p>
+                                  <Badge variant='outline' className='w-fit rounded-full border-white/10 bg-background text-[11px] text-muted-foreground'>
+                                    {kr.source === 'auto' ? 'Auto' : 'Manual'}
                                   </Badge>
                                 </div>
                               )
                             })}
                           </div>
                         </div>
-                      </article>
-                    )
-                  })}
-                </CardContent>
-              </Card>
-            )
-          })}
+                      </div>
+
+                      <div className='space-y-3'>
+                        <div className='rounded-2xl border border-white/10 bg-background p-4'>
+                          <p className='text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground'>Execution footprint</p>
+                          <div className='mt-3 grid gap-2'>
+                            <div className='flex items-center justify-between rounded-xl border border-white/10 bg-muted/20 px-3 py-2'>
+                              <span className='inline-flex items-center gap-2 text-sm text-foreground'>
+                                <FolderKanban className='h-4 w-4 text-cyan-200' /> Projects
+                              </span>
+                              <span className='text-sm font-medium text-foreground'>{derived?.linkedProjects ?? 0}</span>
+                            </div>
+                            <div className='flex items-center justify-between rounded-xl border border-white/10 bg-muted/20 px-3 py-2'>
+                              <span className='inline-flex items-center gap-2 text-sm text-foreground'>
+                                <Link2 className='h-4 w-4 text-cyan-200' /> Tasks
+                              </span>
+                              <span className='text-sm font-medium text-foreground'>{derived?.linkedTasks ?? 0}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className='rounded-2xl border border-white/10 bg-background p-4'>
+                          <div className='flex items-center justify-between'>
+                            <p className='text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground'>Latest signal</p>
+                            <span className='text-xs text-muted-foreground'>{formatRelativeTime(derived?.latestCheckin?.created_at)}</span>
+                          </div>
+                          <div className='mt-3 space-y-2 text-sm text-muted-foreground'>
+                            {derived?.blockers.length ? derived.blockers.map((blocker, index) => (
+                              <div key={`${goal.id}-blocker-${index}`} className='rounded-xl border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-amber-100'>
+                                {blocker}
+                              </div>
+                            )) : (
+                              <div className='rounded-xl border border-white/10 bg-muted/20 px-3 py-2 text-muted-foreground'>No active blockers in recent check-ins.</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
         </div>
 
-        <div className={cn('space-y-4', onboardingTarget === 'rail' ? 'rounded-lg ring-2 ring-primary/50' : null)}>
-          <Card>
+        <div className={cn('space-y-4 xl:sticky xl:top-4 xl:self-start', onboardingTarget === 'rail' ? 'rounded-2xl ring-2 ring-cyan-400/35' : null)}>
+          <Card className='border-white/10 bg-card'>
             <CardHeader className='pb-2'>
               <CardTitle className='text-base'>Needs attention</CardTitle>
             </CardHeader>
-            <CardContent className='space-y-2'>
-              {needsAttention.length === 0 ? <p className='text-sm text-muted-foreground'>No critical goal alerts.</p> : null}
+            <CardContent className='space-y-3'>
+              {needsAttention.length === 0 ? <p className='text-sm text-muted-foreground'>No critical goal alerts in this cycle.</p> : null}
               {needsAttention.map((item) => (
-                <article key={item.goal.id} className='rounded-md border bg-muted/10 p-2'>
-                  <p className='text-sm font-medium text-foreground'>{item.goal.title}</p>
-                  <div className='mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
+                <button
+                  key={item.goal.id}
+                  type='button'
+                  onClick={() => openGoalDetail(item.goal.id, 'overview')}
+                  className='w-full rounded-2xl border border-white/10 bg-background p-3 text-left transition hover:border-white/20'
+                >
+                  <div className='flex items-start justify-between gap-3'>
+                    <div>
+                      <p className='text-sm font-medium text-foreground'>{item.goal.title}</p>
+                      <p className='mt-1 text-xs text-muted-foreground'>
+                        {(item.goal.owner_id ? profileById.get(item.goal.owner_id)?.full_name : null) ?? 'Unowned'} • {item.goal.department ?? 'No department'}
+                      </p>
+                    </div>
+                    <ArrowRight className='mt-0.5 h-4 w-4 text-slate-400' />
+                  </div>
+                  <div className='mt-3 flex flex-wrap gap-2 text-xs'>
                     {item.derived?.overdueKrCount ? (
-                      <span className='inline-flex items-center gap-1.5 text-amber-400'>
-                        <AlertTriangle className='h-3.5 w-3.5' /> {item.derived.overdueKrCount} overdue KR(s)
+                      <span className='inline-flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-amber-200'>
+                        <AlertTriangle className='h-3.5 w-3.5' /> {item.derived.overdueKrCount} overdue KR{item.derived.overdueKrCount === 1 ? '' : 's'}
                       </span>
                     ) : null}
                     {item.derived?.stale ? (
-                      <span className='inline-flex items-center gap-1.5 text-rose-400'>
+                      <span className='inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-rose-200'>
                         <Flag className='h-3.5 w-3.5' /> stale check-in
                       </span>
                     ) : null}
                     {item.derived?.autoHealth === 'off_track' ? (
-                      <span className='inline-flex items-center gap-1.5 text-rose-400'>
+                      <span className='inline-flex items-center gap-1.5 rounded-full border border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-rose-200'>
                         <TrendingUp className='h-3.5 w-3.5' /> off track
                       </span>
                     ) : null}
                   </div>
-                </article>
+                </button>
               ))}
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className='border-white/10 bg-card'>
             <CardHeader className='pb-2'>
               <CardTitle className='text-base'>Recent updates</CardTitle>
             </CardHeader>
-            <CardContent className='space-y-2'>
-              {recentUpdates.length === 0 ? <p className='text-sm text-muted-foreground'>No check-ins yet.</p> : null}
-              {recentUpdates.map((item) => (
-                <article key={item.checkin.id} className='rounded-md border bg-muted/10 p-2'>
-                  <p className='text-xs font-medium text-foreground'>{item.goal?.title ?? 'Unknown goal'}</p>
-                  <p className='mt-1 text-xs text-muted-foreground'>
-                    {(item.author?.full_name ?? 'Unknown user')} • {new Date(item.checkin.created_at).toLocaleString()}
-                  </p>
-                  {item.checkin.blockers ? (
-                    <p className='mt-1 line-clamp-2 text-xs text-amber-400'>Blockers: {item.checkin.blockers}</p>
-                  ) : null}
-                  {item.checkin.next_actions ? (
-                    <p className='mt-1 line-clamp-2 text-xs text-muted-foreground'>Next: {item.checkin.next_actions}</p>
-                  ) : null}
-                </article>
+            <CardContent className='space-y-0'>
+              {recentUpdates.length === 0 ? <p className='pb-3 text-sm text-muted-foreground'>No check-ins yet.</p> : null}
+              {recentUpdates.map((item, index) => (
+                <button
+                  key={item.checkin.id}
+                  type='button'
+                  onClick={() => item.goal && openGoalDetail(item.goal.id, 'checkin')}
+                  className='flex w-full gap-3 py-3 text-left'
+                >
+                  <div className='flex w-5 flex-col items-center'>
+                    <span className='mt-1 h-2.5 w-2.5 rounded-full bg-cyan-300' />
+                    {index < recentUpdates.length - 1 ? <span className='mt-1 h-full w-px bg-white/10' /> : null}
+                  </div>
+                  <div className='min-w-0 flex-1 border-b border-white/6 pb-3'>
+                    <div className='flex items-start justify-between gap-3'>
+                      <div>
+                        <p className='text-sm font-medium text-foreground'>{item.goal?.title ?? 'Unknown goal'}</p>
+                        <p className='mt-1 text-xs text-muted-foreground'>
+                          {item.author?.full_name ?? 'Unknown user'} • {formatDateTimeLabel(item.checkin.created_at)}
+                        </p>
+                      </div>
+                      <span className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>{formatRelativeTime(item.checkin.created_at)}</span>
+                    </div>
+                    {item.checkin.blockers ? <p className='mt-2 line-clamp-2 text-xs text-amber-300'>Blockers: {item.checkin.blockers}</p> : null}
+                    {item.checkin.next_actions ? <p className='mt-1 line-clamp-2 text-xs text-muted-foreground'>Next: {item.checkin.next_actions}</p> : null}
+                  </div>
+                </button>
               ))}
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className='border-white/10 bg-card'>
             <CardHeader className='pb-2'>
               <CardTitle className='text-base'>Goal rituals</CardTitle>
             </CardHeader>
-            <CardContent className='space-y-2 text-xs text-muted-foreground'>
-              <p className='inline-flex items-center gap-1.5'><CheckCircle2 className='h-3.5 w-3.5 text-emerald-400' /> Weekly owner check-ins required</p>
-              <p className='inline-flex items-center gap-1.5'><AlertTriangle className='h-3.5 w-3.5 text-amber-400' /> Alerts when KR pace drops</p>
-              <p className='inline-flex items-center gap-1.5'><Target className='h-3.5 w-3.5 text-sky-400' /> Link execution work to outcomes</p>
+            <CardContent className='space-y-3'>
+              <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                <p className='text-xs uppercase tracking-[0.22em] text-cyan-200'>Monday</p>
+                <p className='mt-1 text-sm font-medium text-foreground'>Owner check-ins due</p>
+                <p className='mt-1 text-xs text-muted-foreground'>Capture confidence, blockers, and next actions in the goal detail view.</p>
+              </div>
+              <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                <p className='text-xs uppercase tracking-[0.22em] text-amber-200'>Wednesday</p>
+                <p className='mt-1 text-sm font-medium text-foreground'>Portfolio review</p>
+                <p className='mt-1 text-xs text-muted-foreground'>Use Needs attention to escalate stale or off-track goals before leadership review.</p>
+              </div>
+              <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                <p className='text-xs uppercase tracking-[0.22em] text-emerald-200'>Friday</p>
+                <p className='mt-1 text-sm font-medium text-foreground'>Link work to outcomes</p>
+                <p className='mt-1 text-xs text-muted-foreground'>Confirm active projects and tasks remain connected to strategic goals.</p>
+              </div>
             </CardContent>
           </Card>
         </div>
       </section>
 
+      <Dialog open={Boolean(selectedGoal)} onOpenChange={(open) => (!open ? setSelectedGoalId(null) : undefined)}>
+        <DialogContent
+          className='left-auto right-0 top-0 h-screen max-h-screen w-[min(760px,100vw)] max-w-none translate-x-0 translate-y-0 rounded-none border-l border-white/10 bg-card p-0'
+          showClose
+        >
+          {selectedGoal ? (
+            <div className='flex h-full min-h-0 flex-col'>
+              <DialogHeader className='border-b border-white/10 px-4 py-3'>
+                <div className='flex items-start justify-between gap-4 pr-8'>
+                  <div className='space-y-2'>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <Badge variant='outline' className={cn('rounded-full', healthTone(selectedGoalDerived?.autoHealth ?? selectedGoal.health))}>
+                        {formatHealthLabel(selectedGoalDerived?.autoHealth ?? selectedGoal.health)}
+                      </Badge>
+                      <Badge variant='outline' className={cn('rounded-full', statusTone(selectedGoal.status))}>
+                        {formatStatusLabel(selectedGoal.status)}
+                      </Badge>
+                      <Badge variant='outline' className='rounded-full border-white/10 bg-white/[0.04] text-muted-foreground'>
+                        {activeCycle}
+                      </Badge>
+                    </div>
+                    <DialogTitle className='text-lg tracking-tight text-foreground'>{selectedGoal.title}</DialogTitle>
+                    <DialogDescription className='max-w-2xl text-sm text-muted-foreground'>
+                      {selectedGoal.description?.trim() || 'Use this workspace to update outcomes, capture weekly check-ins, and manage linked execution work.'}
+                    </DialogDescription>
+                  </div>
+                </div>
+                <div className='mt-2 flex flex-wrap gap-2'>
+                  <button
+                    type='button'
+                    onClick={() => setDetailMode('overview')}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-xs transition',
+                      detailMode === 'overview' ? 'border-cyan-400/35 bg-cyan-400/12 text-cyan-100' : 'border-white/10 bg-background/40 text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    Goal overview
+                  </button>
+                  <button
+                    type='button'
+                    onClick={() => setDetailMode('checkin')}
+                    className={cn(
+                      'rounded-full border px-3 py-1.5 text-xs transition',
+                      detailMode === 'checkin' ? 'border-cyan-400/35 bg-cyan-400/12 text-cyan-100' : 'border-white/10 bg-background/40 text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    Update check-in
+                  </button>
+                </div>
+              </DialogHeader>
+
+              <div className='min-h-0 flex-1 overflow-y-auto px-4 py-3'>
+                <div className='grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_260px]'>
+                  <div className='space-y-3'>
+                    <Card className='border-white/10 bg-card'>
+                      <CardContent className='space-y-3 p-3'>
+                        <div className='grid gap-2 md:grid-cols-3'>
+                          <div className='rounded-2xl border border-white/10 bg-background p-3 md:col-span-2'>
+                            <p className='text-[11px] uppercase tracking-[0.2em] text-muted-foreground'>Progress</p>
+                            <p className='mt-1 text-2xl font-semibold text-foreground'>{selectedGoalDerived?.progress ?? 0}%</p>
+                            <div className='mt-2 h-2.5 rounded-full bg-muted/50'>
+                              <div
+                                className={cn('h-full rounded-full', progressBarTone(selectedGoalDerived?.autoHealth ?? selectedGoal.health))}
+                                style={{ width: `${selectedGoalDerived?.progress ?? 0}%` }}
+                              />
+                            </div>
+                          </div>
+                          <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                            <p className='text-[11px] uppercase tracking-[0.2em] text-muted-foreground'>Confidence</p>
+                            <p className='mt-1 text-base font-semibold text-foreground'>
+                              {selectedGoal.confidence ?? selectedGoalDerived?.latestCheckin?.confidence ?? 'N/A'}
+                              {selectedGoal.confidence ?? selectedGoalDerived?.latestCheckin?.confidence ? '/10' : ''}
+                            </p>
+                          </div>
+                          <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                            <p className='text-[11px] uppercase tracking-[0.2em] text-muted-foreground'>Next milestone</p>
+                            <p className='mt-1 text-base font-semibold text-foreground'>{formatDateLabel(selectedGoalDerived?.nextMilestone)}</p>
+                          </div>
+                        </div>
+
+                        <div className='grid gap-2 md:grid-cols-3'>
+                          <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                            <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Owner</p>
+                            <p className='mt-1 text-sm font-medium text-foreground'>{selectedGoalOwner?.full_name ?? 'Unowned'}</p>
+                          </div>
+                          <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                            <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Department</p>
+                            <p className='mt-1 text-sm font-medium text-foreground'>{selectedGoal.department ?? selectedGoalOwner?.department ?? 'No department'}</p>
+                          </div>
+                          <div className='rounded-2xl border border-white/10 bg-background p-3'>
+                            <p className='text-[11px] uppercase tracking-[0.18em] text-muted-foreground'>Latest update</p>
+                            <p className='mt-1 text-sm font-medium text-foreground'>{formatRelativeTime(selectedGoalDerived?.latestCheckin?.created_at)}</p>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card className='border-white/10 bg-card'>
+                      <CardHeader className='border-b border-white/10 pb-3'>
+                        <CardTitle className='text-base'>Key results</CardTitle>
+                      </CardHeader>
+                      <CardContent className='space-y-2 p-3'>
+                        {selectedGoalKrs.length === 0 ? <p className='text-sm text-muted-foreground'>No KRs yet for this goal.</p> : null}
+                        {selectedGoalKrs.map((kr) => {
+                          const krProgress = calculateKrProgress(kr)
+                          return (
+                            <div key={kr.id} className='rounded-2xl border border-white/10 bg-background p-3'>
+                              <div className='flex flex-wrap items-start justify-between gap-3'>
+                                <div>
+                                  <p className='text-sm font-medium text-foreground'>{kr.title}</p>
+                                  <p className='mt-1 text-xs text-muted-foreground'>
+                                    {metricTypeLabel(kr.metric_type)} • {kr.cadence} cadence • {kr.source === 'auto' ? 'Auto tracked' : 'Manual update'}
+                                  </p>
+                                </div>
+                                <Badge variant='outline' className='rounded-full border-white/10 bg-background text-muted-foreground'>
+                                  {krProgress}% complete
+                                </Badge>
+                              </div>
+                              <div className='mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_130px]'>
+                                <div className='rounded-xl border border-white/10 bg-muted/20 px-3 py-2 text-xs text-muted-foreground'>
+                                  Current {formatMetricValue(kr.current_value, kr.metric_type, kr.unit)} of {formatMetricValue(kr.target_value, kr.metric_type, kr.unit)}
+                                </div>
+                                <Input
+                                  type='number'
+                                  defaultValue={safeNumber(kr.current_value)}
+                                  className='h-10 rounded-xl border-white/10 bg-background text-sm'
+                                  onBlur={(event) => void updateKrCurrent(kr.id, event.target.value)}
+                                  disabled={kr.source === 'auto'}
+                                />
+                              </div>
+                            </div>
+                          )
+                        })}
+
+                        {selectedKrDraft ? (
+                          <div className='rounded-2xl border border-dashed border-white/10 bg-background p-3'>
+                            <p className='text-sm font-medium text-foreground'>Add key result</p>
+                            <div className='mt-2 grid gap-2 md:grid-cols-[minmax(0,1.5fr)_1fr_1fr_1fr_auto]'>
+                              <Input
+                                value={selectedKrDraft.title}
+                                onChange={(event) =>
+                                  setKrDraftByGoal((current) => ({
+                                    ...current,
+                                    [selectedGoal.id]: { ...selectedKrDraft, title: event.target.value },
+                                  }))
+                                }
+                                placeholder='KR title'
+                                className='h-10 rounded-xl border-white/10 bg-background'
+                              />
+                              <select
+                                value={selectedKrDraft.metricType}
+                                onChange={(event) =>
+                                  setKrDraftByGoal((current) => ({
+                                    ...current,
+                                    [selectedGoal.id]: { ...selectedKrDraft, metricType: event.target.value as MetricType },
+                                  }))
+                                }
+                                className='h-10 rounded-xl border border-white/10 bg-background px-3 text-sm'
+                              >
+                                <option value='percentage'>Percentage</option>
+                                <option value='number'>Number</option>
+                                <option value='currency'>Currency</option>
+                                <option value='boolean'>Boolean milestone</option>
+                              </select>
+                              <Input
+                                value={selectedKrDraft.target}
+                                onChange={(event) =>
+                                  setKrDraftByGoal((current) => ({
+                                    ...current,
+                                    [selectedGoal.id]: { ...selectedKrDraft, target: event.target.value },
+                                  }))
+                                }
+                                placeholder='Target'
+                                type='number'
+                                className='h-10 rounded-xl border-white/10 bg-background'
+                              />
+                              <select
+                                value={selectedKrDraft.source}
+                                onChange={(event) =>
+                                  setKrDraftByGoal((current) => ({
+                                    ...current,
+                                    [selectedGoal.id]: { ...selectedKrDraft, source: event.target.value as KrSource },
+                                  }))
+                                }
+                                className='h-10 rounded-xl border border-white/10 bg-background px-3 text-sm'
+                              >
+                                <option value='manual'>Manual</option>
+                                <option value='auto'>Auto</option>
+                              </select>
+                              <Button className='h-10 rounded-xl' onClick={() => void addKeyResult(selectedGoal.id)}>
+                                Add KR
+                              </Button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </CardContent>
+                    </Card>
+
+                    <Card className='border-white/10 bg-card'>
+                      <CardHeader className='border-b border-white/10 pb-3'>
+                        <CardTitle className='text-base'>Linked work</CardTitle>
+                      </CardHeader>
+                      <CardContent className='space-y-2 p-3'>
+                        {selectedLinkDraft ? (
+                          <div className='grid gap-2 md:grid-cols-[140px_minmax(0,1fr)_auto]'>
+                            <select
+                              value={selectedLinkDraft.linkType}
+                              onChange={(event) =>
+                                setLinkDraftByGoal((current) => ({
+                                  ...current,
+                                  [selectedGoal.id]: { linkType: event.target.value as LinkType, targetId: '' },
+                                }))
+                              }
+                              className='h-10 rounded-xl border border-white/10 bg-background px-3 text-sm'
+                            >
+                              <option value='project'>Project</option>
+                              <option value='task'>Task</option>
+                            </select>
+                            <select
+                              value={selectedLinkDraft.targetId}
+                              onChange={(event) =>
+                                setLinkDraftByGoal((current) => ({
+                                  ...current,
+                                  [selectedGoal.id]: { ...selectedLinkDraft, targetId: event.target.value },
+                                }))
+                              }
+                              className='h-10 rounded-xl border border-white/10 bg-background px-3 text-sm'
+                            >
+                              <option value=''>Select work item</option>
+                              {(selectedLinkDraft.linkType === 'project' ? projects : tasks).map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {'name' in item ? item.name ?? 'Untitled project' : item.title ?? 'Untitled task'}
+                                </option>
+                              ))}
+                            </select>
+                            <Button className='h-10 rounded-xl' variant='outline' onClick={() => void addLink(selectedGoal.id)}>
+                              Link
+                            </Button>
+                          </div>
+                        ) : null}
+
+                        <div className='grid gap-2'>
+                          {selectedGoalLinks.length === 0 ? <p className='text-sm text-muted-foreground'>No linked work yet.</p> : null}
+                          {selectedGoalLinks.map((link) => {
+                            const project = link.project_id ? projects.find((item) => item.id === link.project_id) : null
+                            const task = link.task_id ? tasks.find((item) => item.id === link.task_id) : null
+                            return (
+                              <div key={link.id} className='flex items-center justify-between rounded-2xl border border-white/10 bg-background px-3 py-2.5'>
+                                <div>
+                                  <p className='text-sm font-medium text-foreground'>{project?.name ?? task?.title ?? 'Unknown link'}</p>
+                                  <p className='mt-1 text-xs text-muted-foreground'>{link.link_type === 'project' ? 'Project' : 'Task'} link</p>
+                                </div>
+                                <Link2 className='h-4 w-4 text-cyan-200' />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className='space-y-3'>
+                    <Card className='border-white/10 bg-card'>
+                      <CardHeader className='border-b border-white/10 pb-3'>
+                        <CardTitle className='text-base'>{detailMode === 'checkin' ? 'Weekly check-in' : 'Decision support'}</CardTitle>
+                      </CardHeader>
+                      <CardContent className='space-y-2.5 p-3'>
+                        {selectedCheckinDraft ? (
+                          <>
+                            <Input
+                              value={selectedCheckinDraft.confidence}
+                              onChange={(event) =>
+                                setCheckinDraftByGoal((current) => ({
+                                  ...current,
+                                  [selectedGoal.id]: { ...selectedCheckinDraft, confidence: event.target.value },
+                                }))
+                              }
+                              placeholder='Confidence (1-10)'
+                              type='number'
+                              min={1}
+                              max={10}
+                              className='h-10 rounded-xl border-white/10 bg-background'
+                            />
+                            <textarea
+                              value={selectedCheckinDraft.blockers}
+                              onChange={(event) =>
+                                setCheckinDraftByGoal((current) => ({
+                                  ...current,
+                                  [selectedGoal.id]: { ...selectedCheckinDraft, blockers: event.target.value },
+                                }))
+                              }
+                              rows={3}
+                              placeholder='What is slowing this goal down?'
+                              className='w-full rounded-xl border border-white/10 bg-background px-3 py-2 text-sm text-foreground'
+                            />
+                            <textarea
+                              value={selectedCheckinDraft.nextActions}
+                              onChange={(event) =>
+                                setCheckinDraftByGoal((current) => ({
+                                  ...current,
+                                  [selectedGoal.id]: { ...selectedCheckinDraft, nextActions: event.target.value },
+                                }))
+                              }
+                              rows={3}
+                              placeholder='What happens next?'
+                              className='w-full rounded-xl border border-white/10 bg-background px-3 py-2 text-sm text-foreground'
+                            />
+                            <Button className='w-full rounded-xl' onClick={() => void addCheckin(selectedGoal.id)}>
+                              Save check-in
+                            </Button>
+                          </>
+                        ) : null}
+                      </CardContent>
+                    </Card>
+
+                    <Card className='border-white/10 bg-card'>
+                      <CardHeader className='border-b border-white/10 pb-3'>
+                        <CardTitle className='text-base'>Recent check-ins</CardTitle>
+                      </CardHeader>
+                      <CardContent className='space-y-2 p-3'>
+                        {selectedGoalCheckins.length === 0 ? <p className='text-sm text-muted-foreground'>No updates yet.</p> : null}
+                        {selectedGoalCheckins.slice(0, 6).map((checkin) => {
+                          const author = checkin.author_id ? profileById.get(checkin.author_id) : null
+                          return (
+                            <div key={checkin.id} className='rounded-2xl border border-white/10 bg-background p-2.5'>
+                              <div className='flex items-start justify-between gap-3'>
+                                <div>
+                                  <p className='text-sm font-medium text-foreground'>{author?.full_name ?? 'Unknown user'}</p>
+                                  <p className='mt-1 text-xs text-muted-foreground'>{formatDateTimeLabel(checkin.created_at)}</p>
+                                </div>
+                                <Badge variant='outline' className='rounded-full border-white/10 bg-white/[0.04] text-muted-foreground'>
+                                  {checkin.confidence ? `${checkin.confidence}/10 confidence` : 'No confidence score'}
+                                </Badge>
+                              </div>
+                              {checkin.blockers ? <p className='mt-2 text-xs text-amber-300'>Blockers: {checkin.blockers}</p> : null}
+                              {checkin.next_actions ? <p className='mt-2 text-xs text-muted-foreground'>Next: {checkin.next_actions}</p> : null}
+                            </div>
+                          )
+                        })}
+                      </CardContent>
+                    </Card>
+
+                    <Card className='border-white/10 bg-card'>
+                      <CardHeader className='border-b border-white/10 pb-3'>
+                        <CardTitle className='text-base'>Signals</CardTitle>
+                      </CardHeader>
+                      <CardContent className='space-y-2 p-3 text-sm text-muted-foreground'>
+                        <div className='flex items-center justify-between rounded-2xl border border-white/10 bg-background px-3 py-2'>
+                          <span className='inline-flex items-center gap-2'>
+                            <Zap className='h-4 w-4 text-cyan-200' /> Confidence
+                          </span>
+                          <span className='font-medium text-foreground'>{selectedGoal.confidence ?? selectedGoalDerived?.latestCheckin?.confidence ?? 'N/A'}</span>
+                        </div>
+                        <div className='flex items-center justify-between rounded-2xl border border-white/10 bg-background px-3 py-2'>
+                          <span className='inline-flex items-center gap-2'>
+                            <CalendarClock className='h-4 w-4 text-cyan-200' /> Next milestone
+                          </span>
+                          <span className='font-medium text-foreground'>{formatDateLabel(selectedGoalDerived?.nextMilestone)}</span>
+                        </div>
+                        <div className='flex items-center justify-between rounded-2xl border border-white/10 bg-background px-3 py-2'>
+                          <span className='inline-flex items-center gap-2'>
+                            <AlertTriangle className='h-4 w-4 text-cyan-200' /> Overdue KRs
+                          </span>
+                          <span className='font-medium text-foreground'>{selectedGoalDerived?.overdueKrCount ?? 0}</span>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       {message ? (
-        <div className='fixed bottom-4 right-4 rounded-full border bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm'>
+        <div className='fixed bottom-4 right-4 rounded-full border border-white/10 bg-card/95 px-3 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur'>
           {message}
         </div>
       ) : null}
 
       {onboardingStep >= 0 ? (
-        <div className='fixed bottom-4 left-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border bg-card/95 p-3 shadow-xl backdrop-blur'>
+        <div className='fixed bottom-4 left-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-white/10 bg-card/95 p-3 shadow-xl backdrop-blur'>
           <p className='text-xs font-semibold uppercase tracking-wide text-primary'>
             Goals Tour {onboardingStep + 1}/{GOALS_ONBOARDING_STEPS.length}
           </p>

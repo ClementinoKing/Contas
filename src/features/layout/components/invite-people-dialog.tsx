@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { normalizeProjectColor, projectDotStyle } from '@/features/projects/lib/project-colors'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -21,10 +22,6 @@ function splitEmails(input: string) {
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-}
-
-function projectColorClass(color: string | null) {
-  return typeof color === 'string' && color.startsWith('bg-') ? color : 'bg-primary'
 }
 
 export function InvitePeopleDialog({
@@ -47,7 +44,7 @@ export function InvitePeopleDialog({
       .order('name', { ascending: true })
       .then(({ data }) => {
         if (cancelled) return
-        setProjects((data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project', color: project.color ?? null })))
+        setProjects((data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project', color: normalizeProjectColor(project.color) })))
       })
 
     return () => {
@@ -120,7 +117,7 @@ export function InvitePeopleDialog({
                     if (!project) return null
                     return (
                       <span key={project.id} className='inline-flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1 text-sm'>
-                        <span className={cn('h-2.5 w-2.5 rounded-full', projectColorClass(project.color))} />
+                        <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} />
                         {project.name}
                         <button
                           type='button'
@@ -150,7 +147,7 @@ export function InvitePeopleDialog({
                       selected ? 'border-primary/50 bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-accent',
                     )}
                   >
-                    <span className={cn('h-2.5 w-2.5 rounded-full', projectColorClass(project.color))} />
+                    <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} />
                     {project.name}
                   </button>
                 )

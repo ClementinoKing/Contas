@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
 import { STORAGE_KEYS } from '@/lib/storage'
@@ -319,6 +319,7 @@ async function fetchProfileSnapshot(userId: string) {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(authReducer, undefined, createInitialAuthState)
+  const lastProfileSnapshotKeyRef = useRef<string | null>(null)
 
   const setSession = useCallback((session: AuthSession) => {
     cacheProfileFromUser(session.user)
@@ -380,27 +381,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!state.session?.user.id || !state.hasProfile) return
 
     let cancelled = false
+    const userId = state.session.user.id
+    const currentUser = state.session.user
 
-    void fetchProfileSnapshot(state.session.user.id).then((profile) => {
-      if (cancelled || !profile || !state.session) return
+    void fetchProfileSnapshot(userId).then((profile) => {
+      if (cancelled || !profile) return
 
       const avatarValue = profile.avatar_url ?? null
+      const nextSnapshotKey = JSON.stringify({
+        userId,
+        full_name: profile.full_name ?? null,
+        email: profile.email ?? null,
+        username: profile.username ?? null,
+        role_label: profile.role_label ?? null,
+        must_reset_password: profile.must_reset_password ?? false,
+        job_title: profile.job_title ?? null,
+        avatar_url: avatarValue,
+      })
+
+      if (lastProfileSnapshotKeyRef.current === nextSnapshotKey) return
+      lastProfileSnapshotKeyRef.current = nextSnapshotKey
+
       writeCachedProfile({
-        id: state.session.user.id,
+        id: userId,
         ...profile,
       })
       const nextSession: AuthSession = {
-        ...state.session,
+        ...state.session!,
         user: {
-          ...state.session.user,
-          name: profile.full_name ?? state.session.user.name,
-          email: profile.email ?? state.session.user.email,
-          username: profile.username ?? state.session.user.username,
-          roleLabel: profile.role_label ?? state.session.user.roleLabel,
-          mustResetPassword: profile.must_reset_password ?? state.session.user.mustResetPassword,
-          jobTitle: profile.job_title ?? state.session.user.jobTitle,
-          avatarUrl: sanitizeAvatarUrl(avatarValue) ?? state.session.user.avatarUrl,
-          avatarPath: sanitizeAvatarPath(avatarValue) ?? state.session.user.avatarPath,
+          ...currentUser,
+          name: profile.full_name ?? currentUser.name,
+          email: profile.email ?? currentUser.email,
+          username: profile.username ?? currentUser.username,
+          roleLabel: profile.role_label ?? currentUser.roleLabel,
+          mustResetPassword: profile.must_reset_password ?? currentUser.mustResetPassword,
+          jobTitle: profile.job_title ?? currentUser.jobTitle,
+          avatarUrl: sanitizeAvatarUrl(avatarValue) ?? currentUser.avatarUrl,
+          avatarPath: sanitizeAvatarPath(avatarValue) ?? currentUser.avatarPath,
         },
       }
 
@@ -410,7 +427,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [state.hasProfile, state.session])
+  }, [state.hasProfile, state.session?.user.id])
 
   const login = useCallback(async ({ email, password }: LoginPayload) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })

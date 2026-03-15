@@ -10,6 +10,7 @@ import {
   Search,
   Sparkles,
   UserCircle2,
+  Lock,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
@@ -18,8 +19,12 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { DatePicker } from '@/components/ui/date-picker'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { GlobalSaveStatus } from '@/components/ui/global-save-status'
 import { Input } from '@/components/ui/input'
+import { DEFAULT_PROJECT_COLOR, PROJECT_COLOR_OPTIONS, normalizeProjectColor, projectDotStyle } from '@/features/projects/lib/project-colors'
+import { useAuth } from '@/features/auth/context/auth-context'
 import { CreateTaskDialog, type CreatedTaskPayload } from '@/features/tasks/components/create-task-dialog'
 import { openTaskDetailsModal } from '@/features/tasks/lib/open-task-details-modal'
 import { mapStatusRowsToOptions, resolveProjectStatusOptions, statusLabelFromKey, type StatusOption } from '@/features/tasks/lib/status-catalog'
@@ -33,6 +38,7 @@ type ProjectDetail = {
   color: string | null
   status: string | null
   description: string | null
+  created_by: string | null
   owner_id: string | null
   start_date: string | null
   end_date: string | null
@@ -98,10 +104,12 @@ function initialsForName(name: string) {
 }
 
 export function ProjectDetailPage() {
+  const { currentUser } = useAuth()
   const { projectId } = useParams()
   const [project, setProject] = useState<ProjectDetail | null>(null)
   const [linkedTasks, setLinkedTasks] = useState<LinkedTask[]>([])
   const [projectOwner, setProjectOwner] = useState<ProfileRecord | null>(null)
+  const [profileDirectory, setProfileDirectory] = useState<ProfileRecord[]>([])
   const [loading, setLoading] = useState(Boolean(projectId))
   const [backgroundSyncState, setBackgroundSyncState] = useState<BackgroundSyncState>('idle')
   const [activeTab, setActiveTab] = useState<ProjectTab>('tasks')
@@ -113,6 +121,15 @@ export function ProjectDetailPage() {
   const [groupBy, setGroupBy] = useState<GroupBy>('status')
   const [taskDialogOpen, setTaskDialogOpen] = useState(false)
   const [taskDialogType, setTaskDialogType] = useState<'task' | 'subtask'>('task')
+  const [editProjectOpen, setEditProjectOpen] = useState(false)
+  const [editProjectSubmitting, setEditProjectSubmitting] = useState(false)
+  const [editProjectError, setEditProjectError] = useState<string | null>(null)
+  const [editProjectName, setEditProjectName] = useState('')
+  const [editProjectOwnerId, setEditProjectOwnerId] = useState('')
+  const [editProjectColor, setEditProjectColor] = useState(DEFAULT_PROJECT_COLOR)
+  const [editProjectStartDate, setEditProjectStartDate] = useState<Date | undefined>()
+  const [editProjectEndDate, setEditProjectEndDate] = useState<Date | undefined>()
+  const [editProjectDescription, setEditProjectDescription] = useState('')
   const [updatingTaskIds, setUpdatingTaskIds] = useState<Set<string>>(new Set())
   const backgroundSyncResetTimerRef = useRef<number | null>(null)
   const realtimeRefreshTimerRef = useRef<number | null>(null)
@@ -143,7 +160,7 @@ export function ProjectDetailPage() {
     }
 
     const [projectResult, tasksResult, taskAssigneesResult, profilesResult, statusesResult] = await Promise.all([
-      supabase.from('projects').select('id, name, key, color, status, description, owner_id, start_date, end_date').eq('id', projectId).maybeSingle(),
+      supabase.from('projects').select('id, name, key, color, status, description, created_by, owner_id, start_date, end_date').eq('id', projectId).limit(1),
       supabase
         .from('tasks')
         .select('id, parent_task_id, title, description, status, status_id, due_at, start_at, created_at, completed_at, priority, assigned_to, task_status:status_id(id,key,label)')
@@ -156,7 +173,8 @@ export function ProjectDetailPage() {
 
     if (requestId !== inFlightRequestIdRef.current) return
 
-    if (projectResult.error || !projectResult.data) {
+    const projectRecord = (projectResult.data?.[0] as ProjectDetail | undefined) ?? null
+    if (projectResult.error || !projectRecord) {
       setProject(null)
       setLinkedTasks([])
       setProjectOwner(null)
@@ -166,6 +184,7 @@ export function ProjectDetailPage() {
     }
 
     const profiles = profilesResult.data ?? []
+    setProfileDirectory(profiles)
     const profileById = new Map(profiles.map((profile) => [profile.id, profile]))
     const assigneeIdsByTask = new Map<string, Set<string>>()
 
@@ -200,17 +219,17 @@ export function ProjectDetailPage() {
       }
     })
 
-    setProject(projectResult.data)
+    setProject(projectRecord)
     setLinkedTasks(mappedTasks)
     setStatusDefinitions(resolveProjectStatusOptions(mapStatusRowsToOptions(statusesResult.data ?? []), projectId))
-    const owner = projectResult.data.owner_id ? (profileById.get(projectResult.data.owner_id) ?? null) : null
+    const owner = projectRecord.owner_id ? (profileById.get(projectRecord.owner_id) ?? null) : null
     setProjectOwner(owner)
     if (!silent) setLoading(false)
     updateBackgroundSyncState(silent ? 'saved' : 'idle')
     if (cacheKey) {
       const payload: ProjectDetailCachePayload = {
         cachedAt: Date.now(),
-        project: projectResult.data,
+        project: projectRecord,
         linkedTasks: mappedTasks,
         projectOwner: owner,
       }
@@ -423,6 +442,66 @@ export function ProjectDetailPage() {
     [linkedTasks],
   )
 
+  const openEditProjectDialog = () => {
+    if (!project) return
+    if (!currentUser?.id || project.created_by !== currentUser.id) return
+    setEditProjectName(project.name)
+    setEditProjectOwnerId(project.owner_id ?? '')
+    setEditProjectColor(normalizeProjectColor(project.color))
+    setEditProjectStartDate(project.start_date ? new Date(project.start_date) : undefined)
+    setEditProjectEndDate(project.end_date ? new Date(project.end_date) : undefined)
+    setEditProjectDescription(project.description ?? '')
+    setEditProjectError(null)
+    setEditProjectOpen(true)
+  }
+
+  const handleSaveProjectEdits = async () => {
+    if (!project) return
+    const trimmedName = editProjectName.trim()
+    const trimmedDescription = editProjectDescription.trim()
+    if (!trimmedName) {
+      setEditProjectError('Project name is required.')
+      return
+    }
+    if (editProjectStartDate && editProjectEndDate && editProjectStartDate.getTime() > editProjectEndDate.getTime()) {
+      setEditProjectError('Start date must be before or equal to target end date.')
+      return
+    }
+
+    setEditProjectSubmitting(true)
+    setEditProjectError(null)
+    const payload = {
+      name: trimmedName,
+      owner_id: editProjectOwnerId || null,
+      color: normalizeProjectColor(editProjectColor),
+      start_date: editProjectStartDate ? editProjectStartDate.toISOString().slice(0, 10) : null,
+      end_date: editProjectEndDate ? editProjectEndDate.toISOString().slice(0, 10) : null,
+      description: trimmedDescription || null,
+    }
+
+    const { data, error } = await supabase
+      .from('projects')
+      .update(payload)
+      .eq('id', project.id)
+      .select('id, name, key, color, status, description, created_by, owner_id, start_date, end_date')
+      .limit(1)
+    const updatedProject = (data?.[0] as ProjectDetail | undefined) ?? null
+
+    if (error || !updatedProject) {
+      setEditProjectSubmitting(false)
+      setEditProjectError(error?.message ?? 'Could not update project details.')
+      return
+    }
+
+    setProject(updatedProject)
+    const owner = payload.owner_id ? profileDirectory.find((profile) => profile.id === payload.owner_id) ?? null : null
+    setProjectOwner(owner)
+    setEditProjectSubmitting(false)
+    setEditProjectOpen(false)
+    updateBackgroundSyncState('saved')
+    window.dispatchEvent(new CustomEvent('contas:realtime-change', { detail: { table: 'projects', eventType: 'manual' } }))
+  }
+
   const handleTaskCreated = useCallback(
     (created: CreatedTaskPayload) => {
       if (!projectId || created.projectId !== projectId) return
@@ -456,6 +535,8 @@ export function ProjectDetailPage() {
     [loadProject, projectId, statusDefinitions, updateBackgroundSyncState],
   )
 
+  const canEditProject = Boolean(currentUser?.id && project?.created_by === currentUser.id)
+
   if (!projectId) return <Navigate to='/dashboard/projects' replace />
 
   if (loading) {
@@ -475,7 +556,7 @@ export function ProjectDetailPage() {
           <div className='flex flex-wrap items-start justify-between gap-3'>
             <div className='space-y-1.5'>
               <div className='flex items-center gap-2'>
-                <span className={`h-2.5 w-2.5 rounded-full ${project.color ?? 'bg-blue-500'}`} />
+                <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} />
                 <h1 className='text-xl font-semibold tracking-tight text-foreground'>{project.name}</h1>
                 <Badge variant='outline'>{project.key ?? 'PRJ'}</Badge>
               </div>
@@ -485,6 +566,10 @@ export function ProjectDetailPage() {
               </p>
             </div>
             <div className='flex items-center gap-2'>
+              <Button size='sm' variant='outline' onClick={openEditProjectDialog} disabled={!canEditProject}>
+                {!canEditProject ? <Lock className='h-4 w-4' /> : null}
+                {canEditProject ? 'Edit Project' : 'Locked'}
+              </Button>
               <Button
                 size='sm'
                 onClick={() => {
@@ -805,6 +890,88 @@ export function ProjectDetailPage() {
         initialTaskType={taskDialogType}
         onTaskCreated={handleTaskCreated}
       />
+
+      <Dialog open={editProjectOpen} onOpenChange={setEditProjectOpen}>
+        <DialogContent className='max-w-2xl'>
+          <DialogHeader>
+            <DialogTitle>Edit Project</DialogTitle>
+            <DialogDescription>Update project details and color. Changes are saved to the projects table.</DialogDescription>
+          </DialogHeader>
+          <div className='grid gap-4 md:grid-cols-2'>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Project Name</label>
+              <Input value={editProjectName} onChange={(event) => setEditProjectName(event.target.value)} placeholder='Project name' />
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Owner</label>
+              <select
+                value={editProjectOwnerId}
+                onChange={(event) => setEditProjectOwnerId(event.target.value)}
+                className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
+              >
+                <option value=''>Unassigned</option>
+                {profileDirectory.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.full_name ?? 'Unknown user'}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Start Date</label>
+              <DatePicker value={editProjectStartDate} onChange={setEditProjectStartDate} placeholder='Pick start date' />
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Target End Date</label>
+              <DatePicker value={editProjectEndDate} onChange={setEditProjectEndDate} placeholder='Pick end date' />
+            </div>
+            <div className='space-y-2 md:col-span-2'>
+              <label className='text-sm font-medium text-foreground'>Project Color</label>
+              <div className='flex flex-wrap items-center gap-3 rounded-md border border-input bg-background px-3 py-2'>
+                {PROJECT_COLOR_OPTIONS.map((color) => (
+                  <button
+                    key={color}
+                    type='button'
+                    onClick={() => setEditProjectColor(color)}
+                    className={`h-6 w-6 rounded-full border-2 ${normalizeProjectColor(editProjectColor) === color ? 'border-foreground' : 'border-transparent'}`}
+                    style={projectDotStyle(color)}
+                    aria-label={`Select project color ${color}`}
+                  />
+                ))}
+                <span className='ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground'>
+                  Custom
+                  <input
+                    type='color'
+                    value={normalizeProjectColor(editProjectColor)}
+                    onChange={(event) => setEditProjectColor(event.target.value)}
+                    className='h-7 w-9 cursor-pointer rounded border border-input bg-background p-0.5'
+                    aria-label='Pick custom project color'
+                  />
+                </span>
+              </div>
+            </div>
+            <div className='space-y-2 md:col-span-2'>
+              <label className='text-sm font-medium text-foreground'>Description</label>
+              <textarea
+                rows={5}
+                value={editProjectDescription}
+                onChange={(event) => setEditProjectDescription(event.target.value)}
+                placeholder='Describe the project scope, goals, and outcomes.'
+                className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            {editProjectError ? <p className='mr-auto text-sm text-destructive'>{editProjectError}</p> : null}
+            <Button type='button' variant='outline' onClick={() => setEditProjectOpen(false)}>
+              Cancel
+            </Button>
+            <Button type='button' onClick={() => void handleSaveProjectEdits()} disabled={editProjectSubmitting}>
+              {editProjectSubmitting ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

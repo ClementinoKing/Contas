@@ -32,8 +32,13 @@ function extractMentionedMemberIds(text: string, members: Array<{ id: string; na
   const mentioned = new Set<string>()
   for (const member of members) {
     const handleToken = `@${mentionHandleForMember(member).toLowerCase()}`
+    const normalizedNameHandle = `@${member.name
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9._-]/g, '')}`
     const nameToken = `@${member.name.toLowerCase()}`
-    if (normalized.includes(handleToken) || normalized.includes(nameToken)) {
+    if (normalized.includes(handleToken) || normalized.includes(normalizedNameHandle) || normalized.includes(nameToken)) {
       mentioned.add(member.id)
     }
   }
@@ -80,6 +85,8 @@ export function CreateTaskDialog({
   initialStatusId,
   initialParentTaskId,
   initialTaskType,
+  initialProjectId,
+  lockProjectSelection = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -88,6 +95,8 @@ export function CreateTaskDialog({
   initialStatusId?: string
   initialParentTaskId?: string
   initialTaskType?: TaskType
+  initialProjectId?: string
+  lockProjectSelection?: boolean
 }) {
   const { currentUser } = useAuth()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -144,7 +153,7 @@ export function CreateTaskDialog({
       const fetchedStatuses = mapStatusRowsToOptions(statusesResult.data ?? [])
       const nextStatuses = fetchedStatuses.length > 0 ? fetchedStatuses : FALLBACK_STATUS_OPTIONS
       setStatusOptions(nextStatuses)
-      const nextProjectId = projectId || projects[0]?.id || ''
+      const nextProjectId = initialProjectId || projectId || projects[0]?.id || ''
       const preferredById = initialStatusId ? nextStatuses.find((status) => status.id === initialStatusId) : undefined
       const projectAwareStatuses = resolveProjectStatusOptions(nextStatuses, nextProjectId)
       const preferredByLegacyKey = nextStatuses.find((status) => status.key === initialBoardColumn && (status.projectId === nextProjectId || status.projectId === null))
@@ -154,7 +163,7 @@ export function CreateTaskDialog({
         projectAwareStatuses[0] ??
         nextStatuses[0]
       setSelectedStatusId(defaultStatus?.id ?? '')
-      setProjectId((current) => current || projects[0]?.id || '')
+      setProjectId((current) => initialProjectId || current || projects[0]?.id || '')
     })
 
     return () => {
@@ -167,7 +176,7 @@ export function CreateTaskDialog({
     setParentTaskId(initialParentTaskId ?? '')
     setSelectedStatusId(initialStatusId ?? '')
     setTitle('')
-    setProjectId(projectOptions[0]?.id ?? '')
+    setProjectId(initialProjectId || projectOptions[0]?.id || '')
     setAssigneeIds([])
     setAssigneeSearch('')
     setAssigneeOpen(false)
@@ -191,7 +200,8 @@ export function CreateTaskDialog({
     setTaskType(defaultTaskType)
     setParentTaskId(initialParentTaskId ?? '')
     setSelectedStatusId(initialStatusId ?? '')
-  }, [open, defaultTaskType, initialParentTaskId, initialStatusId])
+    setProjectId((current) => initialProjectId || current)
+  }, [open, defaultTaskType, initialParentTaskId, initialProjectId, initialStatusId])
 
   const availableStatuses = useMemo(() => {
     return resolveProjectStatusOptions(statusOptions, projectId)
@@ -287,6 +297,7 @@ export function CreateTaskDialog({
           const recipients = assigneeIds
           if (recipients.length > 0) {
             const notifications = recipients.map((recipientId) => ({
+              id: crypto.randomUUID(),
               recipient_id: recipientId,
               actor_id: currentUser.id,
               task_id: data.id,
@@ -296,17 +307,12 @@ export function CreateTaskDialog({
               metadata: { event: 'task_assigned', source: 'task_create' },
             }))
 
-            const { data: insertedNotifications, error: notificationsError } = await supabase
-              .from('notifications')
-              .insert(notifications)
-              .select('id, recipient_id, task_id')
+            const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
             if (notificationsError) {
               console.error('Failed to create assignment notifications', notificationsError)
             } else {
               void dispatchNotificationEmails(
-                (insertedNotifications ?? [])
-                  .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-                  .map((item) => ({
+                notifications.map((item) => ({
                     notificationId: item.id,
                     recipientId: item.recipient_id,
                     recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
@@ -325,6 +331,7 @@ export function CreateTaskDialog({
         const mentionedMemberIds = extractMentionedMemberIds(description, memberOptions).filter((memberId) => memberId !== currentUser.id)
         if (mentionedMemberIds.length > 0) {
           const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+            id: crypto.randomUUID(),
             recipient_id: recipientId,
             actor_id: currentUser.id,
             task_id: data.id,
@@ -333,17 +340,12 @@ export function CreateTaskDialog({
             message: `You were mentioned in "${data.title}".`,
             metadata: { event: 'task_mentioned', source: 'task_create_description' },
           }))
-          const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
-            .from('notifications')
-            .insert(mentionNotifications)
-            .select('id, recipient_id, task_id')
+          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
           if (mentionNotificationsError) {
             console.error('Failed to create mention notifications', mentionNotificationsError)
           } else {
             void dispatchNotificationEmails(
-              (insertedMentionNotifications ?? [])
-                .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-                .map((item) => ({
+              mentionNotifications.map((item) => ({
                   notificationId: item.id,
                   recipientId: item.recipient_id,
                   recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
@@ -596,6 +598,7 @@ export function CreateTaskDialog({
               <select
                 value={projectId}
                 onChange={(event) => setProjectId(event.target.value)}
+                disabled={lockProjectSelection}
                 className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
                 aria-label='Project'
               >
@@ -606,6 +609,7 @@ export function CreateTaskDialog({
                   </option>
                 ))}
               </select>
+              {lockProjectSelection ? <p className='text-[11px] text-muted-foreground'>Project is inherited from the parent task.</p> : null}
             </div>
             <div className='space-y-2'>
               <select

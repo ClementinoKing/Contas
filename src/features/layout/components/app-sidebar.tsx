@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { useUnreadNotifications } from '@/features/layout/hooks/use-unread-notifications'
+import { normalizeProjectColor, projectDotStyle } from '@/features/projects/lib/project-colors'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { SIDEBAR_SECTIONS } from './navigation-items'
@@ -32,7 +33,7 @@ function mapSidebarProjects(data: Array<{ id: string; name: string | null; key: 
     id: project.id,
     name: project.name ?? `Project ${index + 1}`,
     key: project.key ?? `P${index + 1}`,
-    color: project.color ?? 'bg-blue-500',
+    color: normalizeProjectColor(project.color),
   }))
 }
 
@@ -223,7 +224,7 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
                         }}
                         className='h-9 px-2.5'
                       >
-                        <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} aria-hidden='true' />
+                        <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} aria-hidden='true' />
                         <span className='ml-2.5 truncate'>{project.name}</span>
                         <span className='ml-auto text-[10px] text-muted-foreground'>{project.key}</span>
                       </DropdownMenuItem>
@@ -263,7 +264,7 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
                   }
                   title={project.name}
                 >
-                  <span className={cn('h-2.5 w-2.5 rounded-full', project.color)} aria-hidden='true' />
+                  <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} aria-hidden='true' />
                   <span className='ml-3 truncate'>{project.name}</span>
                   <span className='ml-auto text-[10px] text-muted-foreground'>{project.key}</span>
                 </NavLink>

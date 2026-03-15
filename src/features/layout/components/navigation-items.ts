@@ -3,7 +3,6 @@ import {
   ChartNoAxesColumn,
   Goal,
   House,
-  Layers,
   ListChecks,
   Workflow,
 } from 'lucide-react'
@@ -23,7 +22,6 @@ export const SIDEBAR_SECTIONS: NavSection[] = [
     title: 'Planning',
     items: [
       { label: 'Reporting', path: '/dashboard/reporting', icon: ChartNoAxesColumn },
-      { label: 'Portfolio', path: '/dashboard/portfolio', icon: Layers },
       { label: 'Goals', path: '/dashboard/goals', icon: Goal },
       { label: 'Organization', path: '/dashboard/workspace', icon: Workflow },
     ],

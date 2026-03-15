@@ -5,7 +5,6 @@ import { DashboardHomePage } from '@/features/dashboard/pages/dashboard-home-pag
 import { MyTasksPage } from '@/features/dashboard/pages/my-tasks-page'
 import { NotificationsPage } from '@/features/dashboard/pages/notifications-page'
 import { ReportingPage } from '@/features/dashboard/pages/reporting-page'
-import { PortfolioPage } from '@/features/dashboard/pages/portfolio-page'
 import { GoalsPage } from '@/features/dashboard/pages/goals-page'
 import { WorkspacePage } from '@/features/dashboard/pages/workspace-page'
 import { ProjectDetailPage } from '@/features/dashboard/pages/project-detail-page'
@@ -57,7 +56,6 @@ export const router = createBrowserRouter([
           { path: 'my-tasks', element: <MyTasksPage /> },
           { path: 'notifications', element: <NotificationsPage /> },
           { path: 'reporting', element: <ReportingPage /> },
-          { path: 'portfolio', element: <PortfolioPage /> },
           { path: 'goals', element: <GoalsPage /> },
           { path: 'projects', element: <ProjectsPage /> },
           { path: 'projects/:projectId', element: <ProjectDetailPage /> },

@@ -26,6 +26,7 @@ import { MentionRichTextEditor } from '@/components/ui/mention-rich-text-editor'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { dispatchNotificationEmails } from '@/features/notifications/lib/email-delivery'
+import { CreateTaskDialog, type CreatedTaskPayload } from '@/features/tasks/components/create-task-dialog'
 import { consumePendingTaskDetailsModalId, peekPendingTaskDetailsModalId } from '@/features/tasks/lib/open-task-details-modal'
 import {
   legacyBoardColumnForStatusKey,
@@ -112,8 +113,13 @@ function extractMentionedMemberIds(text: string, members: Array<{ id: string; na
   const mentioned = new Set<string>()
   for (const member of members) {
     const handleToken = `@${mentionHandleForMember(member).toLowerCase()}`
+    const normalizedNameHandle = `@${member.name
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9._-]/g, '')}`
     const nameToken = `@${member.name.toLowerCase()}`
-    if (normalized.includes(handleToken) || normalized.includes(nameToken)) {
+    if (normalized.includes(handleToken) || normalized.includes(normalizedNameHandle) || normalized.includes(nameToken)) {
       mentioned.add(member.id)
     }
   }
@@ -349,6 +355,7 @@ export function UniversalTaskDetailsModal() {
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
   const [recordingLevels, setRecordingLevels] = useState<number[]>(() => Array.from({ length: RECORDING_VISUALIZER_BARS }, () => 0.12))
   const [voiceCommentError, setVoiceCommentError] = useState<string | null>(null)
+  const [createSubtaskOpen, setCreateSubtaskOpen] = useState(false)
 
   const commentMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const commentVoiceChunksRef = useRef<Blob[]>([])
@@ -603,6 +610,8 @@ export function UniversalTaskDetailsModal() {
 
   const saveTask = async (next: TaskRow, nextAssigneeIds: string[], persistAssignees = false) => {
     if (!taskId || !canEdit) return
+    const previousTask = task
+    const previousAssigneeIds = assigneeIds
     setSaveState('syncing')
     if (saveStateResetTimerRef.current !== null) {
       window.clearTimeout(saveStateResetTimerRef.current)
@@ -631,6 +640,75 @@ export function UniversalTaskDetailsModal() {
           await supabase.from('task_assignees').insert(nextAssigneeIds.map((assigneeId) => ({ task_id: taskId, assignee_id: assigneeId })))
         }
       }
+
+      if (currentUser?.id) {
+        if (persistAssignees) {
+          const addedAssigneeIds = nextAssigneeIds.filter((assigneeId) => !previousAssigneeIds.includes(assigneeId) && assigneeId !== currentUser.id)
+          if (addedAssigneeIds.length > 0) {
+            const notifications = addedAssigneeIds.map((recipientId) => ({
+              id: crypto.randomUUID(),
+              recipient_id: recipientId,
+              actor_id: currentUser.id,
+              task_id: taskId,
+              type: 'task' as const,
+              title: 'Task assigned to you',
+              message: `You were assigned "${next.title || previousTask?.title || 'a task'}".`,
+              metadata: { event: 'task_assigned', source: 'global_task_modal_assignment' },
+            }))
+            const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
+            if (notificationsError) {
+              console.error('Failed to create assignment notifications from global task modal', notificationsError)
+            } else {
+              void dispatchNotificationEmails(
+                notifications.map((item) => ({
+                    notificationId: item.id,
+                    recipientId: item.recipient_id,
+                    recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
+                    type: 'task_assigned' as const,
+                    taskId: item.task_id as string,
+                    taskTitle: next.title || previousTask?.title || 'a task',
+                    actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+                  })),
+              )
+            }
+          }
+        }
+
+        const previousMentionedMemberIds = extractMentionedMemberIds(previousTask?.description ?? '', members)
+        const nextMentionedMemberIds = extractMentionedMemberIds(next.description ?? '', members)
+        const addedMentionIds = nextMentionedMemberIds.filter(
+          (memberId) => !previousMentionedMemberIds.includes(memberId) && memberId !== currentUser.id,
+        )
+        if (addedMentionIds.length > 0) {
+          const mentionNotifications = addedMentionIds.map((recipientId) => ({
+            id: crypto.randomUUID(),
+            recipient_id: recipientId,
+            actor_id: currentUser.id,
+            task_id: taskId,
+            type: 'mention' as const,
+            title: 'You were mentioned',
+            message: `You were mentioned in "${next.title || previousTask?.title || 'a task'}".`,
+            metadata: { event: 'task_mentioned', source: 'global_task_modal_description' },
+          }))
+          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
+          if (mentionNotificationsError) {
+            console.error('Failed to create mention notifications from global task modal description', mentionNotificationsError)
+          } else {
+            void dispatchNotificationEmails(
+              mentionNotifications.map((item) => ({
+                  notificationId: item.id,
+                  recipientId: item.recipient_id,
+                  recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
+                  type: 'mention' as const,
+                  taskId: item.task_id as string,
+                  taskTitle: next.title || previousTask?.title || 'a task',
+                  actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+                })),
+            )
+          }
+        }
+      }
+
       setTask(next)
       setAssigneeIds(nextAssigneeIds)
       setSaveState('saved')
@@ -641,6 +719,13 @@ export function UniversalTaskDetailsModal() {
     } else {
       setSaveState('error')
     }
+  }
+
+  const handleSubtaskCreated = (created: CreatedTaskPayload) => {
+    if (!taskId) return
+    if (created.parentTaskId !== taskId) return
+    setSubtasks((current) => [{ id: created.id, title: created.title, status: created.status ?? created.statusKey ?? null }, ...current])
+    void loadTask(taskId)
   }
 
   const startVoiceCommentRecording = async () => {
@@ -755,6 +840,7 @@ export function UniversalTaskDetailsModal() {
         const mentionedMemberIds = extractMentionedMemberIds(contentText, members).filter((memberId) => memberId !== currentUser.id)
         if (mentionedMemberIds.length > 0) {
           const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+            id: crypto.randomUUID(),
             recipient_id: recipientId,
             actor_id: currentUser.id,
             task_id: taskId,
@@ -763,17 +849,12 @@ export function UniversalTaskDetailsModal() {
             message: `You were mentioned in "${task?.title ?? 'a task'}".`,
             metadata: { event: 'task_mentioned', source: 'global_task_modal_comment' },
           }))
-          const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
-            .from('notifications')
-            .insert(mentionNotifications)
-            .select('id, recipient_id, task_id')
+          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
           if (mentionNotificationsError) {
             console.error('Failed to create mention notifications from global task modal', mentionNotificationsError)
           } else {
             void dispatchNotificationEmails(
-              (insertedMentionNotifications ?? [])
-                .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-                .map((item) => ({
+              mentionNotifications.map((item) => ({
                   notificationId: item.id,
                   recipientId: item.recipient_id,
                   recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
@@ -894,6 +975,7 @@ export function UniversalTaskDetailsModal() {
     const mentionedMemberIds = extractMentionedMemberIds(content, members).filter((memberId) => memberId !== currentUser.id)
     if (mentionedMemberIds.length > 0) {
       const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
+        id: crypto.randomUUID(),
         recipient_id: recipientId,
         actor_id: currentUser.id,
         task_id: taskId,
@@ -902,17 +984,12 @@ export function UniversalTaskDetailsModal() {
         message: `You were mentioned in \"${task?.title ?? 'a task'}\".`,
         metadata: { event: 'task_mentioned', source: 'task_reply' },
       }))
-      const { data: insertedMentionNotifications, error: mentionNotificationsError } = await supabase
-        .from('notifications')
-        .insert(mentionNotifications)
-        .select('id, recipient_id, task_id')
+      const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
       if (mentionNotificationsError) {
         console.error('Failed to create reply mention notifications', mentionNotificationsError)
       } else {
         void dispatchNotificationEmails(
-          (insertedMentionNotifications ?? [])
-            .filter((item) => Boolean(item.id && item.recipient_id && item.task_id))
-            .map((item) => ({
+          mentionNotifications.map((item) => ({
               notificationId: item.id,
               recipientId: item.recipient_id,
               recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
@@ -939,12 +1016,17 @@ export function UniversalTaskDetailsModal() {
     .filter((member): member is Member => Boolean(member))
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <>
+      <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
         showClose={!loadingTask}
         disableAnimations
         className={cn('max-h-[90vh] max-w-4xl overflow-hidden p-0', loadingTask && 'border-0 bg-transparent shadow-none')}
       >
+        <DialogTitle className='sr-only'>Task details dialog</DialogTitle>
+        <DialogDescription className='sr-only'>
+          View and update task details, assignees, subtasks, and comments.
+        </DialogDescription>
         {loadingTask ? <TaskDetailsLoadingIndicator /> : null}
         {!loadingTask && loadError ? <div className='p-6 text-sm text-destructive'>{loadError}</div> : null}
         {!loadingTask && !loadError && task ? (
@@ -953,7 +1035,9 @@ export function UniversalTaskDetailsModal() {
               <div className='flex items-center gap-3'>
                 <div className='flex min-w-0 items-center gap-2'>
                   <DialogTitle className='shrink-0'>Task Details</DialogTitle>
-                  <GlobalSaveStatus state={saveState} />
+                  <div className='flex h-6 w-[110px] shrink-0 items-center'>
+                    <GlobalSaveStatus state={saveState} className='h-6 w-full justify-center whitespace-nowrap px-2 text-xs' />
+                  </div>
                 </div>
               </div>
               <div className='mt-0.5'>
@@ -1165,7 +1249,14 @@ export function UniversalTaskDetailsModal() {
                       ))}
                     </div>
                   )}
-                  <Button type='button' size='sm' variant='outline' className='mt-2 gap-1.5'>
+                  <Button
+                    type='button'
+                    size='sm'
+                    variant='outline'
+                    className='mt-2 gap-1.5'
+                    onClick={() => setCreateSubtaskOpen(true)}
+                    disabled={!task}
+                  >
                     <PlusCircle className='h-3.5 w-3.5' />
                     Add subtask
                   </Button>
@@ -1181,7 +1272,7 @@ export function UniversalTaskDetailsModal() {
                         setTask((current) => (current ? { ...current, description: nextDescription } : current))
                       }}
                       onBlur={() => task && void saveTask(task, assigneeIds)}
-                      mentionOptions={members.map((member) => ({ id: member.id, name: member.name }))}
+                      mentionOptions={members.map((member) => ({ id: member.id, name: member.name, username: member.username ?? undefined }))}
                       placeholder='Describe the task...'
                       disabled={!canEdit}
                       minHeightClassName='min-h-[180px]'
@@ -1441,7 +1532,18 @@ export function UniversalTaskDetailsModal() {
             </div>
           </div>
         ) : null}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      <CreateTaskDialog
+        open={createSubtaskOpen}
+        onOpenChange={setCreateSubtaskOpen}
+        onTaskCreated={handleSubtaskCreated}
+        initialParentTaskId={task?.id}
+        initialTaskType='subtask'
+        initialBoardColumn={task?.board_column ?? 'planned'}
+        initialProjectId={task?.project_id ?? undefined}
+        lockProjectSelection
+      />
+    </>
   )
 }

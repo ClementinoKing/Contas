@@ -68,13 +68,16 @@ export function NotificationsPage() {
   const [loading, setLoading] = useState(() => items.length === 0)
 
   useEffect(() => {
+    if (!currentUser?.id) return
+
     let cancelled = false
 
     const fetchNotifications = async () => {
       const { data, error } = await supabase
-      .from('notifications')
-      .select('id, title, message, task_id, type, read_at, created_at')
-      .order('created_at', { ascending: false })
+        .from('notifications')
+        .select('id, title, message, task_id, type, read_at, created_at')
+        .eq('recipient_id', currentUser.id)
+        .order('created_at', { ascending: false })
       if (cancelled) return
       if (error) {
         console.error('Failed to load notifications', error)
@@ -82,15 +85,22 @@ export function NotificationsPage() {
         return
       }
 
-      const mapped: NotificationItem[] = (data ?? []).map((row) => ({
-        id: row.id,
-        title: row.title,
-        message: row.message,
-        taskId: row.task_id ?? undefined,
-        time: relativeTimeLabel(row.created_at),
-        type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
-        read: Boolean(row.read_at),
-      }))
+      const mapped: NotificationItem[] = Array.from(
+        new Map(
+          (data ?? []).map((row) => [
+            row.id,
+            {
+              id: row.id,
+              title: row.title,
+              message: row.message,
+              taskId: row.task_id ?? undefined,
+              time: relativeTimeLabel(row.created_at),
+              type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
+              read: Boolean(row.read_at),
+            },
+          ]),
+        ).values(),
+      )
       setItems(mapped)
       localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(mapped))
       setLoading(false)

@@ -1,11 +1,13 @@
 import { formatDistanceToNowStrict } from 'date-fns'
-import { ArrowUpRight, BriefcaseBusiness, ListFilter, Loader2, MoreHorizontal, Plus, Search, SlidersHorizontal } from 'lucide-react'
+import { ArrowUpRight, BriefcaseBusiness, Copy, FolderOpen, ListFilter, Loader2, Lock, MoreHorizontal, PencilLine, Plus, Search, SlidersHorizontal } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DatePicker } from '@/components/ui/date-picker'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,6 +17,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { useAuth } from '@/features/auth/context/auth-context'
+import { DEFAULT_PROJECT_COLOR, PROJECT_COLOR_OPTIONS, normalizeProjectColor, projectDotStyle } from '@/features/projects/lib/project-colors'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +29,10 @@ type ProjectRow = {
   color: string | null
   status: string | null
   description: string | null
+  created_by: string | null
+  owner_id: string | null
+  start_date: string | null
+  end_date: string | null
 }
 
 type TaskRow = {
@@ -45,16 +53,20 @@ type ProjectCard = {
   id: string
   name: string
   key: string
-  colorClass: string
+  color: string
   status: string
   description: string
+  rawDescription: string | null
+  canEdit: boolean
+  ownerId: string | null
+  startDate: string | null
+  endDate: string | null
   taskCount: number
   progressPercent: number
   lastUpdatedLabel: string
   team: ProjectMember[]
 }
 
-const PROJECT_COLOR_FALLBACKS = ['bg-sky-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500', 'bg-rose-500']
 const STATUS_TONE: Record<string, string> = {
   planned: 'border-sky-400/35 bg-sky-500/10 text-sky-400',
   in_progress: 'border-amber-400/35 bg-amber-500/10 text-amber-400',
@@ -89,6 +101,7 @@ function initialsFor(name: string) {
 }
 
 export function ProjectsPage() {
+  const { currentUser } = useAuth()
   const [projects, setProjects] = useState<ProjectRow[]>([])
   const [tasks, setTasks] = useState<TaskRow[]>([])
   const [taskAssignees, setTaskAssignees] = useState<Array<{ task_id: string; assignee_id: string }>>([])
@@ -97,6 +110,16 @@ export function ProjectsPage() {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [sortBy, setSortBy] = useState<'updated' | 'progress' | 'tasks' | 'name'>('updated')
+  const [editProjectOpen, setEditProjectOpen] = useState(false)
+  const [editProjectSubmitting, setEditProjectSubmitting] = useState(false)
+  const [editProjectError, setEditProjectError] = useState<string | null>(null)
+  const [editProjectId, setEditProjectId] = useState<string | null>(null)
+  const [editProjectName, setEditProjectName] = useState('')
+  const [editProjectOwnerId, setEditProjectOwnerId] = useState('')
+  const [editProjectColor, setEditProjectColor] = useState(DEFAULT_PROJECT_COLOR)
+  const [editProjectStartDate, setEditProjectStartDate] = useState<Date | undefined>()
+  const [editProjectEndDate, setEditProjectEndDate] = useState<Date | undefined>()
+  const [editProjectDescription, setEditProjectDescription] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -104,7 +127,7 @@ export function ProjectsPage() {
     const loadProjects = async () => {
       setLoading(true)
       const [projectsResult, tasksResult, assigneesResult, profilesResult] = await Promise.all([
-        supabase.from('projects').select('id, name, key, color, status, description').order('name', { ascending: true }),
+        supabase.from('projects').select('id, name, key, color, status, description, created_by, owner_id, start_date, end_date').order('name', { ascending: true }),
         supabase.from('tasks').select('id, project_id, status, completed_at, created_at'),
         supabase.from('task_assignees').select('task_id, assignee_id'),
         supabase.from('profiles').select('id, full_name, avatar_url'),
@@ -174,7 +197,7 @@ export function ProjectsPage() {
       teamIdsByProject.set(task.project_id, set)
     }
 
-    return projects.map((project, index) => {
+    return projects.map((project) => {
       const taskCount = taskIdsByProject.get(project.id)?.length ?? 0
       const completedCount = completedTaskIdsByProject.get(project.id) ?? 0
       const progressPercent = taskCount > 0 ? Math.round((completedCount / taskCount) * 100) : 0
@@ -193,16 +216,21 @@ export function ProjectsPage() {
         id: project.id,
         name: project.name?.trim() || 'Untitled project',
         key: project.key?.trim() || 'PRJ',
-        colorClass: project.color?.trim() || PROJECT_COLOR_FALLBACKS[index % PROJECT_COLOR_FALLBACKS.length],
+        color: normalizeProjectColor(project.color),
         status: project.status?.trim() || 'planned',
         description: project.description?.trim() || 'No description yet. Add context, milestones, and delivery notes for the team.',
+        rawDescription: project.description?.trim() || null,
+        canEdit: Boolean(currentUser?.id && project.created_by === currentUser.id),
+        ownerId: project.owner_id,
+        startDate: project.start_date,
+        endDate: project.end_date,
         taskCount,
         progressPercent,
         lastUpdatedLabel,
         team,
       } satisfies ProjectCard
     })
-  }, [profiles, projects, taskAssignees, tasks])
+  }, [currentUser?.id, profiles, projects, taskAssignees, tasks])
 
   const statusOptions = useMemo(() => {
     const seen = new Set<string>()
@@ -233,6 +261,76 @@ export function ProjectsPage() {
       return bTime - aTime
     })
   }, [projectCards, search, sortBy, statusFilter])
+
+  const ownerOptions = useMemo(
+    () => profiles.map((profile) => ({ id: profile.id, label: profile.full_name ?? 'Unknown user' })).sort((a, b) => a.label.localeCompare(b.label)),
+    [profiles],
+  )
+
+  const openEditProject = (card: ProjectCard) => {
+    if (!card.canEdit) return
+    setEditProjectId(card.id)
+    setEditProjectName(card.name)
+    setEditProjectOwnerId(card.ownerId ?? '')
+    setEditProjectColor(normalizeProjectColor(card.color))
+    setEditProjectStartDate(card.startDate ? new Date(card.startDate) : undefined)
+    setEditProjectEndDate(card.endDate ? new Date(card.endDate) : undefined)
+    setEditProjectDescription(card.rawDescription ?? '')
+    setEditProjectError(null)
+    setEditProjectOpen(true)
+  }
+
+  const handleSaveProjectEdits = async () => {
+    if (!editProjectId) return
+    const trimmedName = editProjectName.trim()
+    const trimmedDescription = editProjectDescription.trim()
+    if (!trimmedName) {
+      setEditProjectError('Project name is required.')
+      return
+    }
+    if (editProjectStartDate && editProjectEndDate && editProjectStartDate.getTime() > editProjectEndDate.getTime()) {
+      setEditProjectError('Start date must be before or equal to target end date.')
+      return
+    }
+
+    setEditProjectSubmitting(true)
+    setEditProjectError(null)
+    const payload = {
+      name: trimmedName,
+      owner_id: editProjectOwnerId || null,
+      color: normalizeProjectColor(editProjectColor),
+      start_date: editProjectStartDate ? editProjectStartDate.toISOString().slice(0, 10) : null,
+      end_date: editProjectEndDate ? editProjectEndDate.toISOString().slice(0, 10) : null,
+      description: trimmedDescription || null,
+    }
+
+    const { data, error } = await supabase
+      .from('projects')
+      .update(payload)
+      .eq('id', editProjectId)
+      .select('id, name, key, color, status, description, owner_id, start_date, end_date')
+      .limit(1)
+    const updatedProject = data?.[0] as ProjectRow | undefined
+    if (error || !updatedProject) {
+      setEditProjectSubmitting(false)
+      setEditProjectError(error?.message ?? 'Project was not updated. Please retry.')
+      return
+    }
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === editProjectId
+          ? {
+              ...project,
+              ...updatedProject,
+            }
+          : project,
+      ),
+    )
+    setEditProjectSubmitting(false)
+    setEditProjectOpen(false)
+    window.dispatchEvent(new CustomEvent('contas:realtime-change', { detail: { table: 'projects', eventType: 'manual' } }))
+  }
 
   return (
     <div className='space-y-6'>
@@ -311,8 +409,9 @@ export function ProjectsPage() {
                 <div className='flex items-start justify-between gap-2'>
                   <div className='min-w-0'>
                     <div className='flex items-center gap-2'>
-                      <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', card.colorClass)} />
+                      <span className='h-2.5 w-2.5 shrink-0 rounded-full' style={projectDotStyle(card.color)} />
                       <p className='truncate text-sm font-semibold text-foreground'>{card.name}</p>
+                      {!card.canEdit ? <Lock className='h-3.5 w-3.5 shrink-0 text-muted-foreground' aria-label='Locked project' /> : null}
                     </div>
                     <p className='mt-1 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground'>{card.key}</p>
                   </div>
@@ -323,17 +422,26 @@ export function ProjectsPage() {
                         <MoreHorizontal className='h-4 w-4' />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align='end' className='w-44'>
-                      <DropdownMenuLabel>Project</DropdownMenuLabel>
+                    <DropdownMenuContent align='end' className='w-52 border-border/70 bg-card shadow-[0_10px_28px_rgba(0,0,0,0.25)]'>
+                      <DropdownMenuLabel className='text-xs uppercase tracking-[0.12em] text-muted-foreground'>Project</DropdownMenuLabel>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem asChild>
-                        <Link to={`/dashboard/projects/${card.id}`}>Open project</Link>
+                      <DropdownMenuItem asChild className='gap-2'>
+                        <Link to={`/dashboard/projects/${card.id}`}>
+                          <FolderOpen className='h-4 w-4 text-muted-foreground' />
+                          Open project
+                        </Link>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className='gap-2' onSelect={() => openEditProject(card)} disabled={!card.canEdit}>
+                        {card.canEdit ? <PencilLine className='h-4 w-4 text-muted-foreground' /> : <Lock className='h-4 w-4 text-muted-foreground' />}
+                        {card.canEdit ? 'Edit project' : 'Edit locked'}
                       </DropdownMenuItem>
                       <DropdownMenuItem
+                        className='gap-2'
                         onClick={() => {
                           void navigator.clipboard?.writeText(card.key)
                         }}
                       >
+                        <Copy className='h-4 w-4 text-muted-foreground' />
                         Copy code
                       </DropdownMenuItem>
                     </DropdownMenuContent>
@@ -386,6 +494,87 @@ export function ProjectsPage() {
             ))
           : null}
       </section>
+
+      <Dialog open={editProjectOpen} onOpenChange={setEditProjectOpen}>
+        <DialogContent className='max-w-2xl'>
+          <DialogHeader>
+            <DialogTitle>Edit Project</DialogTitle>
+            <DialogDescription>Update project details and color.</DialogDescription>
+          </DialogHeader>
+          <div className='grid gap-4 md:grid-cols-2'>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Project Name</label>
+              <Input value={editProjectName} onChange={(event) => setEditProjectName(event.target.value)} />
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Owner</label>
+              <select
+                value={editProjectOwnerId}
+                onChange={(event) => setEditProjectOwnerId(event.target.value)}
+                className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
+              >
+                <option value=''>Unassigned</option>
+                {ownerOptions.map((owner) => (
+                  <option key={owner.id} value={owner.id}>
+                    {owner.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Start Date</label>
+              <DatePicker value={editProjectStartDate} onChange={setEditProjectStartDate} placeholder='Pick start date' />
+            </div>
+            <div className='space-y-2'>
+              <label className='text-sm font-medium text-foreground'>Target End Date</label>
+              <DatePicker value={editProjectEndDate} onChange={setEditProjectEndDate} placeholder='Pick end date' />
+            </div>
+            <div className='space-y-2 md:col-span-2'>
+              <label className='text-sm font-medium text-foreground'>Project Color</label>
+              <div className='flex flex-wrap items-center gap-3 rounded-md border border-input bg-background px-3 py-2'>
+                {PROJECT_COLOR_OPTIONS.map((color) => (
+                  <button
+                    key={color}
+                    type='button'
+                    onClick={() => setEditProjectColor(color)}
+                    className={`h-6 w-6 rounded-full border-2 ${normalizeProjectColor(editProjectColor) === color ? 'border-foreground' : 'border-transparent'}`}
+                    style={projectDotStyle(color)}
+                    aria-label={`Select project color ${color}`}
+                  />
+                ))}
+                <span className='ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground'>
+                  Custom
+                  <input
+                    type='color'
+                    value={normalizeProjectColor(editProjectColor)}
+                    onChange={(event) => setEditProjectColor(event.target.value)}
+                    className='h-7 w-9 cursor-pointer rounded border border-input bg-background p-0.5'
+                    aria-label='Pick custom project color'
+                  />
+                </span>
+              </div>
+            </div>
+            <div className='space-y-2 md:col-span-2'>
+              <label className='text-sm font-medium text-foreground'>Description</label>
+              <textarea
+                rows={5}
+                value={editProjectDescription}
+                onChange={(event) => setEditProjectDescription(event.target.value)}
+                className='flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            {editProjectError ? <p className='mr-auto text-sm text-destructive'>{editProjectError}</p> : null}
+            <Button type='button' variant='outline' onClick={() => setEditProjectOpen(false)}>
+              Cancel
+            </Button>
+            <Button type='button' onClick={() => void handleSaveProjectEdits()} disabled={editProjectSubmitting}>
+              {editProjectSubmitting ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

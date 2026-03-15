@@ -20,12 +20,29 @@ type NotifyPayload = {
 }
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
-const SUPABASE_ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY') ?? ''
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? ''
 const RESEND_FROM_EMAIL = Deno.env.get('RESEND_FROM_EMAIL') ?? ''
 const APP_BASE_URL = Deno.env.get('APP_BASE_URL') ?? ''
 const FALLBACK_APP_BASE_URL = 'https://contas.cloudninetech.co.za'
+
+function decodeBase64Url(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
+  return atob(`${normalized}${padding}`)
+}
+
+function requesterIdFromBearerToken(token: string) {
+  try {
+    const parts = token.split('.')
+    if (parts.length < 2) return null
+    const payloadJson = decodeBase64Url(parts[1])
+    const payload = JSON.parse(payloadJson) as { sub?: unknown }
+    return typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : null
+  } catch {
+    return null
+  }
+}
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -96,6 +113,16 @@ async function sendResendEmail(input: {
   }
 }
 
+function resolveBearerToken(req: Request) {
+  const directAuthorization = req.headers.get('Authorization') ?? req.headers.get('authorization') ?? ''
+  const forwardedAuthorization = req.headers.get('x-forwarded-authorization') ?? ''
+  const candidate = directAuthorization || forwardedAuthorization
+  if (!candidate) return ''
+  const bearerMatch = candidate.match(/^Bearer\s+(.+)$/i)
+  if (bearerMatch?.[1]) return bearerMatch[1].trim()
+  return candidate.trim()
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -105,15 +132,12 @@ Deno.serve(async (req) => {
     return json({ ok: false, message: 'Method not allowed.' }, 405)
   }
 
-  const authorization = req.headers.get('Authorization') ?? ''
-  const tokenMatch = authorization.match(/^Bearer\s+(.+)$/i)
-  const accessToken = tokenMatch?.[1]?.trim() ?? ''
-
+  const accessToken = resolveBearerToken(req)
   if (!accessToken) {
     return json({ ok: false, message: 'Missing bearer token.' }, 401)
   }
 
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return json({ ok: false, message: 'Missing Supabase environment variables.' }, 500)
   }
 
@@ -132,16 +156,13 @@ Deno.serve(async (req) => {
     return json({ ok: false, message: 'Unsupported notification email type.' }, 400)
   }
 
-  const authClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    },
-  })
-  const { data: authData, error: authError } = await authClient.auth.getUser(accessToken)
-  if (authError || !authData.user) {
-    return json({ ok: false, message: authError?.message ?? 'Unauthorized.' }, 401)
+  const requesterId =
+    requesterIdFromBearerToken(accessToken) ??
+    req.headers.get('x-supabase-auth-user-id') ??
+    req.headers.get('x-supabase-auth-user') ??
+    null
+  if (!requesterId) {
+    return json({ ok: false, message: 'Unauthorized.' }, 401)
   }
 
   const serviceClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -160,7 +181,7 @@ Deno.serve(async (req) => {
     return json({ ok: false, message: 'Notification not found.' }, 404)
   }
 
-  if (notificationRow.actor_id !== authData.user.id) {
+  if (notificationRow.actor_id !== requesterId) {
     return json({ ok: false, message: 'Only the actor can trigger this email.' }, 403)
   }
 
@@ -243,6 +264,12 @@ Deno.serve(async (req) => {
     return json({ ok: true, status: 'sent', deliveryId: createdDelivery.id })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to send notification email.'
+    console.error('notify-teammates provider error', {
+      notificationId: payload.notificationId,
+      recipientEmail,
+      type: idempotencyType,
+      message,
+    })
 
     if (existingDelivery?.id) {
       await serviceClient
@@ -253,7 +280,7 @@ Deno.serve(async (req) => {
           error: message,
         })
         .eq('id', existingDelivery.id)
-      return json({ ok: false, status: 'error', message, deliveryId: existingDelivery.id }, 502)
+      return json({ ok: true, status: 'provider_error_recorded', message, deliveryId: existingDelivery.id }, 200)
     }
 
     await serviceClient.from('notification_email_deliveries').insert({
@@ -265,6 +292,6 @@ Deno.serve(async (req) => {
       error: message,
     })
 
-    return json({ ok: false, status: 'error', message }, 502)
+    return json({ ok: true, status: 'provider_error_recorded', message }, 200)
   }
 })
