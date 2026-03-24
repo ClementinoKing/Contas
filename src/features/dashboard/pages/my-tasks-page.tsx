@@ -4,6 +4,7 @@ import {
   Check,
   CheckCheck,
   CirclePlus,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -26,7 +27,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -1157,6 +1158,7 @@ export function MyTasksPage() {
   const [listCompletionFilter, setListCompletionFilter] = useState<ListCompletionFilter>('all')
   const [listStatusFilter, setListStatusFilter] = useState<ListStatusFilter>('all')
   const [listProjectFilter, setListProjectFilter] = useState('all')
+  const [expandedParentTaskIds, setExpandedParentTaskIds] = useState<Set<string>>(() => new Set())
   const inflightActionKeysRef = useRef<Set<string>>(new Set())
   const hasLoadedTasksOnceRef = useRef(false)
   const realtimeReloadDebounceRef = useRef<number | null>(null)
@@ -1719,6 +1721,20 @@ export function MyTasksPage() {
     })
   }, [currentUser?.id, listCompletionFilter, listProjectFilter, listScopeFilter, listSearch, listStatusFilter, taskRows])
 
+  const listSubtasksByParentTaskId = useMemo(() => {
+    const taskById = new Map(listFilteredTasks.map((task) => [task.id, task]))
+    const subtasksByParent = new Map<string, TaskRow[]>()
+
+    listFilteredTasks.forEach((task) => {
+      if (!task.parentTaskId || !taskById.has(task.parentTaskId)) return
+      const subtasks = subtasksByParent.get(task.parentTaskId) ?? []
+      subtasks.push(task)
+      subtasksByParent.set(task.parentTaskId, subtasks)
+    })
+
+    return subtasksByParent
+  }, [listFilteredTasks])
+
   const listSections = useMemo(() => {
     const definitions = (boardDefinitions.length > 0 ? boardDefinitions : INITIAL_BOARD_DEFINITIONS)
       .slice()
@@ -1730,11 +1746,13 @@ export function MyTasksPage() {
     }))
     const sectionById = new Map(sections.map((section) => [section.id, section]))
     const sectionByKey = new Map(definitions.map((definition, index) => [definition.key, sections[index]]))
+    const taskById = new Map(listFilteredTasks.map((task) => [task.id, task]))
 
     const seenTaskIds = new Set<string>()
     listFilteredTasks.forEach((task) => {
       if (seenTaskIds.has(task.id)) return
       seenTaskIds.add(task.id)
+      if (task.parentTaskId && taskById.has(task.parentTaskId)) return
       const statusKey = (task.statusKey ?? '').trim().toLowerCase()
       const statusId = task.statusId ?? boardColumnIdFromTask(task)
       let section = (statusKey ? sectionByKey.get(statusKey) : undefined) ?? sectionById.get(statusId)
@@ -1753,6 +1771,23 @@ export function MyTasksPage() {
 
     return sections
   }, [listFilteredTasks, boardDefinitions])
+
+  useEffect(() => {
+    setExpandedParentTaskIds((current) => {
+      if (current.size === 0) return current
+      const visibleIds = new Set(listFilteredTasks.map((task) => task.id))
+      let changed = false
+      const next = new Set<string>()
+      current.forEach((id) => {
+        if (visibleIds.has(id)) {
+          next.add(id)
+        } else {
+          changed = true
+        }
+      })
+      return changed ? next : current
+    })
+  }, [listFilteredTasks])
 
   const canEditTaskById = useCallback(
     (taskId: string) => {
@@ -4091,7 +4126,7 @@ export function MyTasksPage() {
                     ) : (
                       <table className='w-full table-fixed text-sm'>
                         <colgroup>
-                          <col className='w-12' />
+                          <col className='w-9' />
                           <col />
                           <col className='w-44' />
                           <col className='w-32' />
@@ -4101,7 +4136,7 @@ export function MyTasksPage() {
                         </colgroup>
                         <thead className='border-b bg-muted/15 text-left text-xs uppercase tracking-wide text-muted-foreground'>
                           <tr>
-                            <th className='w-12 px-4 py-2 font-medium' aria-label='Complete task' />
+                            <th className='w-9 px-1.5 py-2 font-medium' aria-label='Complete task' />
                             <th className='px-4 py-2 font-medium'>Task</th>
                             <th className='px-3 py-2 font-medium'>Project</th>
                             <th className='px-3 py-2 font-medium'>Assignees</th>
@@ -4112,103 +4147,153 @@ export function MyTasksPage() {
                         </thead>
                         <tbody>
                           {section.tasks.map((task) => {
-                            const canEditTaskRow = canEditTaskById(task.id)
-                            return (
-                            <tr
-                              key={task.id}
-                              className='cursor-pointer border-b transition-colors hover:bg-muted/10 last:border-b-0'
-                              onClick={() => openTaskDetailsById(task.id)}
-                            >
-                              <td className='px-4 py-2.5'>
-                                <button
-                                  type='button'
-                                  disabled={!canEditTaskRow}
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    if (!canEditTaskRow) return
-                                    void toggleBoardTaskCompleted(task.id)
-                                  }}
-                                  className={cn(
-                                    'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border',
-                                    task.completed
-                                      ? 'border-emerald-500 bg-emerald-500 text-white'
-                                      : 'border-border bg-background text-transparent',
-                                  )}
-                                  aria-label={task.completed ? `Mark ${task.title} as incomplete` : `Mark ${task.title} as complete`}
-                                >
-                                  <Check className='h-3 w-3' aria-hidden='true' />
-                                </button>
-                              </td>
-                              <td className='px-4 py-2.5'>
-                                <span className={cn('font-medium text-foreground', task.completed && 'text-muted-foreground line-through')}>
-                                  {task.title}
-                                </span>
-                              </td>
-                              <td className='px-3 py-2.5'>
-                                <Link
-                                  to={`/dashboard/projects/${task.projectId}`}
-                                  onClick={(event) => event.stopPropagation()}
-                                  className='block truncate text-xs font-medium text-primary hover:underline'
-                                >
-                                  {task.projectName}
-                                </Link>
-                              </td>
-                              <td className='px-3 py-2.5'>
-                                {task.assigneeIds.length > 0 ? (
-                                  <div className='flex items-center'>
-                                    {task.assigneeIds.slice(0, 4).map((assigneeId, index) => {
-                                      const member = members.find((item) => item.id === assigneeId)
-                                      const label = member?.name ?? 'Unknown'
-                                      const initials = label
-                                        .split(/\s+/)
-                                        .filter(Boolean)
-                                        .slice(0, 2)
-                                        .map((part) => part[0]?.toUpperCase() ?? '')
-                                        .join('')
-                                      return (
-                                        <div key={assigneeId} className={cn('relative', index > 0 && '-ml-1')}>
-                                          <Avatar className='h-5 w-5 border border-background' title={label}>
-                                            {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
-                                            <AvatarFallback className='text-[8px] font-semibold'>{initials || 'U'}</AvatarFallback>
-                                          </Avatar>
-                                        </div>
-                                      )
-                                    })}
-                                    {task.assigneeIds.length > 4 ? (
-                                      <div className='-ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-background bg-muted text-[7px] font-semibold text-muted-foreground'>
-                                        +{task.assigneeIds.length - 4}
+                              const subtasks = listSubtasksByParentTaskId.get(task.id) ?? []
+                              const hasSubtasks = subtasks.length > 0
+                              const isExpanded = hasSubtasks && expandedParentTaskIds.has(task.id)
+
+                              const renderTaskRow = (rowTask: TaskRow, options?: { isSubtask?: boolean }) => {
+                                const isSubtask = options?.isSubtask ?? false
+                                const canEditTaskRow = canEditTaskById(rowTask.id)
+
+                                return (
+                                  <tr
+                                    key={rowTask.id}
+                                    className='cursor-pointer border-b transition-colors hover:bg-muted/10 last:border-b-0'
+                                    onClick={() => openTaskDetailsById(rowTask.id)}
+                                  >
+                                    <td className='px-1.5 py-2.5'>
+                                      <button
+                                        type='button'
+                                        disabled={!canEditTaskRow}
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          if (!canEditTaskRow) return
+                                          void toggleBoardTaskCompleted(rowTask.id)
+                                        }}
+                                        className={cn(
+                                          'mx-auto inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                                          isSubtask && 'ml-4',
+                                          rowTask.completed
+                                            ? 'border-emerald-500 bg-emerald-500 text-white'
+                                            : 'border-border bg-background text-transparent',
+                                        )}
+                                        aria-label={rowTask.completed ? `Mark ${rowTask.title} as incomplete` : `Mark ${rowTask.title} as complete`}
+                                      >
+                                        <Check className='h-3 w-3' aria-hidden='true' />
+                                      </button>
+                                    </td>
+                                    <td className='py-2.5 pl-1 pr-4'>
+                                      <div className={cn('flex items-center gap-2', isSubtask && 'pl-4')}>
+                                        {isSubtask ? (
+                                          <span className='inline-flex h-4 w-4 shrink-0' />
+                                        ) : hasSubtasks ? (
+                                          <button
+                                            type='button'
+                                            onClick={(event) => {
+                                              event.stopPropagation()
+                                              setExpandedParentTaskIds((current) => {
+                                                const next = new Set(current)
+                                                if (next.has(rowTask.id)) next.delete(rowTask.id)
+                                                else next.add(rowTask.id)
+                                                return next
+                                              })
+                                            }}
+                                            className='inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                            aria-label={isExpanded ? `Collapse subtasks for ${rowTask.title}` : `Expand subtasks for ${rowTask.title}`}
+                                          >
+                                            {isExpanded ? (
+                                              <ChevronDown className='h-3.5 w-3.5' aria-hidden='true' />
+                                            ) : (
+                                              <ChevronRight className='h-3.5 w-3.5' aria-hidden='true' />
+                                            )}
+                                          </button>
+                                        ) : (
+                                          <span className='inline-flex h-4 w-4 shrink-0' />
+                                        )}
+                                        <span
+                                          className={cn(
+                                            'font-medium text-foreground',
+                                            rowTask.completed && 'text-muted-foreground line-through',
+                                          )}
+                                        >
+                                          {rowTask.title}
+                                        </span>
                                       </div>
-                                    ) : null}
-                                  </div>
-                                ) : (
-                                  <span className='text-sm text-muted-foreground'>-</span>
-                                )}
-                              </td>
-                              <td className='px-3 py-2.5 whitespace-nowrap'>{task.due}</td>
-                              <td className='px-3 py-2.5'>
-                                <Badge variant='outline' className={cn('whitespace-nowrap', priorityBadgeTone(task.priority))}>
-                                  {task.priority}
-                                </Badge>
-                              </td>
-                              <td className='px-4 py-2.5'>
-                                <div className='flex items-center justify-end gap-1'>
-                                  {canEditTaskRow ? (
-                                    <button
-                                      type='button'
-                                      onClick={(event) => {
-                                        event.stopPropagation()
-                                        void handleDeleteTask(task.id)
-                                      }}
-                                      className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                                      aria-label={`Delete ${task.title}`}
-                                    >
-                                      <Trash2 className='h-3.5 w-3.5' aria-hidden='true' />
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </td>
-                            </tr>
-                          )})}
+                                    </td>
+                                    <td className='px-3 py-2.5'>
+                                      <Link
+                                        to={`/dashboard/projects/${rowTask.projectId}`}
+                                        onClick={(event) => event.stopPropagation()}
+                                        className='block truncate text-xs font-medium text-primary hover:underline'
+                                      >
+                                        {rowTask.projectName}
+                                      </Link>
+                                    </td>
+                                    <td className='px-3 py-2.5'>
+                                      {rowTask.assigneeIds.length > 0 ? (
+                                        <div className='flex items-center'>
+                                          {rowTask.assigneeIds.slice(0, 4).map((assigneeId, index) => {
+                                            const member = members.find((item) => item.id === assigneeId)
+                                            const label = member?.name ?? 'Unknown'
+                                            const initials = label
+                                              .split(/\s+/)
+                                              .filter(Boolean)
+                                              .slice(0, 2)
+                                              .map((part) => part[0]?.toUpperCase() ?? '')
+                                              .join('')
+                                            return (
+                                              <div key={assigneeId} className={cn('relative', index > 0 && '-ml-1')}>
+                                                <Avatar className='h-5 w-5 border border-background' title={label}>
+                                                  {member?.avatarUrl ? <AvatarImage src={member.avatarUrl} alt={label} /> : null}
+                                                  <AvatarFallback className='text-[8px] font-semibold'>{initials || 'U'}</AvatarFallback>
+                                                </Avatar>
+                                              </div>
+                                            )
+                                          })}
+                                          {rowTask.assigneeIds.length > 4 ? (
+                                            <div className='-ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full border border-background bg-muted text-[7px] font-semibold text-muted-foreground'>
+                                              +{rowTask.assigneeIds.length - 4}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      ) : (
+                                        <span className='text-sm text-muted-foreground'>-</span>
+                                      )}
+                                    </td>
+                                    <td className='px-3 py-2.5 whitespace-nowrap'>{rowTask.due}</td>
+                                    <td className='px-3 py-2.5'>
+                                      <Badge variant='outline' className={cn('whitespace-nowrap', priorityBadgeTone(rowTask.priority))}>
+                                        {rowTask.priority}
+                                      </Badge>
+                                    </td>
+                                    <td className='px-4 py-2.5'>
+                                      <div className='flex items-center justify-end gap-1'>
+                                        {canEditTaskRow ? (
+                                          <button
+                                            type='button'
+                                            onClick={(event) => {
+                                              event.stopPropagation()
+                                              void handleDeleteTask(rowTask.id)
+                                            }}
+                                            className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                            aria-label={`Delete ${rowTask.title}`}
+                                          >
+                                            <Trash2 className='h-3.5 w-3.5' aria-hidden='true' />
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              }
+
+                              return (
+                                <Fragment key={task.id}>
+                                  {renderTaskRow(task)}
+                                  {isExpanded ? subtasks.map((subtask) => renderTaskRow(subtask, { isSubtask: true })) : null}
+                                </Fragment>
+                              )
+                            })}
                         </tbody>
                       </table>
                     )}

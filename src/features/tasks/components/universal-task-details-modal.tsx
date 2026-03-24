@@ -109,18 +109,40 @@ function mentionHandleForMember(member: { name: string; username?: string | null
 }
 
 function extractMentionedMemberIds(text: string, members: Array<{ id: string; name: string; username?: string | null }>) {
-  const normalized = text.toLowerCase()
-  const mentioned = new Set<string>()
+  const handleToId = new Map<string, string>()
   for (const member of members) {
-    const handleToken = `@${mentionHandleForMember(member).toLowerCase()}`
-    const normalizedNameHandle = `@${member.name
+    const primaryHandle = mentionHandleForMember(member).toLowerCase()
+    const normalizedName = member.name
       .trim()
       .toLowerCase()
-      .replace(/\s+/g, '_')
-      .replace(/[^a-z0-9._-]/g, '')}`
-    const nameToken = `@${member.name.toLowerCase()}`
-    if (normalized.includes(handleToken) || normalized.includes(normalizedNameHandle) || normalized.includes(nameToken)) {
-      mentioned.add(member.id)
+      .replace(/\s+/g, ' ')
+      .replace(/[^a-z0-9._\s-]/g, '')
+    const nameHandle = normalizedName.replace(/\s+/g, '_')
+    const compactName = normalizedName.replace(/[^a-z0-9]/g, '')
+    ;[primaryHandle, normalizedName, nameHandle, compactName].filter(Boolean).forEach((handle) => {
+      if (!handleToId.has(handle)) handleToId.set(handle, member.id)
+    })
+  }
+
+  const mentioned = new Set<string>()
+  const regex = /@([a-zA-Z0-9._-]+(?:\s+[a-zA-Z0-9._-]+){0,2})/g
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text)) !== null) {
+    const raw = match[1]?.trim().toLowerCase()
+    if (!raw) continue
+    const cleaned = raw.replace(/[.,!?:;]+$/g, '')
+    const variants = [
+      cleaned,
+      cleaned.replace(/\s+/g, '_'),
+      cleaned.replace(/\s+/g, ''),
+      cleaned.replace(/[^a-z0-9._-]/g, ''),
+    ]
+    for (const variant of variants) {
+      const memberId = handleToId.get(variant)
+      if (memberId) {
+        mentioned.add(memberId)
+        break
+      }
     }
   }
   return Array.from(mentioned)
@@ -365,6 +387,9 @@ export function UniversalTaskDetailsModal() {
   const commentAudioContextRef = useRef<AudioContext | null>(null)
   const commentAnimationFrameRef = useRef<number | null>(null)
   const saveStateResetTimerRef = useRef<number | null>(null)
+  const mentionSessionTaskIdRef = useRef<string | null>(null)
+  const mentionSessionInitialDescriptionRef = useRef<string>('')
+  const latestTaskRef = useRef<TaskRow | null>(null)
   const taskCacheRef = useRef<
     Map<
       string,
@@ -382,6 +407,10 @@ export function UniversalTaskDetailsModal() {
     if (!task || !currentUser?.id) return false
     return task.created_by === currentUser.id || assigneeIds.includes(currentUser.id)
   }, [assigneeIds, currentUser?.id, task])
+
+  useEffect(() => {
+    latestTaskRef.current = task
+  }, [task])
 
   const stopRecordingVisualizer = useCallback(() => {
     if (commentAnimationFrameRef.current !== null) {
@@ -432,6 +461,10 @@ export function UniversalTaskDetailsModal() {
     }
 
     setTask(taskResult.data)
+    if (mentionSessionTaskIdRef.current !== id) {
+      mentionSessionTaskIdRef.current = id
+      mentionSessionInitialDescriptionRef.current = taskResult.data.description ?? ''
+    }
     setAssigneeIds((assigneesResult.data ?? []).map((row) => row.assignee_id))
     setLoadingTask(false)
 
@@ -575,8 +608,10 @@ export function UniversalTaskDetailsModal() {
     }
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<OpenTaskModalEventDetail>).detail
-      if (!detail?.taskId) return
-      setTaskId(detail.taskId)
+      const consumedTaskId = consumePendingTaskDetailsModalId()
+      const nextTaskId = consumedTaskId ?? detail?.taskId
+      if (!nextTaskId) return
+      setTaskId(nextTaskId)
       setOpen(true)
     }
     window.addEventListener('contas:open-task-modal', handler as EventListener)
@@ -675,39 +710,6 @@ export function UniversalTaskDetailsModal() {
           }
         }
 
-        const previousMentionedMemberIds = extractMentionedMemberIds(previousTask?.description ?? '', members)
-        const nextMentionedMemberIds = extractMentionedMemberIds(next.description ?? '', members)
-        const addedMentionIds = nextMentionedMemberIds.filter(
-          (memberId) => !previousMentionedMemberIds.includes(memberId) && memberId !== currentUser.id,
-        )
-        if (addedMentionIds.length > 0) {
-          const mentionNotifications = addedMentionIds.map((recipientId) => ({
-            id: crypto.randomUUID(),
-            recipient_id: recipientId,
-            actor_id: currentUser.id,
-            task_id: taskId,
-            type: 'mention' as const,
-            title: 'You were mentioned',
-            message: `You were mentioned in "${next.title || previousTask?.title || 'a task'}".`,
-            metadata: { event: 'task_mentioned', source: 'global_task_modal_description' },
-          }))
-          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
-          if (mentionNotificationsError) {
-            console.error('Failed to create mention notifications from global task modal description', mentionNotificationsError)
-          } else {
-            void dispatchNotificationEmails(
-              mentionNotifications.map((item) => ({
-                  notificationId: item.id,
-                  recipientId: item.recipient_id,
-                  recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
-                  type: 'mention' as const,
-                  taskId: item.task_id as string,
-                  taskTitle: next.title || previousTask?.title || 'a task',
-                  actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
-                })),
-            )
-          }
-        }
       }
 
       setTask(next)
@@ -1016,13 +1018,99 @@ export function UniversalTaskDetailsModal() {
   }
 
   const currentUserMember = members.find((member) => member.id === currentUser?.id)
+  const teammateMembers = useMemo(() => members.filter((member) => member.id !== currentUser?.id), [currentUser?.id, members])
   const selectedAssignees = assigneeIds
     .map((id) => members.find((member) => member.id === id))
     .filter((member): member is Member => Boolean(member))
+  const missingMentionEmails = useMemo(() => {
+    if (!task?.description) return []
+    if (members.length === 0) return []
+    const mentionedIds = extractMentionedMemberIds(task.description, members)
+    if (mentionedIds.length === 0) return []
+    return mentionedIds
+      .map((id) => members.find((member) => member.id === id))
+      .filter((member): member is Member => Boolean(member && !member.email))
+      .map((member) => member.name)
+  }, [members, task?.description])
+  const flushDescriptionMentionNotificationsOnClose = useCallback(async () => {
+    const latestTask = latestTaskRef.current
+    if (!latestTask || !taskId || !currentUser?.id) return
+
+    const memberDirectory =
+      members.length > 0
+        ? members
+        : (
+            (await supabase
+              .from('profiles')
+              .select('id, full_name, username, email, avatar_url')
+              .order('full_name', { ascending: true })).data ?? []
+          ).map((profile) => ({
+            id: profile.id,
+            name: profile.full_name ?? profile.email ?? 'Unknown user',
+            username: profile.username ?? undefined,
+            email: profile.email ?? undefined,
+            avatarUrl: profile.avatar_url ?? undefined,
+          }))
+
+    const initialMentionedMemberIds = extractMentionedMemberIds(mentionSessionInitialDescriptionRef.current, memberDirectory).filter(
+      (memberId) => memberId !== currentUser.id,
+    )
+    const finalMentionedMemberIds = extractMentionedMemberIds(latestTask.description ?? '', memberDirectory).filter(
+      (memberId) => memberId !== currentUser.id,
+    )
+    const addedMentionIds = finalMentionedMemberIds.filter((memberId) => !initialMentionedMemberIds.includes(memberId))
+    if (addedMentionIds.length === 0) return
+
+    const mentionNotifications = addedMentionIds.map((recipientId) => ({
+      id: crypto.randomUUID(),
+      recipient_id: recipientId,
+      actor_id: currentUser.id,
+      task_id: taskId,
+      type: 'mention' as const,
+      title: 'You were mentioned',
+      message: `You were mentioned in "${latestTask.title || 'a task'}".`,
+      metadata: { event: 'task_mentioned', source: 'global_task_modal_description_close' },
+    }))
+    const { data: createdNotifications, error } = await supabase
+      .from('notifications')
+      .insert(mentionNotifications)
+      .select('id, recipient_id, task_id')
+    if (error) {
+      console.error('Failed to create mention notifications on task modal close', error)
+      return
+    }
+    const created = createdNotifications ?? []
+    if (created.length === 0) return
+    void dispatchNotificationEmails(
+      created.map((item) => ({
+        notificationId: item.id,
+        recipientId: item.recipient_id,
+        recipientEmail: memberDirectory.find((member) => member.id === item.recipient_id)?.email ?? undefined,
+        type: 'mention' as const,
+        taskId: item.task_id,
+        taskTitle: latestTask.title || 'a task',
+        actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+      })),
+    )
+  }, [currentUser?.email, currentUser?.id, currentUser?.name, members, taskId])
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        void flushDescriptionMentionNotificationsOnClose()
+      }
+
+      if (!nextOpen) {
+        mentionSessionTaskIdRef.current = null
+        mentionSessionInitialDescriptionRef.current = ''
+      }
+      setOpen(nextOpen)
+    },
+    [flushDescriptionMentionNotificationsOnClose],
+  )
 
   return (
     <>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showClose={!loadingTask}
         disableAnimations
@@ -1217,7 +1305,7 @@ export function UniversalTaskDetailsModal() {
                       </PopoverTrigger>
                       <PopoverContent className='w-72 p-2' align='end'>
                         <div className='max-h-48 space-y-1 overflow-y-auto'>
-                          {members.map((member) => {
+                          {teammateMembers.map((member) => {
                             const selected = assigneeIds.includes(member.id)
                             return (
                               <button
@@ -1277,13 +1365,18 @@ export function UniversalTaskDetailsModal() {
                         setTask((current) => (current ? { ...current, description: nextDescription } : current))
                       }}
                       onBlur={() => task && void saveTask(task, assigneeIds)}
-                      mentionOptions={members.map((member) => ({ id: member.id, name: member.name, username: member.username ?? undefined }))}
+                      mentionOptions={teammateMembers.map((member) => ({ id: member.id, name: member.name, username: member.username ?? undefined }))}
                       placeholder='Describe the task...'
                       disabled={!canEdit}
                       minHeightClassName='min-h-[180px]'
                       className='h-full'
                     />
                   </div>
+                  {missingMentionEmails.length > 0 ? (
+                    <p className='text-xs text-amber-300'>
+                      Email missing for: {missingMentionEmails.join(', ')}.
+                    </p>
+                  ) : null}
                 </div>
                 </div>
               </div>

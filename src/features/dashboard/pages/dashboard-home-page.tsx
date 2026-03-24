@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useOrganization } from '@/features/organization/context/organization-context'
+import { normalizeProjectColor } from '@/features/projects/lib/project-colors'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -21,7 +22,7 @@ type DashboardTask = {
   dueAt: string | null
   createdAt: string
 }
-type DashboardProject = { id: string; name: string }
+type DashboardProject = { id: string; name: string; color: string }
 type DashboardCachePayload = {
   tasks: DashboardTask[]
   projects: DashboardProject[]
@@ -237,14 +238,18 @@ export function DashboardHomePage() {
 
     const loadDashboard = async () => {
       const [projectsResult, profilesResult, tasksResult, taskAssigneesResult] = await Promise.all([
-        supabase.from('projects').select('id, name').order('name', { ascending: true }),
+        supabase.from('projects').select('id, name, color').order('name', { ascending: true }),
         supabase.from('profiles').select('id, full_name, email'),
         supabase.from('tasks').select('id, title, status, project_id, assigned_to, due_at, created_at').order('created_at', { ascending: false }),
         supabase.from('task_assignees').select('task_id, assignee_id'),
       ])
       if (cancelled) return
 
-      const nextProjects = (projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' }))
+      const nextProjects = (projectsResult.data ?? []).map((project) => ({
+        id: project.id,
+        name: project.name ?? 'Untitled project',
+        color: normalizeProjectColor(project.color),
+      }))
       const profileMap = new Map(
         (profilesResult.data ?? []).map((profile) => [profile.id, profile.full_name ?? profile.email ?? 'Unassigned']),
       )
@@ -337,15 +342,14 @@ export function DashboardHomePage() {
   const donutGradient = useMemo(() => {
     if (totalTasks === 0) return 'conic-gradient(hsl(var(--muted-foreground)/0.2) 0 100%)'
 
-    const tones = ['#60A5FA', '#34D399', '#FBBF24', '#A78BFA', '#FB7185']
     let cursor = 0
     const slices: string[] = []
 
-    projectDistribution.forEach((item, index) => {
+    projectDistribution.forEach((item) => {
       if (item.count === 0) return
       const size = (item.count / totalTasks) * 100
       const next = cursor + size
-      slices.push(`${tones[index % tones.length]} ${cursor}% ${next}%`)
+      slices.push(`${item.color} ${cursor}% ${next}%`)
       cursor = next
     })
 
@@ -613,13 +617,10 @@ export function DashboardHomePage() {
               {projectDistribution.length === 0 ? (
                 <div className='rounded-md border px-3 py-4 text-sm text-muted-foreground'>No projects in the database yet.</div>
               ) : (
-                projectDistribution.map((project, index) => (
+                projectDistribution.map((project) => (
                   <div key={project.id} className='flex items-center justify-between rounded-md border px-3 py-2 text-sm'>
                     <span className='inline-flex items-center gap-2'>
-                      <span
-                        className='h-2.5 w-2.5 rounded-full'
-                        style={{ backgroundColor: ['#60A5FA', '#34D399', '#FBBF24', '#A78BFA', '#FB7185'][index % 5] }}
-                      />
+                      <span className='h-2.5 w-2.5 rounded-full' style={{ backgroundColor: project.color }} />
                       <span className='text-muted-foreground'>{project.name}</span>
                     </span>
                     <span className='font-medium text-foreground'>

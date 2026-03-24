@@ -408,7 +408,7 @@ export function CreateTaskDialog({
   const teammateOptions = memberOptions.filter((member) => member.id !== currentUser?.id)
   const filteredMembers = teammateOptions.filter((member) => member.name.toLowerCase().includes(assigneeSearch.trim().toLowerCase()))
   const selectedAssignees = assigneeIds
-    .map((id) => memberOptions.find((member) => member.id === id))
+    .map((id) => teammateOptions.find((member) => member.id === id) ?? memberOptions.find((member) => member.id === id))
     .filter((member): member is MemberOption => Boolean(member))
   const initials = (value: string) =>
     value
