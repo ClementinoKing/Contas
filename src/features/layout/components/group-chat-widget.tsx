@@ -34,7 +34,6 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { notify } from '@/lib/notify'
 import { optimizeImageFileForUpload, resolveR2ObjectUrl, uploadChatAttachmentToR2, uploadChatVoiceToR2 } from '@/lib/r2'
@@ -1252,8 +1251,6 @@ export function GroupChatWidget() {
   const [isRecordingVoice, setIsRecordingVoice] = useState(false)
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
   const [recordingLevels, setRecordingLevels] = useState<number[]>(() => createBaseWaveLevels(20))
-  const [scrollSeed, setScrollSeed] = useState(0)
-  const [isBodyReady, setIsBodyReady] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dragDepthRef = useRef(0)
@@ -1269,7 +1266,6 @@ export function GroupChatWidget() {
   const voiceChunksRef = useRef<Blob[]>([])
   const voiceAnimationFrameRef = useRef<number | null>(null)
   const voiceStartAtRef = useRef(0)
-  const lastScrolledSeedRef = useRef(-1)
   const stickToLatestRef = useRef(false)
 
   const profileById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles])
@@ -1758,11 +1754,43 @@ export function GroupChatWidget() {
     voiceAudioContextRef.current = null
   }, [])
 
+  const finalizeVoiceRecording = useCallback(
+    (recorder: MediaRecorder) => {
+      const durationMs = Date.now() - voiceStartAtRef.current
+      const mimeType = recorder.mimeType || 'audio/webm'
+      const fileExt = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('wav') ? 'wav' : mimeType.includes('mp4') ? 'm4a' : 'webm'
+      const file = new File([new Blob(voiceChunksRef.current, { type: mimeType })], `voice-${Date.now()}.${fileExt}`, {
+        type: mimeType,
+      })
+      const previewUrl = URL.createObjectURL(file)
+      setPendingVoiceMessage((current) => {
+        if (current) URL.revokeObjectURL(current.previewUrl)
+        return { file, previewUrl, durationMs }
+      })
+      stopVoiceRecordingVisualizer()
+      voiceMediaRecorderRef.current = null
+    },
+    [stopVoiceRecordingVisualizer],
+  )
+
   const stopVoiceRecording = useCallback(() => {
     const recorder = voiceMediaRecorderRef.current
-    if (!recorder) return
-    if (recorder.state !== 'inactive') recorder.stop()
-  }, [])
+    if (!recorder) {
+      stopVoiceRecordingVisualizer()
+      return
+    }
+
+    try {
+      if (recorder.state === 'recording' || recorder.state === 'paused') {
+        recorder.stop()
+        return
+      }
+    } catch (error) {
+      console.error('Failed to stop voice recording', error)
+    }
+
+    finalizeVoiceRecording(recorder)
+  }, [finalizeVoiceRecording, stopVoiceRecordingVisualizer])
 
   const startVoiceRecording = useCallback(async () => {
     if (isRecordingVoice) return
@@ -1781,7 +1809,6 @@ export function GroupChatWidget() {
       voiceChunksRef.current = []
       voiceStartAtRef.current = Date.now()
       setRecordingElapsedMs(0)
-      setIsRecordingVoice(true)
 
       const audioContext = new AudioContext()
       voiceAudioContextRef.current = audioContext
@@ -1816,23 +1843,12 @@ export function GroupChatWidget() {
       }
 
       recorder.onstop = () => {
-        const durationMs = Date.now() - voiceStartAtRef.current
-        const mimeType = recorder.mimeType || 'audio/webm'
-        const fileExt = mimeType.includes('ogg') ? 'ogg' : mimeType.includes('wav') ? 'wav' : mimeType.includes('mp4') ? 'm4a' : 'webm'
-        const file = new File([new Blob(voiceChunksRef.current, { type: mimeType })], `voice-${Date.now()}.${fileExt}`, {
-          type: mimeType,
-        })
-        const previewUrl = URL.createObjectURL(file)
-        setPendingVoiceMessage((current) => {
-          if (current) URL.revokeObjectURL(current.previewUrl)
-          return { file, previewUrl, durationMs }
-        })
-        stopVoiceRecordingVisualizer()
-        voiceMediaRecorderRef.current = null
+        finalizeVoiceRecording(recorder)
       }
 
       voiceMediaRecorderRef.current = recorder
       recorder.start()
+      setIsRecordingVoice(true)
     } catch (error) {
       console.error('Failed to start voice recording', error)
       notify.error('Microphone permission required', {
@@ -1842,15 +1858,7 @@ export function GroupChatWidget() {
       voiceMediaRecorderRef.current = null
       stopVoiceRecordingVisualizer()
     }
-  }, [isRecordingVoice, stopVoiceRecordingVisualizer])
-
-  const toggleVoiceRecording = useCallback(() => {
-    if (isRecordingVoice) {
-      stopVoiceRecording()
-      return
-    }
-    void startVoiceRecording()
-  }, [isRecordingVoice, startVoiceRecording, stopVoiceRecording])
+  }, [finalizeVoiceRecording, isRecordingVoice, stopVoiceRecordingVisualizer])
 
   const handleAttachmentSelection = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -2366,34 +2374,16 @@ export function GroupChatWidget() {
   }, [])
 
   const handleAttachmentLoad = useCallback(() => {
-    if (!open || !stickToLatestRef.current || !isBodyReady) return
+    if (!open || !stickToLatestRef.current) return
     window.requestAnimationFrame(scrollMessagesToBottom)
-  }, [isBodyReady, open, scrollMessagesToBottom])
-
-  useLayoutEffect(() => {
-    if (!open) return
-    if (loading) return
-    if (messages.length === 0 || error) {
-      setIsBodyReady(true)
-      return
-    }
-    if (lastScrolledSeedRef.current === scrollSeed) return
-
-    lastScrolledSeedRef.current = scrollSeed
-    stickToLatestRef.current = true
-    scrollMessagesToBottom()
-    setIsBodyReady(true)
-  }, [error, loading, messages.length, open, scrollMessagesToBottom, scrollSeed])
+  }, [open])
 
   useEffect(() => {
     if (!open) {
       stickToLatestRef.current = false
-      setIsBodyReady(false)
       return
     }
-
-    stickToLatestRef.current = true
-  }, [open, isFullscreen, scrollSeed])
+  }, [open])
 
   useEffect(() => {
     const container = messagesScrollRef.current
@@ -2421,25 +2411,16 @@ export function GroupChatWidget() {
     }
   }, [])
 
-  const shouldHideChatBody = open && !isBodyReady && messages.length > 0 && !error
+  const shouldHideChatBody = false
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen)
     setIsFullscreen(false)
-    if (nextOpen) {
-      setIsBodyReady(false)
-      setScrollSeed((current) => current + 1)
-    }
   }, [])
 
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen((current) => {
-      const next = !current
-      if (next) {
-        setIsBodyReady(false)
-        setScrollSeed((value) => value + 1)
-      }
-      return next
+      return !current
     })
   }, [])
 
@@ -2666,40 +2647,20 @@ export function GroupChatWidget() {
                 />
               ) : null}
 
-              <div className='flex items-end gap-2'>
-                <div className='relative min-w-0 flex-1'>
+              <div className='grid items-stretch gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]'>
+                <div className='relative min-w-0 h-11'>
                   {isRecordingVoice ? (
-                    <div className='flex h-11 items-center gap-3 rounded-xl border border-border/70 bg-muted/30 px-3 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'>
-                      <div className='flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-500/10 text-rose-500'>
-                        <Mic className='h-4 w-4' aria-hidden='true' />
+                    <div className='flex h-full items-center rounded-xl border border-border/70 bg-muted/30 px-3 pr-14 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)]'>
+                      <div className='grid h-6 min-w-0 flex-1 items-center gap-[2px]' style={{ gridTemplateColumns: `repeat(${recordingLevels.length}, minmax(0, 1fr))` }}>
+                        {recordingLevels.map((level, index) => (
+                          <span
+                            key={index}
+                            className='w-[2px] justify-self-center rounded-full bg-rose-500/85'
+                            style={{ height: `${Math.max(4, Math.round(level * 11)) * 2}px` }}
+                          />
+                        ))}
                       </div>
-                      <div className='min-w-0 flex-1'>
-                        <div
-                          className='grid h-6 min-w-0 items-center gap-[2px]'
-                          style={{ gridTemplateColumns: `repeat(${recordingLevels.length}, minmax(0, 1fr))` }}
-                        >
-                          {recordingLevels.map((level, index) => (
-                            <span
-                              key={index}
-                              className='w-[2px] justify-self-center rounded-full bg-rose-500/85'
-                              style={{ height: `${Math.max(4, Math.round(level * 11)) * 2}px` }}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                      <span className='text-xs font-medium tabular-nums text-muted-foreground'>
-                        {formatVoiceDuration(recordingElapsedMs)}
-                      </span>
-                      <Button
-                        type='button'
-                        size='icon'
-                        variant='outline'
-                        className='h-8 w-8 shrink-0 rounded-full border-border/70 bg-muted/20'
-                        aria-label='Stop recording'
-                        onClick={stopVoiceRecording}
-                      >
-                        <Square className='h-3.5 w-3.5' aria-hidden='true' />
-                      </Button>
+                      <span className='ml-3 text-xs font-medium tabular-nums text-muted-foreground'>{formatVoiceDuration(recordingElapsedMs)}</span>
                     </div>
                   ) : (
                     <textarea
@@ -2715,45 +2676,59 @@ export function GroupChatWidget() {
                       onKeyDown={handleDraftKeyDown}
                       placeholder='Message'
                       rows={1}
-                      className='h-11 w-full resize-none rounded-xl border border-border/70 bg-muted/30 px-3 py-2.5 text-sm leading-5 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)] ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50'
+                      className='h-full w-full resize-none rounded-xl border border-border/70 bg-muted/30 px-3 py-2.5 pr-14 text-sm leading-5 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)] ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50'
                     ></textarea>
                   )}
-                </div>
-                <div className='flex items-end gap-2'>
                   <Button
                     type='button'
-                    variant='outline'
-                    size='icon'
-                    className='h-11 w-11 shrink-0 rounded-xl border-border/70 bg-muted/20 self-end'
-                    aria-label='Attach file'
-                    onClick={openAttachmentPicker}
-                  >
-                    <Paperclip className='h-4 w-4' aria-hidden='true' />
-                  </Button>
-                  <Button
-                    type='button'
-                    variant='outline'
+                    variant='ghost'
                     size='icon'
                     className={cn(
-                      'h-11 w-11 shrink-0 rounded-xl border-border/70 bg-muted/20 self-end',
-                      isRecordingVoice && 'border-rose-500/40 bg-rose-500/10 text-rose-500 hover:bg-rose-500/15',
+                      'absolute right-2 top-1/2 h-8 w-8 -translate-y-1/2 rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
+                      isRecordingVoice && 'border border-rose-500/40 bg-rose-500/10 text-rose-500 hover:bg-rose-500/15',
                     )}
                     aria-label={isRecordingVoice ? 'Stop recording voice message' : 'Record voice message'}
-                    onClick={toggleVoiceRecording}
+                    onPointerDown={(event) => {
+                      event.preventDefault()
+                      if (isRecordingVoice) {
+                        stopVoiceRecording()
+                        return
+                      }
+                      void startVoiceRecording()
+                    }}
+                    onClick={(event) => {
+                      if (event.detail !== 0) return
+                      event.preventDefault()
+                      if (isRecordingVoice) {
+                        stopVoiceRecording()
+                        return
+                      }
+                      void startVoiceRecording()
+                    }}
                   >
-                    {isRecordingVoice ? <Square className='h-4 w-4' aria-hidden='true' /> : <Mic className='h-4 w-4' aria-hidden='true' />}
-                  </Button>
-                  <Button
-                    type='button'
-                    size='icon'
-                    className='h-11 w-11 rounded-xl self-end'
-                    onClick={() => void sendMessage()}
-                    aria-label={editingMessage ? 'Update message' : 'Send message'}
-                    disabled={sending || !room?.id || !currentUser?.id}
-                  >
-                    {editingMessage ? <Check className='h-4 w-4' aria-hidden='true' /> : <Send className='h-4 w-4' aria-hidden='true' />}
+                    {isRecordingVoice ? <Square className='h-3.5 w-3.5' aria-hidden='true' /> : <Mic className='h-4 w-4' aria-hidden='true' />}
                   </Button>
                 </div>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='icon'
+                  className='h-11 w-11 shrink-0 rounded-xl border-border/70 bg-muted/20'
+                  aria-label='Attach file'
+                  onClick={openAttachmentPicker}
+                >
+                  <Paperclip className='h-4 w-4' aria-hidden='true' />
+                </Button>
+                <Button
+                  type='button'
+                  size='icon'
+                  className='h-11 w-11 shrink-0 rounded-xl'
+                  onClick={() => void sendMessage()}
+                  aria-label={editingMessage ? 'Update message' : 'Send message'}
+                  disabled={sending || isRecordingVoice || !room?.id || !currentUser?.id}
+                >
+                  {editingMessage ? <Check className='h-4 w-4' aria-hidden='true' /> : <Send className='h-4 w-4' aria-hidden='true' />}
+                </Button>
               </div>
               {isDraggingFiles ? (
                 <div className='absolute inset-3 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary/40 bg-background/85 px-4 py-6 text-center shadow-[0_10px_30px_hsl(var(--foreground)/0.08)]'>
@@ -2906,32 +2881,38 @@ export function GroupChatWidget() {
 
   return (
     <>
-      <Popover open={open && !isFullscreen} onOpenChange={handleOpenChange}>
-      <PopoverTrigger asChild>
-        <Button
-          type='button'
-          size='icon'
-          className={cn(
-            'fixed bottom-4 right-4 z-[60] h-14 w-14 rounded-full bg-primary shadow-[var(--elevation-lg)] transition-transform duration-200 hover:scale-105 hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:bottom-6 sm:right-6',
-            isFullscreen && 'hidden',
-          )}
-          aria-label={open ? 'Close group chat' : 'Open group chat'}
-        >
-          {open ? <X className='h-6 w-6' aria-hidden='true' /> : <MessageSquareText className='h-6 w-6' aria-hidden='true' />}
-        </Button>
-      </PopoverTrigger>
-
-      <PopoverContent
-        side='top'
-        align='end'
-        sideOffset={18}
-        onOpenAutoFocus={(event) => event.preventDefault()}
-        onCloseAutoFocus={(event) => event.preventDefault()}
-        className='z-[60] w-[calc(100vw-1rem)] max-w-[30rem] overflow-hidden rounded-3xl border border-border/70 p-0 shadow-[0_40px_120px_rgba(15,23,42,0.24),0_12px_28px_rgba(15,23,42,0.10)] ring-1 ring-slate-200/80 dark:shadow-[var(--elevation-lg)] dark:ring-0 sm:w-[30rem]'
+      <Button
+        type='button'
+        size='icon'
+        className={cn(
+          'fixed bottom-4 right-4 z-[60] h-14 w-14 rounded-full bg-primary shadow-[var(--elevation-lg)] transition-transform duration-200 hover:scale-105 hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:bottom-6 sm:right-6',
+          (open || isFullscreen) && 'hidden',
+        )}
+        aria-label={open ? 'Close group chat' : 'Open group chat'}
+        aria-expanded={open}
+        aria-controls='group-chat-panel'
+        onClick={() => handleOpenChange(!open)}
       >
-        <ChatSurface mode='popover' />
-      </PopoverContent>
-      </Popover>
+        {open ? <X className='h-6 w-6' aria-hidden='true' /> : <MessageSquareText className='h-6 w-6' aria-hidden='true' />}
+      </Button>
+
+      {open && !isFullscreen ? (
+        <div className='fixed inset-0 z-[55]'>
+          <button
+            type='button'
+            aria-label='Close group chat'
+            className='absolute inset-0 bg-transparent'
+            onClick={() => handleOpenChange(false)}
+          />
+          <div
+            id='group-chat-panel'
+            className='absolute bottom-4 right-4 w-[calc(100vw-1rem)] max-w-[30rem] overflow-hidden rounded-3xl border border-border/70 p-0 shadow-[0_40px_120px_rgba(15,23,42,0.24),0_12px_28px_rgba(15,23,42,0.10)] ring-1 ring-slate-200/80 dark:shadow-[var(--elevation-lg)] dark:ring-0 sm:bottom-6 sm:right-6 sm:w-[30rem]'
+            onClick={(event) => event.stopPropagation()}
+          >
+            <ChatSurface mode='popover' />
+          </div>
+        </div>
+      ) : null}
       <Dialog
         open={open && isFullscreen}
         onOpenChange={(nextOpen) => {
