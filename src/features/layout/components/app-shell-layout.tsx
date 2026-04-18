@@ -9,6 +9,7 @@ import { usePresenceHeartbeat } from '../hooks/use-presence-heartbeat'
 import { useSchemaHealth } from '../hooks/use-schema-health'
 import { AppHeader } from './app-header'
 import { DesktopSidebar, MobileSidebar } from './app-sidebar'
+import { GroupChatWidget } from './group-chat-widget'
 import { UniversalTaskDetailsModal } from '@/features/tasks/components/universal-task-details-modal'
 
 const LAST_DASHBOARD_PATH_KEY = 'contas.last-dashboard-path'
@@ -68,6 +69,7 @@ export function AppShellLayout() {
         </main>
       </div>
       <UniversalTaskDetailsModal />
+      <GroupChatWidget />
     </div>
   )
 }

@@ -15,6 +15,11 @@ const REALTIME_TABLES = [
   'goal_links',
   'organization_timeline_events',
   'user_presence_sessions',
+  'chat_rooms',
+  'chat_room_members',
+  'chat_messages',
+  'chat_message_mentions',
+  'chat_message_attachments',
 ] as const
 
 type RealtimePayload = {

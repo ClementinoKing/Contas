@@ -5,7 +5,7 @@ import { createClient } from 'npm:@supabase/supabase-js'
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type, x-file-name, x-content-type, x-upload-kind, x-forwarded-authorization, x-user-token',
+    'authorization, x-client-info, apikey, content-type, x-file-name, x-content-type, x-upload-kind',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 }
 
@@ -41,16 +41,6 @@ function json(body: unknown, status = 200) {
   })
 }
 
-function resolveUserToken(req: Request) {
-  const directAuthorization = req.headers.get('Authorization') ?? req.headers.get('authorization') ?? ''
-  const forwardedAuthorization = req.headers.get('x-forwarded-authorization') ?? ''
-  const rawUserToken = req.headers.get('x-user-token') ?? ''
-  const candidate = forwardedAuthorization || rawUserToken || directAuthorization
-  if (!candidate) return ''
-  const bearerMatch = candidate.match(/^Bearer\s+(.+)$/i)
-  return bearerMatch?.[1]?.trim() ?? candidate.trim()
-}
-
 function log(level: 'log' | 'error', event: string, details: Record<string, unknown> = {}) {
   console[level](JSON.stringify({ event, ...details }))
 }
@@ -62,12 +52,11 @@ function sanitizeFileName(fileName: string) {
 function fileExtension(fileName: string, fallbackType: string) {
   const ext = fileName.split('.').pop()?.toLowerCase()
   if (ext && ext.length <= 10) return ext
-  if (fallbackType === 'image/png') return 'png'
-  if (fallbackType === 'image/webp') return 'webp'
-  if (fallbackType === 'image/gif') return 'gif'
-  if (fallbackType === 'image/jpeg') return 'jpg'
-  if (fallbackType === 'image/jpg') return 'jpg'
-  if (fallbackType === 'image/svg+xml') return 'svg'
+  if (fallbackType === 'audio/mpeg') return 'mp3'
+  if (fallbackType === 'audio/mp4') return 'm4a'
+  if (fallbackType === 'audio/ogg') return 'ogg'
+  if (fallbackType === 'audio/wav') return 'wav'
+  if (fallbackType === 'audio/webm') return 'webm'
   return 'bin'
 }
 
@@ -76,14 +65,14 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  const accessToken = resolveUserToken(req)
+  const authorization = req.headers.get('Authorization') ?? ''
+  const tokenMatch = authorization.match(/^Bearer\s+(.+)$/i)
+  const accessToken = tokenMatch?.[1]?.trim() ?? ''
 
   if (!accessToken) {
     log('error', 'auth_missing_bearer', {
       method: req.method,
-      hasAuthorizationHeader: Boolean(req.headers.get('Authorization') ?? req.headers.get('authorization')),
-      hasForwardedAuthorization: Boolean(req.headers.get('x-forwarded-authorization')),
-      hasUserToken: Boolean(req.headers.get('x-user-token')),
+      hasAuthorizationHeader: Boolean(authorization),
     })
     return json({ error: 'Missing bearer token.' }, 401)
   }
@@ -118,11 +107,6 @@ Deno.serve(async (req) => {
     return json({ error: authError?.message ?? 'Unauthorized' }, 401)
   }
 
-  log('log', 'auth_verified', {
-    method: req.method,
-    userId: user.id,
-  })
-
   const s3 = getS3Client()
   if (!s3) {
     log('error', 'r2_missing_credentials', {
@@ -131,13 +115,13 @@ Deno.serve(async (req) => {
       hasSecretAccessKey: Boolean(secretAccessKey),
       bucket,
     })
-    return json({ error: 'R2 credentials are missing for the r2-avatar function.' }, 500)
+    return json({ error: 'R2 credentials are missing for the r2-chat-voice-messages function.' }, 500)
   }
 
   if (req.method === 'GET') {
     const key = new URL(req.url).searchParams.get('key')
     if (!key) return json({ error: 'Missing key.' }, 400)
-    if (!key.startsWith('avatars/')) {
+    if (!key.startsWith('chat-voice-messages/')) {
       return json({ error: 'Forbidden' }, 403)
     }
 
@@ -166,15 +150,15 @@ Deno.serve(async (req) => {
     return json({ error: 'Method not allowed.' }, 405)
   }
 
-  const contentType = req.headers.get('x-content-type') ?? 'application/octet-stream'
-  if (!contentType.startsWith('image/')) {
-    return json({ error: 'Only image uploads are allowed for avatar uploads.' }, 400)
+  const contentType = req.headers.get('x-content-type') ?? 'audio/webm'
+  if (!contentType.startsWith('audio/')) {
+    return json({ error: 'Only audio uploads are allowed for chat voice uploads.' }, 400)
   }
 
-  const rawFileName = decodeURIComponent(req.headers.get('x-file-name') ?? 'avatar')
+  const rawFileName = decodeURIComponent(req.headers.get('x-file-name') ?? 'voice')
   const safeFileName = sanitizeFileName(rawFileName)
   const ext = fileExtension(safeFileName, contentType)
-  const key = `avatars/${user.id}/${crypto.randomUUID()}.${ext}`
+  const key = `chat-voice-messages/${user.id}/${crypto.randomUUID()}.${ext}`
   const body = new Uint8Array(await req.arrayBuffer())
 
   try {
@@ -192,24 +176,17 @@ Deno.serve(async (req) => {
       }),
     )
   } catch (error) {
-      log('error', 'file_upload_failed', {
-        userId: user.id,
-        key,
-        bucket,
-        endpoint,
-        contentType,
-        size: body.byteLength,
-        message: error instanceof Error ? error.message : String(error),
-      })
+    log('error', 'file_upload_failed', {
+      userId: user.id,
+      key,
+      bucket,
+      endpoint,
+      contentType,
+      size: body.byteLength,
+      message: error instanceof Error ? error.message : String(error),
+    })
     return json({ error: error instanceof Error ? error.message : 'Failed to upload file to R2.' }, 500)
   }
-
-  log('log', 'file_uploaded', {
-    userId: user.id,
-    key,
-    contentType,
-    size: body.byteLength,
-  })
 
   try {
     const url = await getSignedUrl(

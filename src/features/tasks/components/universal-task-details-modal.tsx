@@ -35,7 +35,7 @@ import {
   statusLabelFromKey,
   type StatusOption,
 } from '@/features/tasks/lib/status-catalog'
-import { resolveR2ObjectUrl, uploadVoiceToR2 } from '@/lib/r2'
+import { resolveR2ObjectUrl, uploadTaskCommentVoiceToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
@@ -815,7 +815,7 @@ export function UniversalTaskDetailsModal() {
     let uploadedVoice: { key: string; url: string } | null = null
     if (pendingVoiceComment) {
       try {
-        uploadedVoice = await uploadVoiceToR2(pendingVoiceComment.file)
+        uploadedVoice = await uploadTaskCommentVoiceToR2(pendingVoiceComment.file)
       } catch (error) {
         setVoiceCommentError(error instanceof Error ? error.message : 'Voice upload failed.')
         return

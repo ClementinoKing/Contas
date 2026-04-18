@@ -9,8 +9,6 @@ import './index.css'
 
 const THEME_STORAGE_KEY = 'contas.ui.theme'
 const IMAGE_URL_LOG_PREFIX = 'Image URL being set:'
-const NETWORK_CHECK_INTERVAL_MS = 15_000
-const NETWORK_CHECK_TIMEOUT_MS = 4_000
 
 function applyInitialTheme() {
   const storedTheme = localStorage.getItem(THEME_STORAGE_KEY)
@@ -79,58 +77,6 @@ function RootWithNetworkGuard() {
     return () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!navigator.onLine) {
-      setIsOnline(false)
-      return
-    }
-
-    let cancelled = false
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
-    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
-
-    const checkNetworkReachability = async () => {
-      if (!supabaseUrl || supabaseUrl.trim().length === 0 || !supabaseAnonKey || supabaseAnonKey.trim().length === 0) {
-        setIsOnline(navigator.onLine)
-        return
-      }
-
-      const healthUrl = new URL('/rest/v1/', supabaseUrl).toString()
-      const controller = new AbortController()
-      const timeoutId = window.setTimeout(() => controller.abort(), NETWORK_CHECK_TIMEOUT_MS)
-      try {
-        const response = await fetch(healthUrl, {
-          method: 'HEAD',
-          cache: 'no-store',
-          mode: 'cors',
-          headers: {
-            apikey: supabaseAnonKey,
-          },
-          signal: controller.signal,
-        })
-        if (!cancelled) setIsOnline(response.status < 500)
-      } catch {
-        if (!cancelled) setIsOnline(false)
-      } finally {
-        window.clearTimeout(timeoutId)
-      }
-    }
-
-    void checkNetworkReachability()
-    const intervalId = window.setInterval(() => {
-      if (!navigator.onLine) {
-        setIsOnline(false)
-        return
-      }
-      void checkNetworkReachability()
-    }, NETWORK_CHECK_INTERVAL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
     }
   }, [])
 

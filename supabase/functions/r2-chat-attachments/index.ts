@@ -5,7 +5,7 @@ import { createClient } from 'npm:@supabase/supabase-js'
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type, x-file-name, x-content-type, x-upload-kind, x-forwarded-authorization, x-user-token',
+    'authorization, x-client-info, apikey, content-type, x-file-name, x-content-type, x-upload-kind',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 }
 
@@ -41,16 +41,6 @@ function json(body: unknown, status = 200) {
   })
 }
 
-function resolveUserToken(req: Request) {
-  const directAuthorization = req.headers.get('Authorization') ?? req.headers.get('authorization') ?? ''
-  const forwardedAuthorization = req.headers.get('x-forwarded-authorization') ?? ''
-  const rawUserToken = req.headers.get('x-user-token') ?? ''
-  const candidate = forwardedAuthorization || rawUserToken || directAuthorization
-  if (!candidate) return ''
-  const bearerMatch = candidate.match(/^Bearer\s+(.+)$/i)
-  return bearerMatch?.[1]?.trim() ?? candidate.trim()
-}
-
 function log(level: 'log' | 'error', event: string, details: Record<string, unknown> = {}) {
   console[level](JSON.stringify({ event, ...details }))
 }
@@ -68,6 +58,13 @@ function fileExtension(fileName: string, fallbackType: string) {
   if (fallbackType === 'image/jpeg') return 'jpg'
   if (fallbackType === 'image/jpg') return 'jpg'
   if (fallbackType === 'image/svg+xml') return 'svg'
+  if (fallbackType === 'application/pdf') return 'pdf'
+  if (fallbackType === 'application/msword') return 'doc'
+  if (fallbackType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return 'docx'
+  if (fallbackType === 'application/vnd.ms-powerpoint') return 'ppt'
+  if (fallbackType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pptx'
+  if (fallbackType === 'application/vnd.ms-excel') return 'xls'
+  if (fallbackType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'xlsx'
   return 'bin'
 }
 
@@ -76,14 +73,14 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  const accessToken = resolveUserToken(req)
+  const authorization = req.headers.get('Authorization') ?? ''
+  const tokenMatch = authorization.match(/^Bearer\s+(.+)$/i)
+  const accessToken = tokenMatch?.[1]?.trim() ?? ''
 
   if (!accessToken) {
     log('error', 'auth_missing_bearer', {
       method: req.method,
-      hasAuthorizationHeader: Boolean(req.headers.get('Authorization') ?? req.headers.get('authorization')),
-      hasForwardedAuthorization: Boolean(req.headers.get('x-forwarded-authorization')),
-      hasUserToken: Boolean(req.headers.get('x-user-token')),
+      hasAuthorizationHeader: Boolean(authorization),
     })
     return json({ error: 'Missing bearer token.' }, 401)
   }
@@ -118,11 +115,6 @@ Deno.serve(async (req) => {
     return json({ error: authError?.message ?? 'Unauthorized' }, 401)
   }
 
-  log('log', 'auth_verified', {
-    method: req.method,
-    userId: user.id,
-  })
-
   const s3 = getS3Client()
   if (!s3) {
     log('error', 'r2_missing_credentials', {
@@ -131,13 +123,13 @@ Deno.serve(async (req) => {
       hasSecretAccessKey: Boolean(secretAccessKey),
       bucket,
     })
-    return json({ error: 'R2 credentials are missing for the r2-avatar function.' }, 500)
+    return json({ error: 'R2 credentials are missing for the r2-chat-attachments function.' }, 500)
   }
 
   if (req.method === 'GET') {
     const key = new URL(req.url).searchParams.get('key')
     if (!key) return json({ error: 'Missing key.' }, 400)
-    if (!key.startsWith('avatars/')) {
+    if (!key.startsWith('chat-attachments/')) {
       return json({ error: 'Forbidden' }, 403)
     }
 
@@ -167,14 +159,10 @@ Deno.serve(async (req) => {
   }
 
   const contentType = req.headers.get('x-content-type') ?? 'application/octet-stream'
-  if (!contentType.startsWith('image/')) {
-    return json({ error: 'Only image uploads are allowed for avatar uploads.' }, 400)
-  }
-
-  const rawFileName = decodeURIComponent(req.headers.get('x-file-name') ?? 'avatar')
+  const rawFileName = decodeURIComponent(req.headers.get('x-file-name') ?? 'attachment')
   const safeFileName = sanitizeFileName(rawFileName)
   const ext = fileExtension(safeFileName, contentType)
-  const key = `avatars/${user.id}/${crypto.randomUUID()}.${ext}`
+  const key = `chat-attachments/${user.id}/${crypto.randomUUID()}.${ext}`
   const body = new Uint8Array(await req.arrayBuffer())
 
   try {
@@ -192,24 +180,17 @@ Deno.serve(async (req) => {
       }),
     )
   } catch (error) {
-      log('error', 'file_upload_failed', {
-        userId: user.id,
-        key,
-        bucket,
-        endpoint,
-        contentType,
-        size: body.byteLength,
-        message: error instanceof Error ? error.message : String(error),
-      })
+    log('error', 'file_upload_failed', {
+      userId: user.id,
+      key,
+      bucket,
+      endpoint,
+      contentType,
+      size: body.byteLength,
+      message: error instanceof Error ? error.message : String(error),
+    })
     return json({ error: error instanceof Error ? error.message : 'Failed to upload file to R2.' }, 500)
   }
-
-  log('log', 'file_uploaded', {
-    userId: user.id,
-    key,
-    contentType,
-    size: body.byteLength,
-  })
 
   try {
     const url = await getSignedUrl(
