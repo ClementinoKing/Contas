@@ -259,7 +259,8 @@ export function CreateTaskDialog({
         dueAtIso = rangeEndAt.toISOString()
       }
 
-      const primaryAssigneeId = assigneeIds[0] ?? null
+      const effectiveAssigneeIds = assigneeIds.length > 0 ? assigneeIds : currentUser?.id ? [currentUser.id] : []
+      const primaryAssigneeId = effectiveAssigneeIds[0] ?? null
       const selectedStatus = availableStatuses.find((status) => status.id === selectedStatusId) ?? availableStatuses[0] ?? FALLBACK_STATUS_OPTIONS[0]
       const legacyBoardColumn = legacyBoardColumnForStatusKey(selectedStatus?.key)
       const { data, error } = await supabase
@@ -285,16 +286,16 @@ export function CreateTaskDialog({
         throw error ?? new Error('Task could not be created.')
       }
 
-      if (assigneeIds.length > 0) {
+      if (effectiveAssigneeIds.length > 0) {
         const { error: assigneesError } = await supabase
           .from('task_assignees')
-          .insert(assigneeIds.map((assigneeId) => ({ task_id: data.id, assignee_id: assigneeId })))
+          .insert(effectiveAssigneeIds.map((assigneeId) => ({ task_id: data.id, assignee_id: assigneeId })))
         if (assigneesError) {
           throw assigneesError
         }
 
         if (currentUser?.id) {
-          const recipients = assigneeIds
+          const recipients = effectiveAssigneeIds.filter((recipientId) => recipientId !== currentUser.id)
           if (recipients.length > 0) {
             const notifications = recipients.map((recipientId) => ({
               id: crypto.randomUUID(),
@@ -359,8 +360,8 @@ export function CreateTaskDialog({
         }
       }
 
-      const selectedAssigneeNames = assigneeIds
-        .map((id) => memberOptions.find((member) => member.id === id)?.name)
+      const selectedAssigneeNames = effectiveAssigneeIds
+        .map((id) => assigneeOptions.find((member) => member.id === id)?.name)
         .filter((name): name is string => Boolean(name))
 
       onTaskCreated?.({
@@ -375,10 +376,10 @@ export function CreateTaskDialog({
         createdById: data.created_by ?? currentUser?.id ?? '',
         projectId: data.project_id ?? '',
         projectName: projectOptions.find((project) => project.id === data.project_id)?.name ?? 'Unassigned project',
-        assigneeIds,
+        assigneeIds: effectiveAssigneeIds,
         assigneeNames: selectedAssigneeNames,
-        assigneeId: data.assigned_to ?? '',
-        assigneeName: memberOptions.find((member) => member.id === data.assigned_to)?.name ?? 'Unassigned',
+        assigneeId: data.assigned_to ?? primaryAssigneeId ?? '',
+        assigneeName: assigneeOptions.find((member) => member.id === (data.assigned_to ?? primaryAssigneeId))?.name ?? 'Unassigned',
         dueAt: data.due_at ?? null,
         startAt: data.start_at ?? data.created_at ?? new Date().toISOString(),
         createdAt: data.created_at ?? new Date().toISOString(),
@@ -405,10 +406,26 @@ export function CreateTaskDialog({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [open, title, projectId, assigneeIds, description, priority, singleDueAt, rangeStartAt, rangeEndAt, scheduleMode, selectedStatusId, taskType, parentTaskId, availableStatuses])
 
-  const teammateOptions = memberOptions.filter((member) => member.id !== currentUser?.id)
-  const filteredMembers = teammateOptions.filter((member) => member.name.toLowerCase().includes(assigneeSearch.trim().toLowerCase()))
+  const assigneeOptions = useMemo(() => {
+    const options = memberOptions.slice()
+    if (currentUser && !options.some((member) => member.id === currentUser.id)) {
+      options.unshift({
+        id: currentUser.id,
+        name: currentUser.name ?? currentUser.email ?? 'Me',
+        username: currentUser.username ?? undefined,
+        email: currentUser.email ?? undefined,
+        avatarUrl: currentUser.avatarUrl ?? undefined,
+      })
+    }
+    return options
+  }, [currentUser, memberOptions])
+  const mentionOptions = useMemo(
+    () => memberOptions.filter((member) => member.id !== currentUser?.id),
+    [currentUser?.id, memberOptions],
+  )
+  const filteredMembers = assigneeOptions.filter((member) => member.name.toLowerCase().includes(assigneeSearch.trim().toLowerCase()))
   const selectedAssignees = assigneeIds
-    .map((id) => teammateOptions.find((member) => member.id === id) ?? memberOptions.find((member) => member.id === id))
+    .map((id) => assigneeOptions.find((member) => member.id === id) ?? memberOptions.find((member) => member.id === id))
     .filter((member): member is MemberOption => Boolean(member))
   const initials = (value: string) =>
     value
@@ -739,7 +756,7 @@ export function CreateTaskDialog({
                 ref={descriptionEditorRef}
                 value={description}
                 onChange={setDescription}
-                mentionOptions={teammateOptions}
+                mentionOptions={mentionOptions}
                 placeholder='Describe the task...'
                 minHeightClassName='min-h-[140px]'
                 className='h-full border-0 bg-transparent pr-20'

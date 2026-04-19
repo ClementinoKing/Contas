@@ -1257,7 +1257,7 @@ export function GroupChatWidget() {
   const attachmentsRef = useRef<ChatComposerAttachment[]>(EMPTY_COMPOSER_ATTACHMENTS)
   const pendingVoiceMessageRef = useRef<ChatComposerVoice | null>(null)
   const messagesScrollRef = useRef<HTMLDivElement>(null)
-  const messagesContentRef = useRef<HTMLDivElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
   const hydratingRef = useRef(false)
   const sendingRef = useRef(false)
   const voiceMediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -1267,6 +1267,7 @@ export function GroupChatWidget() {
   const voiceAnimationFrameRef = useRef<number | null>(null)
   const voiceStartAtRef = useRef(0)
   const stickToLatestRef = useRef(false)
+  const hasInitialScrollRef = useRef(false)
 
   const profileById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles])
   const messageById = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages])
@@ -2368,9 +2369,7 @@ export function GroupChatWidget() {
   }, [])
 
   const scrollMessagesToBottom = useCallback(() => {
-    const container = messagesScrollRef.current
-    if (!container) return
-    container.scrollTop = container.scrollHeight
+    messagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' })
   }, [])
 
   const handleAttachmentLoad = useCallback(() => {
@@ -2381,23 +2380,27 @@ export function GroupChatWidget() {
   useEffect(() => {
     if (!open) {
       stickToLatestRef.current = false
+      hasInitialScrollRef.current = false
       return
     }
   }, [open])
 
-  useEffect(() => {
-    const container = messagesScrollRef.current
-    const content = messagesContentRef.current
-    if (!container || !content) return
+  useLayoutEffect(() => {
+    if (!open || loading || error || messages.length === 0) return
+    if (hasInitialScrollRef.current) return
 
-    const observer = new ResizeObserver(() => {
-      if (!stickToLatestRef.current) return
-      scrollMessagesToBottom()
-    })
+    hasInitialScrollRef.current = true
+    stickToLatestRef.current = true
+    scrollMessagesToBottom()
+  }, [error, loading, messages.length, open, scrollMessagesToBottom])
 
-    observer.observe(content)
-    return () => observer.disconnect()
-  }, [scrollMessagesToBottom])
+  useLayoutEffect(() => {
+    if (!open || loading || error || messages.length === 0) return
+    if (!hasInitialScrollRef.current) return
+    if (!stickToLatestRef.current) return
+
+    scrollMessagesToBottom()
+  }, [error, loading, messages.length, open, scrollMessagesToBottom])
 
   const handleMessagesScroll = useCallback(() => {
     const container = messagesScrollRef.current
@@ -2498,7 +2501,7 @@ export function GroupChatWidget() {
           )}
           onScroll={handleMessagesScroll}
         >
-          <div ref={messagesContentRef} className='mx-auto flex w-full max-w-4xl flex-col gap-4'>
+          <div className='mx-auto flex w-full max-w-4xl flex-col gap-4'>
             {loading ? (
               <div className='space-y-3'>
                 {Array.from({ length: 4 }).map((_, index) => (
@@ -2547,6 +2550,7 @@ export function GroupChatWidget() {
                 })
               })()
             )}
+            <div ref={messagesEndRef} aria-hidden='true' />
           </div>
         </div>
 

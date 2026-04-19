@@ -57,15 +57,17 @@ import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 type TaskTab = 'list' | 'board' | 'calendar'
+type TaskScope = 'mine' | 'assigned'
 type CalendarView = 'daily' | 'weekly' | 'monthly' | 'yearly'
 type BoardSavedView = 'all' | 'my-open' | 'due-soon'
 type BoardDueFilter = 'all' | 'today' | 'upcoming' | 'overdue' | 'none'
 type BoardCompletionFilter = 'all' | 'open' | 'completed'
-type ListScopeFilter = 'all' | 'assigned_to_me' | 'created_by_me' | 'due_soon' | 'overdue'
+type ListScopeFilter = 'all' | 'assigned_to_me' | 'due_soon' | 'overdue'
 type ListCompletionFilter = 'all' | 'open' | 'completed'
 type ListStatusFilter = 'all' | TaskRow['status']
 
 const MY_TASKS_ACTIVE_TAB_KEY = 'contas.my-tasks.active-tab'
+const MY_TASKS_SCOPE_KEY = 'contas.my-tasks.scope'
 const MY_TASKS_CACHE_KEY = 'contas.my-tasks.cache.v1'
 const MY_TASKS_CACHE_MAX_AGE_MS = 10 * 60 * 1000
 const COMMENT_PAYLOAD_PREFIX = '__contas_comment_v1__:'
@@ -180,10 +182,9 @@ const TABS: Array<{ key: TaskTab; label: string; icon: ComponentType<{ className
   { key: 'calendar', label: 'Calendar', icon: CalendarDays },
 ]
 
-const BOARD_SAVED_VIEWS: Array<{ key: BoardSavedView; label: string }> = [
-  { key: 'all', label: 'All Tasks' },
-  { key: 'my-open', label: 'My Open Work' },
-  { key: 'due-soon', label: 'Due Soon' },
+const TASK_SCOPE_TABS: Array<{ key: TaskScope; label: string }> = [
+  { key: 'mine', label: 'My Tasks' },
+  { key: 'assigned', label: 'Assigned by me' },
 ]
 
 const CALENDAR_VIEW_TABS: Array<{ key: CalendarView; label: string }> = [
@@ -1067,6 +1068,10 @@ export function MyTasksPage() {
     const storedTab = localStorage.getItem(MY_TASKS_ACTIVE_TAB_KEY)
     return storedTab === 'board' || storedTab === 'calendar' || storedTab === 'list' ? storedTab : 'list'
   })
+  const [taskScope, setTaskScope] = useState<TaskScope>(() => {
+    const storedScope = localStorage.getItem(MY_TASKS_SCOPE_KEY)
+    return storedScope === 'assigned' || storedScope === 'mine' ? storedScope : 'mine'
+  })
   const [calendarView, setCalendarView] = useState<CalendarView>('monthly')
   const [calendarDate, setCalendarDate] = useState<Date>(() => startOfDay(new Date()))
   const [loadingTasks, setLoadingTasks] = useState(true)
@@ -1608,19 +1613,43 @@ export function MyTasksPage() {
     }
   }, [currentUser?.id, realtimeReloadToken, setBackgroundSync])
 
+  const personalTaskRows = useMemo(() => {
+    const currentUserId = currentUser?.id ?? ''
+    if (!currentUserId) return []
+    return taskRows.filter((task) => task.assigneeIds.includes(currentUserId))
+  }, [currentUser?.id, taskRows])
+
+  const assignedByMeTaskRows = useMemo(() => {
+    const currentUserId = currentUser?.id ?? ''
+    if (!currentUserId) return []
+    return taskRows.filter(
+      (task) => task.createdById === currentUserId && task.assigneeIds.some((assigneeId) => assigneeId !== currentUserId),
+    )
+  }, [currentUser?.id, taskRows])
+
+  const visibleTaskRows = useMemo(
+    () => (taskScope === 'assigned' ? assignedByMeTaskRows : personalTaskRows),
+    [assignedByMeTaskRows, personalTaskRows, taskScope],
+  )
+
   useEffect(() => {
-    setBoardColumns(createBoardColumnsFromTasks(taskRows, boardDefinitions, commentsByTaskId))
-  }, [taskRows, boardDefinitions, commentsByTaskId])
+    setBoardColumns(createBoardColumnsFromTasks(visibleTaskRows, boardDefinitions, commentsByTaskId))
+  }, [boardDefinitions, commentsByTaskId, visibleTaskRows])
 
   useEffect(() => {
     localStorage.setItem(MY_TASKS_ACTIVE_TAB_KEY, activeTab)
   }, [activeTab])
 
-  const dailyTasks = useMemo(() => taskRows.filter((task) => spansDate(task, calendarDate)), [calendarDate, taskRows])
+  useEffect(() => {
+    localStorage.setItem(MY_TASKS_SCOPE_KEY, taskScope)
+    setSelectedTaskIds([])
+  }, [taskScope])
+
+  const dailyTasks = useMemo(() => visibleTaskRows.filter((task) => spansDate(task, calendarDate)), [calendarDate, visibleTaskRows])
 
   const weeklyTasks = useMemo(
-    () => taskRows.filter((task) => intersectsRange(task, weekStart, weekEnd)),
-    [taskRows, weekStart, weekEnd],
+    () => visibleTaskRows.filter((task) => intersectsRange(task, weekStart, weekEnd)),
+    [visibleTaskRows, weekStart, weekEnd],
   )
 
   const selectedTaskSet = useMemo(() => new Set(selectedTaskIds), [selectedTaskIds])
@@ -1644,6 +1673,15 @@ export function MyTasksPage() {
     [boardColumns],
   )
 
+  const boardSavedViews = useMemo<Array<{ key: BoardSavedView; label: string }>>(
+    () => [
+      { key: 'all', label: taskScope === 'assigned' ? 'All Assigned' : 'All My Tasks' },
+      { key: 'my-open', label: taskScope === 'assigned' ? 'Open Assigned' : 'My Open Work' },
+      { key: 'due-soon', label: 'Due Soon' },
+    ],
+    [taskScope],
+  )
+
   const boardMatchesFilters = useCallback((task: BoardTask) => {
     const query = boardSearch.trim().toLowerCase()
     if (query) {
@@ -1651,7 +1689,7 @@ export function MyTasksPage() {
       if (!haystack.includes(query)) return false
     }
 
-    if (savedBoardView === 'my-open' && (task.assignee !== BOARD_ME_ASSIGNEE || task.completed)) return false
+    if (savedBoardView === 'my-open' && task.completed) return false
 
     if (savedBoardView === 'due-soon') {
       const dueDate = parseBoardDueDate(task.due)
@@ -1695,7 +1733,7 @@ export function MyTasksPage() {
     const dueSoonLimit = addDays(today, 7)
     const query = listSearch.trim().toLowerCase()
 
-    return taskRows.filter((task) => {
+    return visibleTaskRows.filter((task) => {
       if (query) {
         const haystack = `${task.title} ${task.projectName} ${task.owner} ${task.description ?? ''}`.toLowerCase()
         if (!haystack.includes(query)) return false
@@ -1707,7 +1745,6 @@ export function MyTasksPage() {
       if (listCompletionFilter === 'completed' && !task.completed) return false
 
       if (listScopeFilter === 'assigned_to_me' && (!currentUserId || !task.assigneeIds.includes(currentUserId))) return false
-      if (listScopeFilter === 'created_by_me' && (!currentUserId || task.createdById !== currentUserId)) return false
       if (listScopeFilter === 'due_soon') {
         const dueDate = task.endDate ? parseDate(task.endDate) : null
         if (!dueDate || dueDate < today || dueDate > dueSoonLimit || task.completed) return false
@@ -1719,7 +1756,7 @@ export function MyTasksPage() {
 
       return true
     })
-  }, [currentUser?.id, listCompletionFilter, listProjectFilter, listScopeFilter, listSearch, listStatusFilter, taskRows])
+  }, [currentUser?.id, listCompletionFilter, listProjectFilter, listScopeFilter, listSearch, listStatusFilter, visibleTaskRows])
 
   const listSubtasksByParentTaskId = useMemo(() => {
     const taskById = new Map(listFilteredTasks.map((task) => [task.id, task]))
@@ -1799,10 +1836,10 @@ export function MyTasksPage() {
   )
 
   const openTaskDetailsById = useCallback((taskId: string) => {
-    if (!taskRows.some((task) => task.id === taskId)) return false
+    if (!visibleTaskRows.some((task) => task.id === taskId)) return false
     openTaskDetailsModal(taskId)
     return true
-  }, [taskRows])
+  }, [visibleTaskRows])
 
   const handleTaskDialogOpenChange = (open: boolean) => {
     setTaskDialogOpen(open)
@@ -1819,7 +1856,7 @@ export function MyTasksPage() {
       return
     }
     if (openedTaskFromQueryRef.current === taskId) return
-    if (!taskRows.some((task) => task.id === taskId)) return
+    if (!visibleTaskRows.some((task) => task.id === taskId)) return
 
     const opened = openTaskDetailsById(taskId)
     if (!opened) return
@@ -1828,7 +1865,7 @@ export function MyTasksPage() {
     const nextParams = new URLSearchParams(searchParams)
     nextParams.delete('openTaskId')
     setSearchParams(nextParams, { replace: true })
-  }, [openTaskDetailsById, searchParams, setSearchParams, taskRows])
+  }, [openTaskDetailsById, searchParams, setSearchParams, visibleTaskRows])
 
   const openTaskDialogForColumn = (columnId: string) => {
     setCreateTaskColumnId(columnId)
@@ -2062,7 +2099,7 @@ export function MyTasksPage() {
         .insert(selectedIds.map((taskId) => ({ task_id: taskId, assignee_id: assigneeMember.id })))
       if (insertAssigneesError) return { error: insertAssigneesError }
 
-      if (currentUser?.id) {
+      if (currentUser?.id && assigneeMember.id !== currentUser.id) {
         const notifications = selectedIds.map((taskId) => {
           const taskTitle = previousRows.find((task) => task.id === taskId)?.title ?? 'a task'
           return {
@@ -2506,7 +2543,7 @@ export function MyTasksPage() {
   const persistTaskDraft = async (taskId: string, draft: BoardTaskDraft) => {
     const existingTask = taskRows.find((task) => task.id === taskId)
     if (!existingTask) return { ok: false as const, nextBoardColumn: '' }
-    if (!currentUser?.id || (existingTask.createdById !== currentUser.id && !existingTask.assigneeIds.includes(currentUser.id))) {
+    if (!currentUser?.id || !existingTask.assigneeIds.includes(currentUser.id)) {
       return { ok: false as const, nextBoardColumn: '' }
     }
 
@@ -2622,11 +2659,11 @@ export function MyTasksPage() {
       }
     }
 
-    if (currentUser?.id) {
-      const addedAssigneeIds = nextAssigneeIds.filter(
-        (assigneeId) => !previousAssigneeIds.includes(assigneeId),
-      )
-      if (addedAssigneeIds.length > 0) {
+      if (currentUser?.id) {
+        const addedAssigneeIds = nextAssigneeIds.filter(
+          (assigneeId) => !previousAssigneeIds.includes(assigneeId) && assigneeId !== currentUser.id,
+        )
+        if (addedAssigneeIds.length > 0) {
         const notifications = addedAssigneeIds.map((recipientId) => ({
           id: crypto.randomUUID(),
           recipient_id: recipientId,
@@ -2769,7 +2806,7 @@ export function MyTasksPage() {
     const canPersistOnClose = Boolean(
       currentUser?.id &&
       closingTask &&
-      (closingTask.createdById === currentUser.id || closingTask.assigneeIds.includes(currentUser.id)),
+      closingTask.assigneeIds.includes(currentUser.id),
     )
     const hasUnsavedChanges = closingSerialized !== detailLastPersistedRef.current
 
@@ -2804,15 +2841,15 @@ export function MyTasksPage() {
   const activeTaskRow = useMemo(() => {
     const taskId = activeTaskData?.task.id
     if (!taskId) return null
-    return taskRows.find((task) => task.id === taskId) ?? null
-  }, [activeTaskData?.task.id, taskRows])
+    return visibleTaskRows.find((task) => task.id === taskId) ?? null
+  }, [activeTaskData?.task.id, visibleTaskRows])
   const activeTaskSubtasks = useMemo(() => {
     const parentTaskId = activeTaskRow?.id
     if (!parentTaskId) return []
-    return taskRows
+    return visibleTaskRows
       .filter((task) => task.parentTaskId === parentTaskId)
       .sort((a, b) => a.startDate.localeCompare(b.startDate))
-  }, [activeTaskRow?.id, taskRows])
+  }, [activeTaskRow?.id, visibleTaskRows])
   const canEditActiveTask = Boolean(activeTaskRow && canEditTaskById(activeTaskRow.id))
   const activeCommentAuthor = useMemo(() => {
     const member = members.find((item) => item.id === currentUser?.id)
@@ -2823,17 +2860,29 @@ export function MyTasksPage() {
     }
   }, [currentUser?.id, members])
 
-  const detailTeammateOptions = useMemo(
+  const detailAssigneeOptions = useMemo(() => {
+    const options = members.slice()
+    if (currentUser && !options.some((member) => member.id === currentUser.id)) {
+      options.unshift({
+        id: currentUser.id,
+        name: currentUser.name ?? currentUser.email ?? BOARD_ME_ASSIGNEE,
+        username: currentUser.username ?? undefined,
+        avatarUrl: currentUser.avatarUrl ?? undefined,
+      })
+    }
+    return options
+  }, [currentUser, members])
+  const detailMentionOptions = useMemo(
     () => members.filter((member) => member.id !== currentUser?.id),
     [currentUser?.id, members],
   )
   const filteredDetailTeammates = useMemo(() => {
     const query = detailAssigneeSearch.trim().toLowerCase()
-    if (!query) return detailTeammateOptions
-    return detailTeammateOptions.filter(
+    if (!query) return detailAssigneeOptions
+    return detailAssigneeOptions.filter(
       (member) => member.name.toLowerCase().includes(query) || mentionHandleForMember(member).toLowerCase().includes(query),
     )
-  }, [detailAssigneeSearch, detailTeammateOptions])
+  }, [detailAssigneeSearch, detailAssigneeOptions])
 
   useEffect(() => {
     setReplyDraftByCommentId({})
@@ -3361,7 +3410,7 @@ export function MyTasksPage() {
             <div className='grid grid-cols-7 gap-2'>
               {Array.from({ length: 7 }, (_, index) => {
                 const day = addDays(weekStart, index)
-                const dayTasks = taskRows.filter((task) => spansDate(task, day)).length
+                const dayTasks = visibleTaskRows.filter((task) => spansDate(task, day)).length
                 return (
                   <div key={day.toISOString()} className='rounded-md border bg-muted/15 p-2 text-center'>
                     <p className='text-[11px] font-semibold uppercase tracking-wide text-muted-foreground'>
@@ -3438,7 +3487,7 @@ export function MyTasksPage() {
             </div>
             <div className='grid grid-cols-7 gap-2'>
               {monthDays.map((day, index) => {
-                const dayTasks = taskRows.filter((task) => spansDate(task, day))
+                const dayTasks = visibleTaskRows.filter((task) => spansDate(task, day))
                 const outside = day.getMonth() !== calendarDate.getMonth()
                 const today = isSameDay(day, new Date())
                 const columnIndex = index % 7
@@ -3493,7 +3542,7 @@ export function MyTasksPage() {
           {yearMonths.map((monthDate) => {
             const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1)
             const monthEnd = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0)
-            const monthTasks = taskRows.filter((task) => intersectsRange(task, monthStart, monthEnd))
+            const monthTasks = visibleTaskRows.filter((task) => intersectsRange(task, monthStart, monthEnd))
 
             return (
               <div key={monthDate.toISOString()} className='rounded-md border bg-muted/10 p-3'>
@@ -3531,7 +3580,7 @@ export function MyTasksPage() {
       <Card>
         <CardContent className='space-y-3 p-3'>
           <div className='flex flex-wrap items-center gap-2'>
-            {BOARD_SAVED_VIEWS.map((view) => (
+                {boardSavedViews.map((view) => (
               <button
                 key={view.key}
                 type='button'
@@ -4060,9 +4109,8 @@ export function MyTasksPage() {
                   className='h-10 rounded-md border bg-background px-3 text-sm'
                   aria-label='Filter tasks by scope'
                 >
-                  <option value='all'>All tasks</option>
+                  <option value='all'>All my tasks</option>
                   <option value='assigned_to_me'>Assigned to me</option>
-                  <option value='created_by_me'>Created by me</option>
                   <option value='due_soon'>Due soon</option>
                   <option value='overdue'>Overdue</option>
                 </select>
@@ -4358,35 +4406,54 @@ export function MyTasksPage() {
       <div className='flex h-full min-h-0 flex-col gap-4 overflow-hidden'>
         <Card>
           <CardContent className='p-2'>
-            <div className='flex flex-wrap items-center justify-between gap-2'>
+            <div className='flex flex-col gap-2'>
               <div className='inline-flex flex-wrap gap-1 rounded-md bg-muted/35 p-1'>
-                {TABS.map((tab) => {
-                  const Icon = tab.icon
-                  return (
-                    <button
-                      key={tab.key}
-                      type='button'
-                      onClick={() => setActiveTab(tab.key)}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        activeTab === tab.key
-                          ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
-                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                      )}
-                    >
-                      <Icon className='h-4 w-4' aria-hidden='true' />
-                      {tab.label}
-                    </button>
-                  )
-                })}
+                {TASK_SCOPE_TABS.map((scope) => (
+                  <button
+                    key={scope.key}
+                    type='button'
+                    onClick={() => setTaskScope(scope.key)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      taskScope === scope.key
+                        ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                    )}
+                  >
+                    {scope.label}
+                  </button>
+                ))}
               </div>
-              <div className='flex items-center gap-3'>
-                <GlobalSaveStatus state={backgroundSyncState} />
-                {activeTab === 'board' ? (
-                  <p className='text-xs text-muted-foreground sm:text-sm'>
-                    {totalTasksCount} total tasks • {selectedTasksCount} selected • Press and hold a task to select
-                  </p>
-                ) : null}
+              <div className='flex flex-wrap items-center justify-between gap-2'>
+                <div className='inline-flex flex-wrap gap-1 rounded-md bg-muted/35 p-1'>
+                  {TABS.map((tab) => {
+                    const Icon = tab.icon
+                    return (
+                      <button
+                        key={tab.key}
+                        type='button'
+                        onClick={() => setActiveTab(tab.key)}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                          activeTab === tab.key
+                            ? 'border bg-card text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                        )}
+                      >
+                        <Icon className='h-4 w-4' aria-hidden='true' />
+                        {tab.label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className='flex items-center gap-3'>
+                  <GlobalSaveStatus state={backgroundSyncState} />
+                  {activeTab === 'board' ? (
+                    <p className='text-xs text-muted-foreground sm:text-sm'>
+                      {totalTasksCount} total tasks • {selectedTasksCount} selected • Press and hold a task to select
+                    </p>
+                  ) : null}
+                </div>
               </div>
             </div>
           </CardContent>
@@ -4568,7 +4635,7 @@ export function MyTasksPage() {
                           <p className='px-1 text-sm text-muted-foreground'>No assignees selected.</p>
                         ) : (
                           detailDraft.assigneeIds.map((assigneeId) => {
-                            const member = detailTeammateOptions.find((item) => item.id === assigneeId)
+                            const member = detailAssigneeOptions.find((item) => item.id === assigneeId)
                             const label = member?.name ?? 'Unknown user'
                             return (
                               <span key={assigneeId} className='inline-flex items-center gap-2 rounded-full border bg-background px-2.5 py-1 text-xs'>
@@ -4726,7 +4793,7 @@ export function MyTasksPage() {
                           triggerDebouncedDescriptionAutosave(nextDraft)
                         }}
                         onBlur={triggerDetailAutosave}
-                        mentionOptions={detailTeammateOptions}
+                        mentionOptions={detailMentionOptions}
                         placeholder='Describe the task...'
                         disabled={!canEditActiveTask}
                         minHeightClassName='min-h-[180px]'
