@@ -1,4 +1,4 @@
-import { AtSign, Check, Paperclip, Search, UserPlus, X } from 'lucide-react'
+import { AtSign, Check, Paperclip, Repeat2, Search, UserPlus, X } from 'lucide-react'
 import { max, startOfDay } from 'date-fns'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -26,6 +26,7 @@ type MemberOption = { id: string; name: string; username?: string; email?: strin
 type TaskOption = { id: string; title: string }
 type TaskType = 'task' | 'subtask'
 type ScheduleMode = 'due_date' | 'range'
+type RecurrenceFrequency = 'daily' | 'weekly' | 'monthly'
 
 function extractMentionedMemberIds(text: string, members: Array<{ id: string; name: string }>) {
   const normalized = text.toLowerCase()
@@ -53,6 +54,13 @@ function mentionHandleForMember(member: { name: string; username?: string | null
     .toLowerCase()
     .replace(/\s+/g, '_')
     .replace(/[^a-z0-9._-]/g, '')
+}
+
+function formatLocalDate(value: Date) {
+  const year = value.getFullYear()
+  const month = `${value.getMonth() + 1}`.padStart(2, '0')
+  const day = `${value.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 export type CreatedTaskPayload = {
@@ -117,6 +125,9 @@ export function CreateTaskDialog({
   const [assigneeOpen, setAssigneeOpen] = useState(false)
   const [description, setDescription] = useState('')
   const [scheduleMode, setScheduleMode] = useState<ScheduleMode>('due_date')
+  const [isRecurring, setIsRecurring] = useState(false)
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState<RecurrenceFrequency>('daily')
+  const [recurrenceEndAt, setRecurrenceEndAt] = useState<Date | undefined>()
   const [priority, setPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('low')
   const [singleDueAt, setSingleDueAt] = useState<Date | undefined>()
   const [rangeStartAt, setRangeStartAt] = useState<Date | undefined>()
@@ -182,6 +193,9 @@ export function CreateTaskDialog({
     setAssigneeOpen(false)
     setDescription('')
     setScheduleMode('due_date')
+    setIsRecurring(false)
+    setRecurrenceFrequency('daily')
+    setRecurrenceEndAt(undefined)
     setPriority('low')
     setSingleDueAt(undefined)
     setRangeStartAt(undefined)
@@ -201,7 +215,16 @@ export function CreateTaskDialog({
     setParentTaskId(initialParentTaskId ?? '')
     setSelectedStatusId(initialStatusId ?? '')
     setProjectId((current) => initialProjectId || current)
+    setIsRecurring(false)
+    setRecurrenceFrequency('daily')
+    setRecurrenceEndAt(undefined)
   }, [open, defaultTaskType, initialParentTaskId, initialProjectId, initialStatusId])
+
+  useEffect(() => {
+    if (taskType !== 'task' || scheduleMode !== 'due_date') {
+      setIsRecurring(false)
+    }
+  }, [scheduleMode, taskType])
 
   const availableStatuses = useMemo(() => {
     return resolveProjectStatusOptions(statusOptions, projectId)
@@ -231,6 +254,23 @@ export function CreateTaskDialog({
     try {
       let startAtIso: string | null = null
       let dueAtIso: string | null = null
+      const mentionedMemberIds =
+        currentUser?.id && description.trim()
+          ? extractMentionedMemberIds(description, memberOptions).filter((memberId) => memberId !== currentUser.id)
+          : []
+
+      if (isRecurring && taskType !== 'task') {
+        setErrorMessage('Recurring tasks are only available for top-level tasks.')
+        setCreating(false)
+        return
+      }
+
+      if (isRecurring && scheduleMode !== 'due_date') {
+        setErrorMessage('Recurring tasks require a due date.')
+        setCreating(false)
+        return
+      }
+
       if (scheduleMode === 'due_date') {
         if (singleDueAt && startOfDay(singleDueAt).getTime() < today.getTime()) {
           setErrorMessage('Due date cannot be in the past.')
@@ -259,104 +299,65 @@ export function CreateTaskDialog({
         dueAtIso = rangeEndAt.toISOString()
       }
 
+      if (isRecurring && !singleDueAt) {
+        setErrorMessage('Select a due date before enabling recurrence.')
+        setCreating(false)
+        return
+      }
+
+      if (isRecurring && recurrenceEndAt && singleDueAt && startOfDay(recurrenceEndAt).getTime() < startOfDay(singleDueAt).getTime()) {
+        setErrorMessage('The recurrence end date must be on or after the due date.')
+        setCreating(false)
+        return
+      }
+
       const effectiveAssigneeIds = assigneeIds.length > 0 ? assigneeIds : currentUser?.id ? [currentUser.id] : []
       const primaryAssigneeId = effectiveAssigneeIds[0] ?? null
       const selectedStatus = availableStatuses.find((status) => status.id === selectedStatusId) ?? availableStatuses[0] ?? FALLBACK_STATUS_OPTIONS[0]
       const legacyBoardColumn = legacyBoardColumnForStatusKey(selectedStatus?.key)
-      const { data, error } = await supabase
-        .from('tasks')
-        .insert({
-          title: trimmedTitle,
-          parent_task_id: taskType === 'subtask' ? nextParentTaskId : null,
-          description: description.trim() || null,
-          status_id: selectedStatus?.id ?? null,
-          status: selectedStatus?.key ?? 'planned',
-          board_column: legacyBoardColumn,
-          project_id: projectId || null,
-          assigned_to: primaryAssigneeId,
-          created_by: currentUser?.id ?? null,
-          due_at: dueAtIso,
-          start_at: startAtIso,
-          priority,
-        })
-        .select('id, parent_task_id, title, description, status, status_id, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, created_at')
-        .single()
+      const { data, error } = await supabase.rpc('create_task_with_recurrence', {
+        p_title: trimmedTitle,
+        p_parent_task_id: taskType === 'subtask' ? nextParentTaskId : null,
+        p_description: description.trim() || null,
+        p_status_id: selectedStatus?.id ?? null,
+        p_status: selectedStatus?.key ?? 'planned',
+        p_board_column: legacyBoardColumn,
+        p_project_id: projectId || null,
+        p_assignee_ids: effectiveAssigneeIds,
+        p_due_at: dueAtIso,
+        p_start_at: startAtIso,
+        p_priority: priority,
+        p_mentioned_member_ids: mentionedMemberIds,
+        p_recurrence_frequency: isRecurring ? recurrenceFrequency : null,
+        p_recurrence_end_on: isRecurring && recurrenceEndAt ? formatLocalDate(recurrenceEndAt) : null,
+      })
 
       if (error || !data) {
         throw error ?? new Error('Task could not be created.')
       }
 
-      if (effectiveAssigneeIds.length > 0) {
-        const { error: assigneesError } = await supabase
-          .from('task_assignees')
-          .insert(effectiveAssigneeIds.map((assigneeId) => ({ task_id: data.id, assignee_id: assigneeId })))
-        if (assigneesError) {
-          throw assigneesError
-        }
+      if (currentUser?.id) {
+        const { data: notificationRows, error: notificationError } = await supabase
+          .from('notifications')
+          .select('id, recipient_id, metadata')
+          .eq('task_id', data.id)
+          .eq('actor_id', currentUser.id)
+          .order('created_at', { ascending: true })
 
-        if (currentUser?.id) {
-          const recipients = effectiveAssigneeIds.filter((recipientId) => recipientId !== currentUser.id)
-          if (recipients.length > 0) {
-            const notifications = recipients.map((recipientId) => ({
-              id: crypto.randomUUID(),
-              recipient_id: recipientId,
-              actor_id: currentUser.id,
-              task_id: data.id,
-              type: 'task' as const,
-              title: 'New task assigned to you',
-              message: `You were assigned "${data.title}".`,
-              metadata: { event: 'task_assigned', source: 'task_create' },
-            }))
-
-            const { error: notificationsError } = await supabase.from('notifications').insert(notifications)
-            if (notificationsError) {
-              console.error('Failed to create assignment notifications', notificationsError)
-            } else {
-              void dispatchNotificationEmails(
-                notifications.map((item) => ({
-                    notificationId: item.id,
-                    recipientId: item.recipient_id,
-                    recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
-                    type: 'task_assigned' as const,
-                    taskId: item.task_id as string,
-                    taskTitle: data.title,
-                    actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
-                  })),
-              )
-            }
-          }
-        }
-      }
-
-      if (currentUser?.id && description.trim()) {
-        const mentionedMemberIds = extractMentionedMemberIds(description, memberOptions).filter((memberId) => memberId !== currentUser.id)
-        if (mentionedMemberIds.length > 0) {
-          const mentionNotifications = mentionedMemberIds.map((recipientId) => ({
-            id: crypto.randomUUID(),
-            recipient_id: recipientId,
-            actor_id: currentUser.id,
-            task_id: data.id,
-            type: 'mention' as const,
-            title: 'You were mentioned',
-            message: `You were mentioned in "${data.title}".`,
-            metadata: { event: 'task_mentioned', source: 'task_create_description' },
-          }))
-          const { error: mentionNotificationsError } = await supabase.from('notifications').insert(mentionNotifications)
-          if (mentionNotificationsError) {
-            console.error('Failed to create mention notifications', mentionNotificationsError)
-          } else {
-            void dispatchNotificationEmails(
-              mentionNotifications.map((item) => ({
-                  notificationId: item.id,
-                  recipientId: item.recipient_id,
-                  recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
-                  type: 'mention' as const,
-                  taskId: item.task_id as string,
-                  taskTitle: data.title,
-                  actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
-                })),
-            )
-          }
+        if (notificationError) {
+          console.error('Failed to load task notifications', notificationError)
+        } else if (notificationRows?.length) {
+          void dispatchNotificationEmails(
+            notificationRows.map((item) => ({
+              notificationId: item.id,
+              recipientId: item.recipient_id,
+              recipientEmail: memberOptions.find((member) => member.id === item.recipient_id)?.email,
+              type: item.metadata?.event === 'task_mentioned' ? ('mention' as const) : ('task_assigned' as const),
+              taskId: data.id,
+              taskTitle: data.title,
+              actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+            })),
+          )
         }
       }
 
@@ -404,7 +405,25 @@ export function CreateTaskDialog({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, title, projectId, assigneeIds, description, priority, singleDueAt, rangeStartAt, rangeEndAt, scheduleMode, selectedStatusId, taskType, parentTaskId, availableStatuses])
+  }, [
+    open,
+    title,
+    projectId,
+    assigneeIds,
+    description,
+    priority,
+    singleDueAt,
+    rangeStartAt,
+    rangeEndAt,
+    scheduleMode,
+    selectedStatusId,
+    taskType,
+    parentTaskId,
+    availableStatuses,
+    isRecurring,
+    recurrenceFrequency,
+    recurrenceEndAt,
+  ])
 
   const assigneeOptions = useMemo(() => {
     const options = memberOptions.slice()
@@ -724,6 +743,63 @@ export function CreateTaskDialog({
               )}
             </div>
           </div>
+
+          {taskType === 'task' && scheduleMode === 'due_date' ? (
+            <div className='space-y-3 rounded-xl border bg-muted/10 p-4'>
+              <div className='flex items-center justify-between gap-3'>
+                <div className='space-y-1'>
+                  <div className='flex items-center gap-2'>
+                    <Repeat2 className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                    <label className='text-sm font-medium text-foreground'>Recurring task</label>
+                  </div>
+                  <p className='text-xs text-muted-foreground'>Create a new task instance on a repeating schedule.</p>
+                </div>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setIsRecurring((current) => {
+                      const next = !current
+                      if (next) setScheduleMode('due_date')
+                      if (!next) setRecurrenceEndAt(undefined)
+                      return next
+                    })
+                  }}
+                  className={cn(
+                    'inline-flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors',
+                    isRecurring ? 'bg-primary text-primary-foreground' : 'border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )}
+                >
+                  {isRecurring ? 'On' : 'Off'}
+                </button>
+              </div>
+              {isRecurring ? (
+                <div className='grid gap-3 md:grid-cols-2'>
+                  <div className='space-y-2'>
+                    <label className='text-xs font-medium text-muted-foreground'>Repeat every</label>
+                    <select
+                      value={recurrenceFrequency}
+                      onChange={(event) => setRecurrenceFrequency(event.target.value as RecurrenceFrequency)}
+                      className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
+                    >
+                      <option value='daily'>Daily</option>
+                      <option value='weekly'>Weekly</option>
+                      <option value='monthly'>Monthly</option>
+                    </select>
+                  </div>
+                  <div className='space-y-2'>
+                    <label className='text-xs font-medium text-muted-foreground'>End date</label>
+                    <DatePicker
+                      value={recurrenceEndAt}
+                      onChange={setRecurrenceEndAt}
+                      placeholder='Optional end date'
+                      className='h-10 w-full text-sm'
+                      disabledDays={{ before: singleDueAt ? startOfDay(singleDueAt) : today }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className='mt-auto flex min-h-[220px] flex-1 flex-col space-y-2'>
             <div className='flex items-center justify-between'>
