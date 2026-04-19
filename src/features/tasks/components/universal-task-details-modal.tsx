@@ -8,6 +8,7 @@ import {
   Mic,
   Play,
   PlusCircle,
+  Repeat2,
   Send,
   Smile,
   Square,
@@ -48,12 +49,23 @@ type TaskRow = {
   status: string | null
   status_id: string | null
   board_column: string | null
+  recurrence_id?: string | null
   priority: string | null
   project_id: string | null
   start_at: string | null
   due_at: string | null
   completed_at: string | null
   created_by: string | null
+}
+
+type TaskRecurrenceRow = {
+  id: string
+  frequency: 'daily' | 'weekly' | 'monthly'
+  interval_count: number
+  end_on: string | null
+  next_run_at: string
+  last_generated_at: string | null
+  is_active: boolean
 }
 
 type Member = { id: string; name: string; username?: string | null; email?: string | null; avatarUrl?: string }
@@ -210,6 +222,32 @@ function formatVoiceDuration(durationMs?: number) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+function formatDateOnly(value: string | null | undefined) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date)
+}
+
+function formatDateTimeOnly(value: string | null | undefined) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function recurrenceCadenceLabel(recurrence: TaskRecurrenceRow) {
+  const intervalCount = Math.max(1, recurrence.interval_count || 1)
+  const unit = recurrence.frequency === 'daily' ? 'day' : recurrence.frequency === 'weekly' ? 'week' : 'month'
+  return intervalCount === 1 ? `Repeats every ${unit}` : `Repeats every ${intervalCount} ${unit}s`
+}
+
 function TaskDetailsLoadingIndicator() {
   return (
     <div className='flex min-h-[220px] items-center justify-center'>
@@ -357,6 +395,7 @@ export function UniversalTaskDetailsModal() {
   const [open, setOpen] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [task, setTask] = useState<TaskRow | null>(null)
+  const [recurrence, setRecurrence] = useState<TaskRecurrenceRow | null>(null)
   const [loadingTask, setLoadingTask] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
@@ -396,6 +435,7 @@ export function UniversalTaskDetailsModal() {
       {
         updatedAt: number
         task: TaskRow
+        recurrence: TaskRecurrenceRow | null
         assigneeIds: string[]
         subtasks: Array<{ id: string; title: string; status: string | null }>
         comments: CommentRow[]
@@ -432,6 +472,7 @@ export function UniversalTaskDetailsModal() {
     const cached = taskCacheRef.current.get(id)
     if (cached && Date.now() - cached.updatedAt < TASK_MODAL_CACHE_TTL_MS) {
       setTask(cached.task)
+      setRecurrence(cached.recurrence)
       setAssigneeIds(cached.assigneeIds)
       setSubtasks(cached.subtasks)
       setComments(cached.comments)
@@ -441,13 +482,14 @@ export function UniversalTaskDetailsModal() {
       setLoadingTask(true)
       setLoadError(null)
       setLoadingComments(true)
+      setRecurrence(null)
     }
 
     // Stage 1: fetch core task data first so modal renders immediately
     const [taskResult, assigneesResult] = await Promise.all([
       supabase
         .from('tasks')
-        .select('id, title, description, status, status_id, board_column, priority, project_id, start_at, due_at, completed_at, created_by')
+        .select('id, title, description, status, status_id, board_column, recurrence_id, priority, project_id, start_at, due_at, completed_at, created_by')
         .eq('id', id)
         .maybeSingle(),
       supabase.from('task_assignees').select('assignee_id').eq('task_id', id),
@@ -472,6 +514,13 @@ export function UniversalTaskDetailsModal() {
     setLoadingComments(true)
     const shouldFetchProjects = projects.length === 0
     const shouldFetchMembers = members.length === 0
+    const recurrenceQuery = taskResult.data.recurrence_id
+      ? supabase
+          .from('task_recurrences')
+          .select('id, frequency, interval_count, end_on, next_run_at, last_generated_at, is_active')
+          .eq('id', taskResult.data.recurrence_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null })
     const statusQuery = taskResult.data.project_id
       ? supabase
           .from('status')
@@ -479,7 +528,7 @@ export function UniversalTaskDetailsModal() {
           .or(`project_id.is.null,project_id.eq.${taskResult.data.project_id}`)
           .order('sort_order', { ascending: true })
       : supabase.from('status').select('id,key,label,sort_order,project_id,is_default').is('project_id', null).order('sort_order', { ascending: true })
-    const [subtasksResult, commentsResult, reactionsResult, projectsResult, profilesResult, statusResult] = await Promise.all([
+    const [subtasksResult, commentsResult, reactionsResult, projectsResult, profilesResult, statusResult, recurrenceResult] = await Promise.all([
       supabase.from('tasks').select('id, title, status').eq('parent_task_id', id).order('created_at', { ascending: false }),
       supabase
         .from('task_comments')
@@ -493,7 +542,13 @@ export function UniversalTaskDetailsModal() {
         ? supabase.from('profiles').select('id, full_name, username, email, avatar_url').order('full_name', { ascending: true })
         : Promise.resolve({ data: null, error: null }),
       statusQuery,
+      recurrenceQuery,
     ])
+    if (recurrenceResult.data) {
+      setRecurrence(recurrenceResult.data)
+    } else {
+      setRecurrence(null)
+    }
     setSubtasks(subtasksResult.data ?? [])
     if (projectsResult.data) {
       setProjects((projectsResult.data ?? []).map((project) => ({ id: project.id, name: project.name ?? 'Untitled project' })))
@@ -565,6 +620,7 @@ export function UniversalTaskDetailsModal() {
     taskCacheRef.current.set(id, {
       updatedAt: Date.now(),
       task: taskResult.data,
+      recurrence: recurrenceResult.data ?? null,
       assigneeIds: (assigneesResult.data ?? []).map((row) => row.assignee_id),
       subtasks: subtasksResult.data ?? [],
       comments: parsedComments,
@@ -1177,6 +1233,21 @@ export function UniversalTaskDetailsModal() {
                     />
                   </div>
                 </div>
+
+                {task.recurrence_id ? (
+                  <div className='rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-3'>
+                    <div className='flex items-center gap-2'>
+                      <Repeat2 className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
+                      <div className='text-sm font-semibold text-foreground'>Recurring task</div>
+                    </div>
+                    <div className='mt-2 space-y-1 text-xs text-muted-foreground'>
+                      <p>{recurrence ? recurrenceCadenceLabel(recurrence) : 'Repeats on a saved schedule.'}</p>
+                      {recurrence?.end_on ? <p>Ends on {formatDateOnly(recurrence.end_on)}</p> : <p>No end date set.</p>}
+                      {recurrence?.next_run_at ? <p>Next occurrence {formatDateTimeOnly(recurrence.next_run_at)}</p> : null}
+                      {recurrence && !recurrence.is_active ? <p>This series is currently inactive.</p> : null}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className='grid gap-3 md:grid-cols-2'>
                   <div>
