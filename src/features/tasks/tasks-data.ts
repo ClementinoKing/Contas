@@ -13,6 +13,7 @@ export type TaskRow = {
   statusKey?: string
   priority: 'Low' | 'Medium' | 'High' | 'Urgent'
   boardColumn?: string
+  recurrenceId?: string
   projectId: string
   projectName: string
   startDate: string

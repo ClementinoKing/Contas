@@ -16,6 +16,7 @@ import {
   MessageCircle,
   Pencil,
   Play,
+  Repeat2,
   Search,
   Send,
   Heart,
@@ -578,6 +579,11 @@ function taskHoverDetails(task: TaskRow) {
   return {
     range: formatRange(task),
   }
+}
+
+function recurrenceLabel(task: TaskRow) {
+  if (!task.recurrenceId) return null
+  return 'Recurring'
 }
 
 function parseBoardDueDate(due: string) {
@@ -1347,7 +1353,7 @@ export function MyTasksPage() {
       fetchStatusCatalog(),
       supabase
         .from('tasks')
-        .select('id, parent_task_id, title, description, status, status_id, priority, board_column, project_id, assigned_to, created_by, due_at, start_at, completed_at, created_at, task_status:status_id(id,key,label,sort_order,project_id,is_default)')
+        .select('id, parent_task_id, title, description, status, status_id, priority, board_column, recurrence_id, project_id, assigned_to, created_by, due_at, start_at, completed_at, created_at, task_status:status_id(id,key,label,sort_order,project_id,is_default)')
         .order('created_at', { ascending: false }),
       supabase.from('task_assignees').select('task_id, assignee_id'),
       supabase
@@ -1512,6 +1518,7 @@ export function MyTasksPage() {
           statusKey: statusKey ?? undefined,
           priority: mapTaskPriority(task.priority),
           boardColumn: task.status_id ?? task.board_column ?? undefined,
+          recurrenceId: task.recurrence_id ?? undefined,
           projectId: task.project_id ?? '',
           projectName: projectMap.get(task.project_id ?? '') ?? 'Unassigned project',
           startDate: startDate.toISOString().slice(0, 10),
@@ -4267,6 +4274,12 @@ export function MyTasksPage() {
                                           {rowTask.title}
                                         </span>
                                       </div>
+                                      {rowTask.recurrenceId ? (
+                                        <div className='mt-1 flex items-center gap-1.5 pl-6 text-[11px] text-muted-foreground'>
+                                          <Repeat2 className='h-3 w-3' aria-hidden='true' />
+                                          <span>{recurrenceLabel(rowTask)}</span>
+                                        </div>
+                                      ) : null}
                                     </td>
                                     <td className='px-3 py-2.5'>
                                       <Link
