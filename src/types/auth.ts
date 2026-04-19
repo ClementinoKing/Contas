@@ -1,4 +1,5 @@
 export type OnboardingStep = 'name' | 'work' | 'tools'
+export type AccountStatus = 'active' | 'deactivated' | 'deleted'
 
 export interface OnboardingState {
   completed: boolean
@@ -16,6 +17,7 @@ export interface User {
   name: string
   username?: string
   roleLabel?: string
+  accountStatus?: AccountStatus
   mustResetPassword?: boolean
   jobTitle?: string
   avatarUrl?: string

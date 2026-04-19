@@ -1122,6 +1122,7 @@ export function MyTasksPage() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([])
   const [bulkMoveTargetColumnId, setBulkMoveTargetColumnId] = useState('')
   const [bulkAssignValue, setBulkAssignValue] = useState('')
+  const [deleteTaskTarget, setDeleteTaskTarget] = useState<{ taskId: string; title: string } | null>(null)
 
   const [activeTaskRef, setActiveTaskRef] = useState<{ columnId: string; taskId: string } | null>(null)
   const [detailDraft, setDetailDraft] = useState<BoardTaskDraft>({
@@ -3001,7 +3002,7 @@ export function MyTasksPage() {
   }
 
   const handleDeleteTask = async (taskId: string) => {
-    if (!canEditTaskById(taskId)) return
+    if (!canEditTaskById(taskId)) return false
     const previousRows = taskRows
     setTaskRows((rows) => rows.filter((task) => task.id !== taskId))
     setSelectedTaskIds((ids) => ids.filter((id) => id !== taskId))
@@ -3010,15 +3011,23 @@ export function MyTasksPage() {
     const result = await runWithDedup(`delete:${taskId}`, async () =>
       supabase.from('tasks').delete().eq('id', taskId),
     )
-    if (!result) return
+    if (!result) return false
     const { error } = result
     if (error) {
       console.error('Failed to delete task', error)
       setTaskRows(previousRows)
       setBackgroundSync('error')
-      return
+      return false
     }
     setBackgroundSync('saved')
+    return true
+  }
+
+  const confirmDeleteTask = async () => {
+    if (!deleteTaskTarget) return
+    const { taskId } = deleteTaskTarget
+    setDeleteTaskTarget(null)
+    await handleDeleteTask(taskId)
   }
 
   function stopVoiceCommentRecording() {
@@ -4339,7 +4348,7 @@ export function MyTasksPage() {
                                             type='button'
                                             onClick={(event) => {
                                               event.stopPropagation()
-                                              void handleDeleteTask(rowTask.id)
+                                              setDeleteTaskTarget({ taskId: rowTask.id, title: rowTask.title })
                                             }}
                                             className='inline-flex h-8 w-8 items-center justify-center rounded-md border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
                                             aria-label={`Delete ${rowTask.title}`}
@@ -5085,6 +5094,31 @@ export function MyTasksPage() {
               </div>
             </div>
           ) : null}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={deleteTaskTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTaskTarget(null)
+          }
+        }}
+      >
+        <DialogContent className='max-w-md'>
+          <DialogHeader>
+            <DialogTitle>Delete task?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete {deleteTaskTarget?.title ? `“${deleteTaskTarget.title}”` : 'this task'}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className='mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end'>
+            <Button type='button' variant='outline' onClick={() => setDeleteTaskTarget(null)}>
+              Cancel
+            </Button>
+            <Button type='button' variant='destructive' onClick={() => void confirmDeleteTask()}>
+              Delete task
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </>

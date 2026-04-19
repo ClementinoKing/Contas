@@ -3,7 +3,7 @@ import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
 import { STORAGE_KEYS } from '@/lib/storage'
 import { supabase } from '@/lib/supabase'
-import type { AuthSession, LoginPayload, OnboardingState, RegisterPayload, User } from '@/types/auth'
+import type { AccountStatus, AuthSession, LoginPayload, OnboardingState, RegisterPayload, User } from '@/types/auth'
 
 type AuthState = {
   session: AuthSession | null
@@ -30,7 +30,7 @@ export interface AuthContextValue {
   updateCurrentUser: (updates: Partial<User>) => void
   updateOnboarding: (updates: Partial<OnboardingState>) => void
   completeOnboarding: (updates?: Partial<OnboardingState>) => Promise<void>
-  logout: () => Promise<void>
+  logout: (options?: { accessNotice?: string }) => Promise<void>
 }
 
 function authReducer(state: AuthState, action: AuthAction): AuthState {
@@ -58,6 +58,9 @@ type ProfileSnapshot = {
   username: string | null
   role_label: string | null
   job_title: string | null
+  account_status: AccountStatus | null
+  deactivated_at: string | null
+  deleted_at: string | null
   must_reset_password: boolean | null
 }
 
@@ -136,6 +139,14 @@ function clearCachedProfile() {
   localStorage.removeItem(STORAGE_KEYS.profileCache)
 }
 
+function writeAccessNotice(message: string) {
+  sessionStorage.setItem(STORAGE_KEYS.accessNotice, message)
+}
+
+function clearAccessNotice() {
+  sessionStorage.removeItem(STORAGE_KEYS.accessNotice)
+}
+
 function purgeCachedClientDataOnLogout() {
   const preservedKeys = new Set<string>(['contas.ui.theme', STORAGE_KEYS.sidebarCollapsed])
 
@@ -165,9 +176,20 @@ function cacheProfileFromUser(user: User) {
     avatar_url: user.avatarUrl ?? user.avatarPath ?? null,
     username: user.username ?? null,
     role_label: user.roleLabel ?? null,
+    account_status: user.accountStatus ?? 'active',
     job_title: user.jobTitle ?? null,
+    deactivated_at: null,
+    deleted_at: null,
     must_reset_password: user.mustResetPassword ?? false,
   })
+}
+
+function getAccessDeniedMessage(status: AccountStatus) {
+  if (status === 'deleted') {
+    return 'Your account has been deleted. Contact your administrator.'
+  }
+
+  return 'Your account has been deactivated. Contact your administrator.'
 }
 
 function extractStoredSupabaseSession() {
@@ -215,6 +237,7 @@ function mapSupabaseSession(session: Session): AuthSession {
     : createInitialOnboarding({ fullName: name, completed: false })
   const username = cachedProfile?.username ?? (metadata.username as string | undefined) ?? generateUsernameCandidate(name, email)
   const roleLabel = cachedProfile?.role_label ?? (metadata.role_label as string | undefined)
+  const accountStatus = cachedProfile?.account_status ?? (metadata.account_status as AccountStatus | undefined)
   const mustResetPassword = Boolean(cachedProfile?.must_reset_password ?? metadata.must_reset_password ?? false)
   const jobTitle = cachedProfile?.job_title ?? undefined
 
@@ -225,6 +248,7 @@ function mapSupabaseSession(session: Session): AuthSession {
       name,
       username,
       roleLabel: roleLabel ?? undefined,
+      accountStatus: accountStatus ?? 'active',
       mustResetPassword,
       jobTitle,
       avatarUrl,
@@ -293,7 +317,8 @@ async function fetchProfileStatus(userId: string) {
 
 async function fetchProfileSnapshot(userId: string) {
   const baseSelect = 'id, full_name, email, avatar_url, username, role_label, job_title'
-  const withResetSelect = `${baseSelect}, must_reset_password`
+  const statusSelect = 'account_status, deactivated_at, deleted_at'
+  const withResetSelect = `${baseSelect}, ${statusSelect}, must_reset_password`
 
   const withResetResult = await supabase.from('profiles').select(withResetSelect).eq('id', userId).maybeSingle()
   if (!withResetResult.error && withResetResult.data) {
@@ -302,7 +327,9 @@ async function fetchProfileSnapshot(userId: string) {
 
   const shouldRetryWithoutResetField =
     Boolean(withResetResult.error) &&
-    /must_reset_password|column .* does not exist|schema cache/i.test(withResetResult.error?.message ?? '')
+    /must_reset_password|account_status|deactivated_at|deleted_at|column .* does not exist|schema cache/i.test(
+      withResetResult.error?.message ?? '',
+    )
 
   if (!shouldRetryWithoutResetField) {
     return null
@@ -313,6 +340,9 @@ async function fetchProfileSnapshot(userId: string) {
 
   return {
     ...(fallbackResult.data as Omit<ProfileSnapshot, 'must_reset_password'>),
+    account_status: 'active',
+    deactivated_at: null,
+    deleted_at: null,
     must_reset_password: false,
   } as ProfileSnapshot
 }
@@ -325,6 +355,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     cacheProfileFromUser(session.user)
     dispatch({ type: 'SET_SESSION', payload: session })
   }, [])
+
+  const logout = useCallback(
+    async (options?: { accessNotice?: string }) => {
+      if (state.session?.user.id) {
+        try {
+          await supabase
+            .from('profiles')
+            .update({
+              is_online: false,
+              last_seen_at: new Date().toISOString(),
+            })
+            .eq('id', state.session.user.id)
+        } catch {
+          // ignore presence write failures on logout
+        }
+      }
+      await supabase.auth.signOut().catch(() => undefined)
+      localStorage.removeItem(STORAGE_KEYS.supabaseAuthToken)
+      localStorage.removeItem(STORAGE_KEYS.supabaseAuthTokenLegacy)
+      clearCachedProfile()
+      purgeCachedClientDataOnLogout()
+      clearAccessNotice()
+      if (options?.accessNotice) {
+        writeAccessNotice(options.accessNotice)
+      }
+      dispatch({ type: 'CLEAR_SESSION' })
+    },
+    [state.session?.user.id],
+  )
 
   useEffect(() => {
     let mounted = true
@@ -375,7 +434,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [state.hasProfile, state.session?.user.id])
+  }, [logout, state.hasProfile, state.session?.user.id])
 
   useEffect(() => {
     if (!state.session?.user.id || !state.hasProfile) return
@@ -387,6 +446,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void fetchProfileSnapshot(userId).then((profile) => {
       if (cancelled || !profile) return
 
+      const accountStatus = profile.account_status ?? 'active'
+      if (accountStatus !== 'active') {
+        void logout({ accessNotice: getAccessDeniedMessage(accountStatus) })
+        return
+      }
+
       const avatarValue = profile.avatar_url ?? null
       const nextSnapshotKey = JSON.stringify({
         userId,
@@ -394,6 +459,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email: profile.email ?? null,
         username: profile.username ?? null,
         role_label: profile.role_label ?? null,
+        account_status: accountStatus,
         must_reset_password: profile.must_reset_password ?? false,
         job_title: profile.job_title ?? null,
         avatar_url: avatarValue,
@@ -405,6 +471,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       writeCachedProfile({
         id: userId,
         ...profile,
+        account_status: accountStatus,
+        deactivated_at: profile.deactivated_at ?? null,
+        deleted_at: profile.deleted_at ?? null,
       })
       const nextSession: AuthSession = {
         ...state.session!,
@@ -414,6 +483,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           email: profile.email ?? currentUser.email,
           username: profile.username ?? currentUser.username,
           roleLabel: profile.role_label ?? currentUser.roleLabel,
+          accountStatus,
           mustResetPassword: profile.must_reset_password ?? currentUser.mustResetPassword,
           jobTitle: profile.job_title ?? currentUser.jobTitle,
           avatarUrl: sanitizeAvatarUrl(avatarValue) ?? currentUser.avatarUrl,
@@ -427,15 +497,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [state.hasProfile, state.session?.user.id])
+  }, [logout, state.hasProfile, state.session?.user.id])
 
-  const login = useCallback(async ({ email, password }: LoginPayload) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) throw error
-    if (!data.session) throw new Error('Supabase login did not return a session.')
+  const login = useCallback(
+    async ({ email, password }: LoginPayload) => {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      if (error) throw error
+      if (!data.session) throw new Error('Supabase login did not return a session.')
 
-    setSession(mapSupabaseSession(data.session))
-  }, [setSession])
+      const profile = await fetchProfileSnapshot(data.session.user.id)
+      if (!profile) {
+        await supabase.auth.signOut().catch(() => undefined)
+        throw new Error('Account access could not be verified. Contact your administrator.')
+      }
+
+      const accountStatus = profile.account_status ?? 'active'
+      if (accountStatus !== 'active') {
+        await supabase.auth.signOut().catch(() => undefined)
+        throw new Error(getAccessDeniedMessage(accountStatus))
+      }
+
+      setSession(mapSupabaseSession(data.session))
+    },
+    [setSession],
+  )
 
   const register = useCallback(async ({ name, email, password }: RegisterPayload) => {
     const onboarding = createInitialOnboarding({ fullName: name, completed: true })
@@ -546,28 +631,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SET_PROFILE_STATUS', payload: { hasProfile: true, loading: false } })
     persistProfileRecord(updatedUser)
   }, [setSession, state.session])
-
-  const logout = useCallback(async () => {
-    if (state.session?.user.id) {
-      try {
-        await supabase
-          .from('profiles')
-          .update({
-            is_online: false,
-            last_seen_at: new Date().toISOString(),
-          })
-          .eq('id', state.session.user.id)
-      } catch {
-        // ignore presence write failures on logout
-      }
-    }
-    await supabase.auth.signOut().catch(() => undefined)
-    localStorage.removeItem(STORAGE_KEYS.supabaseAuthToken)
-    localStorage.removeItem(STORAGE_KEYS.supabaseAuthTokenLegacy)
-    clearCachedProfile()
-    purgeCachedClientDataOnLogout()
-    dispatch({ type: 'CLEAR_SESSION' })
-  }, [state.session?.user.id])
 
   const value = useMemo<AuthContextValue>(
     () => ({

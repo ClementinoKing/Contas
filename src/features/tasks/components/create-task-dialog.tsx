@@ -26,7 +26,7 @@ type MemberOption = { id: string; name: string; username?: string; email?: strin
 type TaskOption = { id: string; title: string }
 type TaskType = 'task' | 'subtask'
 type ScheduleMode = 'due_date' | 'range'
-type RecurrenceFrequency = 'daily' | 'weekly' | 'monthly'
+type RecurrenceFrequency = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'annual'
 
 function extractMentionedMemberIds(text: string, members: Array<{ id: string; name: string }>) {
   const normalized = text.toLowerCase()
@@ -783,6 +783,8 @@ export function CreateTaskDialog({
                       <option value='daily'>Daily</option>
                       <option value='weekly'>Weekly</option>
                       <option value='monthly'>Monthly</option>
+                      <option value='quarterly'>Quarterly</option>
+                      <option value='annual'>Annual</option>
                     </select>
                   </div>
                   <div className='space-y-2'>

@@ -18,6 +18,7 @@ const supabaseAuthTokenKey = supabaseProjectRef
 
 export const STORAGE_KEYS = {
   authSession: 'contas.auth.session',
+  accessNotice: 'contas.auth.access-notice',
   supabaseAuthToken: supabaseAuthTokenKey,
   supabaseAuthTokenLegacy: 'contas.supabase.auth.token',
   profileCache: 'contas.profile.cache',

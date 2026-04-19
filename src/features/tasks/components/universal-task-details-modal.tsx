@@ -60,7 +60,7 @@ type TaskRow = {
 
 type TaskRecurrenceRow = {
   id: string
-  frequency: 'daily' | 'weekly' | 'monthly'
+  frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'annual'
   interval_count: number
   end_on: string | null
   next_run_at: string
@@ -244,7 +244,16 @@ function formatDateTimeOnly(value: string | null | undefined) {
 
 function recurrenceCadenceLabel(recurrence: TaskRecurrenceRow) {
   const intervalCount = Math.max(1, recurrence.interval_count || 1)
-  const unit = recurrence.frequency === 'daily' ? 'day' : recurrence.frequency === 'weekly' ? 'week' : 'month'
+  const unit =
+    recurrence.frequency === 'daily'
+      ? 'day'
+      : recurrence.frequency === 'weekly'
+        ? 'week'
+        : recurrence.frequency === 'monthly'
+          ? 'month'
+          : recurrence.frequency === 'quarterly'
+            ? 'quarter'
+            : 'year'
   return intervalCount === 1 ? `Repeats every ${unit}` : `Repeats every ${intervalCount} ${unit}s`
 }
 

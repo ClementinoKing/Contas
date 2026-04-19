@@ -1,6 +1,8 @@
 import {
   Check,
   FileText,
+  Download,
+  ExternalLink,
   MessageSquareText,
   Mic,
   Maximize2,
@@ -172,7 +174,7 @@ type ReplyPreviewMessage = {
 const GENERAL_CHAT_ROOM_SLUG = 'general'
 const MAX_COMPOSER_ATTACHMENTS = 6
 const CHAT_ATTACHMENT_ACCEPT =
-  'image/*,.pdf,.doc,.docx,.odt,.rtf,.xls,.xlsx,.csv,.ods,.ppt,.pptx,.odp'
+  'image/*,application/pdf,.pdf,application/msword,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.oasis.opendocument.text,.odt,application/rtf,.rtf,text/rtf,.rtf,application/vnd.ms-excel,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx,text/csv,.csv,application/vnd.oasis.opendocument.spreadsheet,.ods,application/vnd.ms-powerpoint,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,application/vnd.oasis.opendocument.presentation,.odp'
 const CHAT_ATTACHMENT_ALLOWED_EXTENSIONS = new Set([
   'pdf',
   'doc',
@@ -186,6 +188,21 @@ const CHAT_ATTACHMENT_ALLOWED_EXTENSIONS = new Set([
   'ppt',
   'pptx',
   'odp',
+])
+const CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.oasis.opendocument.text',
+  'application/rtf',
+  'text/rtf',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.presentation',
 ])
 const CHAT_CACHE_KEY = 'contas.group-chat.cache.v1'
 const CHAT_CACHE_MAX_AGE_MS = 10 * 60 * 1000
@@ -295,8 +312,12 @@ function isImageFile(file: File) {
 
 function isAllowedChatAttachment(file: File) {
   if (isImageFile(file)) return true
+
   const extension = getAttachmentExtension(file.name)
-  return CHAT_ATTACHMENT_ALLOWED_EXTENSIONS.has(extension)
+  if (CHAT_ATTACHMENT_ALLOWED_EXTENSIONS.has(extension)) return true
+
+  const mimeType = file.type.toLowerCase()
+  return CHAT_ATTACHMENT_ALLOWED_MIME_TYPES.has(mimeType)
 }
 
 function createComposerAttachment(file: File): ChatComposerAttachment {
@@ -983,6 +1004,18 @@ function DocumentViewerModal({
     window.open(resolvedUrl, '_blank', 'noopener,noreferrer')
   }
 
+  const handleDownloadOriginal = () => {
+    if (!resolvedUrl) return
+
+    const link = document.createElement('a')
+    link.href = resolvedUrl
+    link.download = attachment?.fileName ?? 'attachment'
+    link.rel = 'noopener noreferrer'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
   return (
     <Dialog open={Boolean(attachment)} onOpenChange={(open) => (!open ? onClose() : undefined)}>
       <DialogContent
@@ -1010,9 +1043,16 @@ function DocumentViewerModal({
 
             <div className='flex items-center gap-2'>
               {resolvedUrl ? (
-                <Button type='button' variant='outline' size='sm' onClick={handleOpenOriginal}>
-                  Open file
-                </Button>
+                <>
+                  <Button type='button' variant='outline' size='sm' onClick={handleDownloadOriginal}>
+                    <Download className='mr-2 h-4 w-4' aria-hidden='true' />
+                    Download
+                  </Button>
+                  <Button type='button' variant='outline' size='sm' onClick={handleOpenOriginal}>
+                    <ExternalLink className='mr-2 h-4 w-4' aria-hidden='true' />
+                    Open file
+                  </Button>
+                </>
               ) : null}
               <Button
                 type='button'
@@ -1060,7 +1100,8 @@ function DocumentViewerModal({
 
           <div className='border-t border-border/70 px-4 py-3 text-xs text-muted-foreground sm:px-6'>
             <p>
-              Documents open in the built-in viewer when possible. If a file does not render inline, use <span className='font-medium text-foreground'>Open file</span>.
+              Documents open in the built-in viewer when possible. If a file does not render inline, use{' '}
+              <span className='font-medium text-foreground'>Open file</span> or <span className='font-medium text-foreground'>Download</span>.
             </p>
           </div>
         </div>
@@ -1686,14 +1727,15 @@ export function GroupChatWidget() {
     [setMentionDraft],
   )
 
-  const appendComposerAttachments = useCallback((incomingFiles: File[]) => {
+  const appendComposerAttachments = useCallback((incomingFiles: File[], source: 'picker' | 'drop' = 'picker') => {
     if (incomingFiles.length === 0) return
 
     const { allowed, rejectedCount } = filterAllowedChatAttachments(incomingFiles)
     if (rejectedCount > 0) {
-      notify.error('Attachment not allowed', {
-        description: 'Only images, documents, spreadsheets, PowerPoint files, and PDFs can be attached.',
+      notify.error(source === 'drop' ? 'Unsupported dropped file' : 'Attachment not allowed', {
+        description: 'Only images, PDF, Word, Excel, PowerPoint, ODT, RTF, and CSV files can be attached.',
       })
+      return
     }
 
     if (allowed.length === 0) return
@@ -1864,7 +1906,7 @@ export function GroupChatWidget() {
   const handleAttachmentSelection = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const selectedFiles = Array.from(event.target.files ?? [])
-      appendComposerAttachments(selectedFiles)
+      appendComposerAttachments(selectedFiles, 'picker')
       event.target.value = ''
     },
     [appendComposerAttachments],
@@ -1902,10 +1944,17 @@ export function GroupChatWidget() {
       event.stopPropagation()
       dragDepthRef.current = 0
       setIsDraggingFiles(false)
-      appendComposerAttachments(Array.from(event.dataTransfer.files ?? []))
+      appendComposerAttachments(Array.from(event.dataTransfer.files ?? []), 'drop')
     },
     [appendComposerAttachments],
   )
+
+  const chatAttachmentDragHandlers = {
+    onDragEnter: handleComposerDragEnter,
+    onDragOver: handleComposerDragOver,
+    onDragLeave: handleComposerDragLeave,
+    onDrop: handleComposerDrop,
+  } as const
 
   const cancelEditing = useCallback(() => {
     setEditingMessageId(null)
@@ -2427,98 +2476,98 @@ export function GroupChatWidget() {
     })
   }, [])
 
-  const MessageActionsSheet = () =>
-    actionSheetMessage ? (
-      <div className='absolute inset-0 z-30 grid place-items-center px-4'>
-        <button
-          type='button'
-          aria-label='Close message options'
-          className='absolute inset-0 bg-black/45 backdrop-blur-sm'
-          onClick={closeMessageActions}
-        />
-        <div className='relative z-10 mx-auto w-full max-w-xs rounded-3xl border border-border/70 bg-card p-4 shadow-[0_18px_50px_hsl(var(--foreground)/0.24)]'>
-          <div className='mb-3 grid grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-start gap-2'>
-            <div aria-hidden='true' />
-            <div className='min-w-0 space-y-1 text-center'>
-              <p className='text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground'>Message options</p>
-              <p
-                className='overflow-hidden break-words text-sm text-foreground'
-                style={{
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                }}
-              >
-                {actionSheetMessage.message}
-              </p>
-            </div>
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon'
-              className='justify-self-end h-8 w-8 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
-              onClick={closeMessageActions}
-              aria-label='Close message options'
-            >
-              <X className='h-4 w-4' aria-hidden='true' />
-            </Button>
-          </div>
-          <div className='grid gap-2'>
-            <Button
-              type='button'
-              variant='outline'
-              className='h-11 justify-center rounded-2xl border-border/70 bg-background px-4 text-center'
-              onClick={() => {
-                startReplyingToMessage(actionSheetMessage)
-                closeMessageActions()
+  const messageActionsSheet = actionSheetMessage ? (
+    <div className='absolute inset-0 z-30 grid place-items-center px-4'>
+      <button
+        type='button'
+        aria-label='Close message options'
+        className='absolute inset-0 bg-black/45 backdrop-blur-sm'
+        onClick={closeMessageActions}
+      />
+      <div className='relative z-10 mx-auto w-full max-w-xs rounded-3xl border border-border/70 bg-card p-4 shadow-[0_18px_50px_hsl(var(--foreground)/0.24)]'>
+        <div className='mb-3 grid grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-start gap-2'>
+          <div aria-hidden='true' />
+          <div className='min-w-0 space-y-1 text-center'>
+            <p className='text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground'>Message options</p>
+            <p
+              className='overflow-hidden break-words text-sm text-foreground'
+              style={{
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
               }}
             >
-              <MessageSquareText className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
-              Reply
-            </Button>
-            {actionSheetMessage.mine ? (
-              <>
-                <Button
-                  type='button'
-                  variant='outline'
-                  className='h-11 justify-center rounded-2xl border-border/70 bg-background px-4 text-center'
-                  onClick={() => {
-                    startEditingMessage(actionSheetMessage)
-                    closeMessageActions()
-                  }}
-                >
-                  <PencilLine className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
-                  Edit message
-                </Button>
-                <Button
-                  type='button'
-                  variant='outline'
-                  className='h-11 justify-center rounded-2xl border-destructive/20 bg-destructive/5 px-4 text-center text-destructive hover:bg-destructive/10 hover:text-destructive'
-                  onClick={() => {
-                    void deleteMessage(actionSheetMessage)
-                    closeMessageActions()
-                  }}
-                >
-                  <Trash2 className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
-                  Delete message
-                </Button>
-              </>
-            ) : null}
-            <Button
-              type='button'
-              variant='ghost'
-              className='h-11 rounded-2xl px-4 text-muted-foreground hover:bg-accent hover:text-foreground'
-              onClick={closeMessageActions}
-            >
-              Cancel
-            </Button>
+              {actionSheetMessage.message}
+            </p>
           </div>
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon'
+            className='justify-self-end h-8 w-8 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
+            onClick={closeMessageActions}
+            aria-label='Close message options'
+          >
+            <X className='h-4 w-4' aria-hidden='true' />
+          </Button>
+        </div>
+        <div className='grid gap-2'>
+          <Button
+            type='button'
+            variant='outline'
+            className='h-11 justify-center rounded-2xl border-border/70 bg-background px-4 text-center'
+            onClick={() => {
+              startReplyingToMessage(actionSheetMessage)
+              closeMessageActions()
+            }}
+          >
+            <MessageSquareText className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
+            Reply
+          </Button>
+          {actionSheetMessage.mine ? (
+            <>
+              <Button
+                type='button'
+                variant='outline'
+                className='h-11 justify-center rounded-2xl border-border/70 bg-background px-4 text-center'
+                onClick={() => {
+                  startEditingMessage(actionSheetMessage)
+                  closeMessageActions()
+                }}
+              >
+                <PencilLine className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
+                Edit message
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                className='h-11 justify-center rounded-2xl border-destructive/20 bg-destructive/5 px-4 text-center text-destructive hover:bg-destructive/10 hover:text-destructive'
+                onClick={() => {
+                  void deleteMessage(actionSheetMessage)
+                  closeMessageActions()
+                }}
+              >
+                <Trash2 className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
+                Delete message
+              </Button>
+            </>
+          ) : null}
+          <Button
+            type='button'
+            variant='ghost'
+            className='h-11 rounded-2xl px-4 text-muted-foreground hover:bg-accent hover:text-foreground'
+            onClick={closeMessageActions}
+          >
+            Cancel
+          </Button>
         </div>
       </div>
-    ) : null
+    </div>
+  ) : null
 
-  const ChatSurface = ({ mode }: { mode: 'popover' | 'fullscreen' }) => {
+  const renderChatSurface = (mode: 'popover' | 'fullscreen') => {
     const isFullscreenMode = mode === 'fullscreen'
+
     return (
       <div className={cn('relative flex min-h-0 flex-col bg-card', isFullscreenMode ? 'h-[100dvh]' : 'h-[min(56rem,calc(100vh-1rem))] max-h-[calc(100vh-1rem)]')}>
         <div
@@ -2649,10 +2698,6 @@ export function GroupChatWidget() {
             'relative border-t border-border/60 bg-muted/20 p-4 transition-colors',
             isDraggingFiles ? 'bg-primary/5' : 'bg-muted/20',
           )}
-          onDragEnter={handleComposerDragEnter}
-          onDragOver={handleComposerDragOver}
-          onDragLeave={handleComposerDragLeave}
-          onDrop={handleComposerDrop}
         >
           <div className='mx-auto w-full max-w-4xl'>
             <div className='relative rounded-2xl border border-border/70 bg-background/95 p-3 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.03)]'>
@@ -2771,7 +2816,7 @@ export function GroupChatWidget() {
                       placeholder='Message'
                       rows={1}
                       className='h-full w-full resize-none rounded-xl border border-border/70 bg-muted/30 px-3 py-2.5 pr-14 text-sm leading-5 shadow-[inset_0_0_0_1px_hsl(var(--foreground)/0.04)] ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50'
-                    ></textarea>
+                    />
                   )}
                   <Button
                     type='button'
@@ -2880,7 +2925,6 @@ export function GroupChatWidget() {
               ) : null}
             </div>
           </div>
-
         </div>
       </div>
     )
@@ -2904,7 +2948,7 @@ export function GroupChatWidget() {
       </Button>
 
       {open && !isFullscreen ? (
-        <div className='fixed inset-0 z-[55]'>
+        <div className='fixed inset-0 z-[55]' {...chatAttachmentDragHandlers}>
           <button
             type='button'
             aria-label='Close group chat'
@@ -2916,8 +2960,8 @@ export function GroupChatWidget() {
             className='absolute bottom-4 right-4 w-[calc(100vw-1rem)] max-w-[30rem] overflow-hidden rounded-3xl border border-border/70 p-0 shadow-[0_40px_120px_rgba(15,23,42,0.24),0_12px_28px_rgba(15,23,42,0.10)] ring-1 ring-slate-200/80 dark:shadow-[var(--elevation-lg)] dark:ring-0 sm:bottom-6 sm:right-6 sm:w-[30rem]'
             onClick={(event) => event.stopPropagation()}
           >
-            <ChatSurface mode='popover' />
-            <MessageActionsSheet />
+            {renderChatSurface('popover')}
+            {messageActionsSheet}
           </div>
         </div>
       ) : null}
@@ -2936,13 +2980,13 @@ export function GroupChatWidget() {
           onCloseAutoFocus={(event) => event.preventDefault()}
           className='left-0 top-0 h-[100dvh] max-h-[100dvh] w-[100vw] max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 shadow-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 data-[state=open]:duration-300 data-[state=closed]:duration-200'
         >
-        <DialogTitle className='sr-only'>{roomHeader.title}</DialogTitle>
-        <DialogDescription className='sr-only'>{roomHeader.description}</DialogDescription>
-        <div className='relative h-full w-full'>
-          <ChatSurface mode='fullscreen' />
-          <MessageActionsSheet />
-        </div>
-      </DialogContent>
+          <DialogTitle className='sr-only'>{roomHeader.title}</DialogTitle>
+          <DialogDescription className='sr-only'>{roomHeader.description}</DialogDescription>
+          <div className='relative h-full w-full' {...chatAttachmentDragHandlers}>
+            {renderChatSurface('fullscreen')}
+            {messageActionsSheet}
+          </div>
+        </DialogContent>
       </Dialog>
       <DocumentViewerModal attachment={attachmentViewer} onClose={closeAttachmentViewer} />
     </>
