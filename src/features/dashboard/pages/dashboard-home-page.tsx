@@ -446,8 +446,8 @@ export function DashboardHomePage() {
         </Card>
       </section>
 
-      <section className='grid gap-5 xl:grid-cols-[1.35fr_1fr]'>
-        <Card className='overflow-hidden rounded-xl border-border/70 bg-card/95'>
+      <section className='grid gap-5 xl:grid-cols-[1.35fr_1fr] xl:items-start'>
+        <Card className='flex flex-col overflow-hidden rounded-xl border-border/70 bg-card/95'>
           <CardHeader className='pb-4'>
             <div className='flex flex-wrap items-center justify-between gap-3'>
               <div>
@@ -475,7 +475,7 @@ export function DashboardHomePage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className='space-y-5'>
+          <CardContent className='flex flex-col space-y-5'>
             <div className='grid gap-2.5 sm:grid-cols-3'>
               <div className='rounded-lg border border-blue-400/20 bg-blue-400/5 px-3 py-2.5'>
                 <p className='text-[11px] uppercase tracking-wide text-muted-foreground'>Created</p>
@@ -596,12 +596,12 @@ export function DashboardHomePage() {
           </CardContent>
         </Card>
 
-        <Card className='rounded-xl'>
+        <Card className='flex flex-col rounded-xl'>
           <CardHeader className='pb-3'>
             <CardTitle>Project Load Mix</CardTitle>
             <CardDescription>Task share across {currentOrganization.name}</CardDescription>
           </CardHeader>
-          <CardContent className='space-y-4'>
+          <CardContent className='flex flex-col gap-4'>
             <div className='flex items-center justify-center'>
               <div className='relative h-52 w-52 rounded-full' style={{ backgroundImage: donutGradient }} aria-label='Project task distribution'>
                 <div className='absolute inset-[26%] grid place-items-center rounded-full border bg-card'>
@@ -613,7 +613,7 @@ export function DashboardHomePage() {
               </div>
             </div>
 
-            <div className='space-y-2'>
+            <div className='max-h-[13rem] space-y-2 overflow-y-auto pr-1'>
               {projectDistribution.length === 0 ? (
                 <div className='rounded-md border px-3 py-4 text-sm text-muted-foreground'>No projects in the database yet.</div>
               ) : (
@@ -635,34 +635,36 @@ export function DashboardHomePage() {
       </section>
 
       <section className='grid gap-5 xl:grid-cols-[1.35fr_1fr]'>
-        <Card className='rounded-xl'>
+        <Card className='flex h-full flex-col rounded-xl xl:h-[25rem]'>
           <CardHeader className='pb-3'>
             <CardTitle>Upcoming Work Feed</CardTitle>
             <CardDescription>Ordered by due date for the next execution window</CardDescription>
           </CardHeader>
-          <CardContent className='space-y-2'>
+          <CardContent className='flex flex-1 min-h-0 flex-col'>
             {taskFeed.length === 0 ? (
               <div className='rounded-md border bg-muted/10 px-3 py-5 text-sm text-muted-foreground'>No tasks in the database yet.</div>
             ) : (
-              taskFeed.map((task) => (
-                <article key={task.id} className='flex items-center justify-between rounded-md border bg-muted/10 px-3 py-2.5'>
-                  <div className='min-w-0'>
-                    <p className='truncate text-sm font-medium text-foreground'>{task.title}</p>
-                    <p className='text-xs text-muted-foreground'>
-                      {task.projectName} • {task.owners.length > 0 ? task.owners.join(', ') : 'Unassigned'}
-                    </p>
-                  </div>
-                  <div className='ml-3 flex items-center gap-2'>
-                    <Badge variant='outline'>{task.status}</Badge>
-                    <span className='text-xs text-muted-foreground'>Due {formatDueLabel(task.dueAt)}</span>
-                  </div>
-                </article>
-              ))
+              <div className='min-h-0 max-h-[15.5rem] space-y-2 overflow-y-auto pr-1'>
+                {taskFeed.map((task) => (
+                  <article key={task.id} className='flex items-center justify-between rounded-md border bg-muted/10 px-3 py-2.5'>
+                    <div className='min-w-0'>
+                      <p className='truncate text-sm font-medium text-foreground'>{task.title}</p>
+                      <p className='text-xs text-muted-foreground'>
+                        {task.projectName} • {task.owners.length > 0 ? task.owners.join(', ') : 'Unassigned'}
+                      </p>
+                    </div>
+                    <div className='ml-3 flex items-center gap-2'>
+                      <Badge variant='outline'>{task.status}</Badge>
+                      <span className='text-xs text-muted-foreground'>Due {formatDueLabel(task.dueAt)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>
 
-        <Card className='rounded-xl'>
+        <Card className='flex h-full flex-col rounded-xl xl:h-[25rem]'>
           <CardHeader className='pb-3'>
             <CardTitle>Quick Actions</CardTitle>
             <CardDescription>High-frequency actions for team leads</CardDescription>

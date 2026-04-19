@@ -222,11 +222,13 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
                           onNavigate?.()
                           navigate(`/dashboard/projects/${project.id}`)
                         }}
-                        className='h-9 px-2.5'
+                        className='grid h-9 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-2.5'
                       >
                         <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} aria-hidden='true' />
-                        <span className='ml-2.5 truncate'>{project.name}</span>
-                        <span className='ml-auto text-[10px] text-muted-foreground'>{project.key}</span>
+                        <span className='min-w-0 truncate'>{project.name}</span>
+                        <span className='justify-self-end whitespace-nowrap text-right text-[10px] text-muted-foreground tabular-nums'>
+                          {project.key}
+                        </span>
                       </DropdownMenuItem>
                     ))
                   )}
@@ -258,15 +260,17 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
                   onClick={onNavigate}
                   className={({ isActive }) =>
                     cn(
-                      'group flex h-9 items-center rounded-md px-3 text-sm font-medium transition-colors',
+                      'group grid h-9 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors',
                       isActive ? 'bg-primary/10 text-primary' : 'text-foreground/90 hover:bg-accent hover:text-accent-foreground',
                     )
                   }
                   title={project.name}
                 >
                   <span className='h-2.5 w-2.5 rounded-full' style={projectDotStyle(project.color)} aria-hidden='true' />
-                  <span className='ml-3 truncate'>{project.name}</span>
-                  <span className='ml-auto text-[10px] text-muted-foreground'>{project.key}</span>
+                  <span className='min-w-0 truncate'>{project.name}</span>
+                  <span className='justify-self-end whitespace-nowrap text-right text-[10px] text-muted-foreground tabular-nums'>
+                    {project.key}
+                  </span>
                 </NavLink>
               ))
             : null}

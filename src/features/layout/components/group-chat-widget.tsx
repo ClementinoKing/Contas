@@ -2427,6 +2427,96 @@ export function GroupChatWidget() {
     })
   }, [])
 
+  const MessageActionsSheet = () =>
+    actionSheetMessage ? (
+      <div className='absolute inset-0 z-30 grid place-items-center px-4'>
+        <button
+          type='button'
+          aria-label='Close message options'
+          className='absolute inset-0 bg-black/45 backdrop-blur-sm'
+          onClick={closeMessageActions}
+        />
+        <div className='relative z-10 mx-auto w-full max-w-xs rounded-3xl border border-border/70 bg-card p-4 shadow-[0_18px_50px_hsl(var(--foreground)/0.24)]'>
+          <div className='mb-3 grid grid-cols-[1.5rem_minmax(0,1fr)_1.5rem] items-start gap-2'>
+            <div aria-hidden='true' />
+            <div className='min-w-0 space-y-1 text-center'>
+              <p className='text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground'>Message options</p>
+              <p
+                className='overflow-hidden break-words text-sm text-foreground'
+                style={{
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                }}
+              >
+                {actionSheetMessage.message}
+              </p>
+            </div>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              className='justify-self-end h-8 w-8 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
+              onClick={closeMessageActions}
+              aria-label='Close message options'
+            >
+              <X className='h-4 w-4' aria-hidden='true' />
+            </Button>
+          </div>
+          <div className='grid gap-2'>
+            <Button
+              type='button'
+              variant='outline'
+              className='h-11 justify-center rounded-2xl border-border/70 bg-background px-4 text-center'
+              onClick={() => {
+                startReplyingToMessage(actionSheetMessage)
+                closeMessageActions()
+              }}
+            >
+              <MessageSquareText className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
+              Reply
+            </Button>
+            {actionSheetMessage.mine ? (
+              <>
+                <Button
+                  type='button'
+                  variant='outline'
+                  className='h-11 justify-center rounded-2xl border-border/70 bg-background px-4 text-center'
+                  onClick={() => {
+                    startEditingMessage(actionSheetMessage)
+                    closeMessageActions()
+                  }}
+                >
+                  <PencilLine className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
+                  Edit message
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  className='h-11 justify-center rounded-2xl border-destructive/20 bg-destructive/5 px-4 text-center text-destructive hover:bg-destructive/10 hover:text-destructive'
+                  onClick={() => {
+                    void deleteMessage(actionSheetMessage)
+                    closeMessageActions()
+                  }}
+                >
+                  <Trash2 className='mr-2 h-4 w-4 shrink-0' aria-hidden='true' />
+                  Delete message
+                </Button>
+              </>
+            ) : null}
+            <Button
+              type='button'
+              variant='ghost'
+              className='h-11 rounded-2xl px-4 text-muted-foreground hover:bg-accent hover:text-foreground'
+              onClick={closeMessageActions}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </div>
+    ) : null
+
   const ChatSurface = ({ mode }: { mode: 'popover' | 'fullscreen' }) => {
     const isFullscreenMode = mode === 'fullscreen'
     return (
@@ -2791,93 +2881,6 @@ export function GroupChatWidget() {
             </div>
           </div>
 
-          {actionSheetMessage ? (
-            <div className='absolute inset-0 z-30 flex items-center justify-center px-4'>
-              <button
-                type='button'
-                aria-label='Close message options'
-                className='absolute inset-0 bg-black/45 backdrop-blur-sm'
-                onClick={closeMessageActions}
-              />
-              <div className='relative z-10 w-full max-w-xs rounded-3xl border border-border/70 bg-card p-4 shadow-[0_18px_50px_hsl(var(--foreground)/0.24)]'>
-                <div className='mb-3 flex items-start justify-between gap-3'>
-                  <div className='min-w-0 space-y-1'>
-                    <p className='text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground'>Message options</p>
-                    <p
-                      className='overflow-hidden break-words text-sm text-foreground'
-                      style={{
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                      }}
-                    >
-                      {actionSheetMessage.message}
-                    </p>
-                  </div>
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    size='icon'
-                    className='h-8 w-8 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
-                    onClick={closeMessageActions}
-                    aria-label='Close message options'
-                  >
-                    <X className='h-4 w-4' aria-hidden='true' />
-                  </Button>
-                </div>
-                <div className='grid gap-2'>
-                  <Button
-                    type='button'
-                    variant='outline'
-                    className='h-11 justify-start rounded-2xl border-border/70 bg-background px-4'
-                    onClick={() => {
-                      startReplyingToMessage(actionSheetMessage)
-                      closeMessageActions()
-                    }}
-                  >
-                    <MessageSquareText className='mr-2 h-4 w-4' aria-hidden='true' />
-                    Reply
-                  </Button>
-                  {actionSheetMessage.mine ? (
-                    <>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        className='h-11 justify-start rounded-2xl border-border/70 bg-background px-4'
-                        onClick={() => {
-                          startEditingMessage(actionSheetMessage)
-                          closeMessageActions()
-                        }}
-                      >
-                        <PencilLine className='mr-2 h-4 w-4' aria-hidden='true' />
-                        Edit message
-                      </Button>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        className='h-11 justify-start rounded-2xl border-destructive/20 bg-destructive/5 px-4 text-destructive hover:bg-destructive/10 hover:text-destructive'
-                        onClick={() => {
-                          void deleteMessage(actionSheetMessage)
-                          closeMessageActions()
-                        }}
-                      >
-                        <Trash2 className='mr-2 h-4 w-4' aria-hidden='true' />
-                        Delete message
-                      </Button>
-                    </>
-                  ) : null}
-                  <Button
-                    type='button'
-                    variant='ghost'
-                    className='h-11 rounded-2xl px-4 text-muted-foreground hover:bg-accent hover:text-foreground'
-                    onClick={closeMessageActions}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ) : null}
         </div>
       </div>
     )
@@ -2914,6 +2917,7 @@ export function GroupChatWidget() {
             onClick={(event) => event.stopPropagation()}
           >
             <ChatSurface mode='popover' />
+            <MessageActionsSheet />
           </div>
         </div>
       ) : null}
@@ -2931,10 +2935,13 @@ export function GroupChatWidget() {
           onOpenAutoFocus={(event) => event.preventDefault()}
           onCloseAutoFocus={(event) => event.preventDefault()}
           className='left-0 top-0 h-[100dvh] max-h-[100dvh] w-[100vw] max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 shadow-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0 data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95 data-[state=open]:duration-300 data-[state=closed]:duration-200'
-      >
+        >
         <DialogTitle className='sr-only'>{roomHeader.title}</DialogTitle>
         <DialogDescription className='sr-only'>{roomHeader.description}</DialogDescription>
-        <ChatSurface mode='fullscreen' />
+        <div className='relative h-full w-full'>
+          <ChatSurface mode='fullscreen' />
+          <MessageActionsSheet />
+        </div>
       </DialogContent>
       </Dialog>
       <DocumentViewerModal attachment={attachmentViewer} onClose={closeAttachmentViewer} />

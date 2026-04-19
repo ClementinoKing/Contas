@@ -4895,20 +4895,24 @@ export function MyTasksPage() {
 
                                   {activeReplyCommentId === comment.id ? (
                                     <div className='mt-2 flex items-start gap-2'>
-                                      <Input
-                                        value={replyDraftByCommentId[comment.id] ?? ''}
-                                        onChange={(event) =>
-                                          setReplyDraftByCommentId((drafts) => ({ ...drafts, [comment.id]: event.target.value }))
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === 'Enter') {
-                                            event.preventDefault()
-                                            addReplyToComment(comment.id)
+                                      <div className='relative min-w-0 flex-1'>
+                                        <MentionRichTextEditor
+                                          value={replyDraftByCommentId[comment.id] ?? ''}
+                                          onChange={(nextReply) =>
+                                            setReplyDraftByCommentId((drafts) => ({ ...drafts, [comment.id]: nextReply }))
                                           }
-                                        }}
-                                        placeholder='Write a reply...'
-                                        className='h-8'
-                                      />
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Enter' && !event.shiftKey) {
+                                              event.preventDefault()
+                                              addReplyToComment(comment.id)
+                                            }
+                                          }}
+                                          mentionOptions={detailMentionOptions}
+                                          placeholder='Write a reply...'
+                                          minHeightClassName='min-h-[2.75rem]'
+                                          className='h-auto max-h-32 rounded-md text-sm leading-5'
+                                        />
+                                      </div>
                                       <Button
                                         type='button'
                                         size='sm'
@@ -4971,105 +4975,110 @@ export function MyTasksPage() {
                         </div>
                       ) : null}
                       {voiceCommentError ? <p className='text-xs text-rose-300'>{voiceCommentError}</p> : null}
-                    <div className='flex items-center gap-2'>
-                      <Avatar className='h-9 w-9 border'>
-                        {activeCommentAuthor.avatarUrl ? <AvatarImage src={activeCommentAuthor.avatarUrl} alt={activeCommentAuthor.name} /> : null}
-                        <AvatarFallback className='text-[10px] font-semibold'>{initialsForName(activeCommentAuthor.name)}</AvatarFallback>
-                      </Avatar>
-                      <div className='relative min-w-0 flex-1'>
-                        {isRecordingVoiceComment ? (
-                          <div className='flex h-9 items-center gap-3 rounded-full border border-border/70 bg-background/70 px-3 py-1.5'>
-                            <div
-                              className='grid h-6 min-w-0 flex-1 items-center gap-[2px]'
-                              style={{ gridTemplateColumns: `repeat(${recordingLevels.length}, minmax(0, 1fr))` }}
-                            >
-                              {recordingLevels.map((level, index) => (
-                                <span
-                                  key={index}
-                                  className='w-[2px] justify-self-center rounded-full bg-foreground/85'
-                                  style={{ height: `${Math.max(4, Math.round(level * 11)) * 2}px` }}
-                                />
-                              ))}
-                            </div>
-                            <span className='text-sm font-medium tabular-nums text-muted-foreground'>
-                              {formatVoiceDuration(recordingElapsedMs)}
-                            </span>
-                            <button
-                              type='button'
-                              className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/25 text-foreground transition-colors hover:bg-muted/40'
-                              onClick={stopVoiceCommentRecording}
-                              aria-label='Stop recording'
-                            >
-                              <Square className='h-3 w-3' />
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <Input
-                              value={commentDraft}
-                              onChange={(event) => setCommentDraft(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault()
-                                  addCommentToTask()
-                                }
-                              }}
-                              placeholder='Add a comment...'
-                              className='h-9 w-full rounded-full border bg-background pl-3 pr-20 text-sm'
-                            />
-                            <div className='absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1'>
-                              <Popover open={commentEmojiOpen} onOpenChange={setCommentEmojiOpen}>
-                                <PopoverTrigger asChild>
-                                  <button
-                                    type='button'
-                                    className='inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                                    aria-label='Add emoji'
-                                  >
-                                    <Smile className='h-4 w-4' />
-                                  </button>
-                                </PopoverTrigger>
-                                <PopoverContent className='w-auto p-1.5' align='end'>
-                                  <div className='flex items-center gap-1'>
-                                    {COMMENT_EMOJIS.map((emoji) => (
-                                      <button
-                                        key={emoji}
-                                        type='button'
-                                        onClick={() => {
-                                          setCommentDraft((value) => `${value}${emoji}`)
-                                          setCommentEmojiOpen(false)
-                                        }}
-                                        className='inline-flex h-8 w-8 items-center justify-center rounded-md text-base hover:bg-accent'
-                                        aria-label={`Insert ${emoji}`}
-                                      >
-                                        {emoji}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </PopoverContent>
-                              </Popover>
+                      <div className='flex items-end gap-2'>
+                        <Avatar className='h-9 w-9 border'>
+                          {activeCommentAuthor.avatarUrl ? <AvatarImage src={activeCommentAuthor.avatarUrl} alt={activeCommentAuthor.name} /> : null}
+                          <AvatarFallback className='text-[10px] font-semibold'>{initialsForName(activeCommentAuthor.name)}</AvatarFallback>
+                        </Avatar>
+                        <div className='min-w-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-background/80 shadow-sm'>
+                          {isRecordingVoiceComment ? (
+                            <div className='flex min-h-[3.25rem] items-center gap-3 px-3 py-2.5'>
+                              <div
+                                className='grid h-6 min-w-0 flex-1 items-center gap-[2px]'
+                                style={{ gridTemplateColumns: `repeat(${recordingLevels.length}, minmax(0, 1fr))` }}
+                              >
+                                {recordingLevels.map((level, index) => (
+                                  <span
+                                    key={index}
+                                    className='w-[2px] justify-self-center rounded-full bg-foreground/85'
+                                    style={{ height: `${Math.max(4, Math.round(level * 11)) * 2}px` }}
+                                  />
+                                ))}
+                              </div>
+                              <span className='text-sm font-medium tabular-nums text-muted-foreground'>
+                                {formatVoiceDuration(recordingElapsedMs)}
+                              </span>
                               <button
                                 type='button'
-                                className='inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
-                                onClick={() => void startVoiceCommentRecording()}
-                                aria-label='Record voice message'
+                                className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/25 text-foreground transition-colors hover:bg-muted/40'
+                                onClick={stopVoiceCommentRecording}
+                                aria-label='Stop recording'
                               >
-                                <Mic className='h-4 w-4' />
+                                <Square className='h-3 w-3' />
                               </button>
                             </div>
-                          </>
-                        )}
+                          ) : (
+                            <div>
+                              <MentionRichTextEditor
+                                value={commentDraft}
+                                onChange={setCommentDraft}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' && !event.shiftKey) {
+                                    event.preventDefault()
+                                    addCommentToTask()
+                                  }
+                                }}
+                                mentionOptions={detailMentionOptions}
+                                placeholder='Add a comment...'
+                                minHeightClassName='min-h-[3.25rem]'
+                                className='h-auto max-h-36 border-0 bg-transparent px-3 py-2.5 text-sm leading-5 shadow-none focus:border-transparent focus:ring-0 focus:ring-offset-0'
+                              />
+                              <div className='flex items-center justify-between gap-2 border-t border-border/50 px-2.5 py-2'>
+                                <div className='flex items-center gap-1'>
+                                  <Popover open={commentEmojiOpen} onOpenChange={setCommentEmojiOpen}>
+                                    <PopoverTrigger asChild>
+                                      <button
+                                        type='button'
+                                        className='inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                        aria-label='Add emoji'
+                                      >
+                                        <Smile className='h-4 w-4' />
+                                      </button>
+                                    </PopoverTrigger>
+                                    <PopoverContent className='w-auto p-1.5' align='start'>
+                                      <div className='flex items-center gap-1'>
+                                        {COMMENT_EMOJIS.map((emoji) => (
+                                          <button
+                                            key={emoji}
+                                            type='button'
+                                            onClick={() => {
+                                              setCommentDraft((value) => `${value}${emoji}`)
+                                              setCommentEmojiOpen(false)
+                                            }}
+                                            className='inline-flex h-8 w-8 items-center justify-center rounded-md text-base hover:bg-accent'
+                                            aria-label={`Insert ${emoji}`}
+                                          >
+                                            {emoji}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </PopoverContent>
+                                  </Popover>
+                                  <button
+                                    type='button'
+                                    className='inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground'
+                                    onClick={() => void startVoiceCommentRecording()}
+                                    aria-label='Record voice message'
+                                  >
+                                    <Mic className='h-4 w-4' />
+                                  </button>
+                                </div>
+                                <Button
+                                  type='button'
+                                  size='sm'
+                                  className='h-8 rounded-full px-3'
+                                  onClick={addCommentToTask}
+                                  disabled={isRecordingVoiceComment || (!commentDraft.trim() && !pendingVoiceComment)}
+                                  aria-label='Send comment'
+                                >
+                                  <Send className='h-4 w-4' />
+                                  <span className='ml-1.5 text-sm'>Send</span>
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <Button
-                        type='button'
-                        size='sm'
-                        className='h-9 w-9 shrink-0 rounded-full px-0'
-                        onClick={addCommentToTask}
-                        disabled={isRecordingVoiceComment || (!commentDraft.trim() && !pendingVoiceComment)}
-                        aria-label='Send comment'
-                      >
-                        <Send className='h-4 w-4' />
-                      </Button>
-                    </div>
                     </div>
                   </div>
                 </aside>

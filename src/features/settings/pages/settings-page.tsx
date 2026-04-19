@@ -1376,7 +1376,7 @@ export function SettingsPage() {
               <div className='rounded-lg border p-4'>
                 <div className='flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
                   <div>
-                    <p className='font-medium text-foreground'>Download Contas Mobile App</p>
+                    <p className='font-medium text-foreground'>Download Contas Workpace Mobile App</p>
                     <p className='text-sm text-muted-foreground'>
                       Scan the QR code to open the mobile app download page.
                     </p>
@@ -1388,7 +1388,7 @@ export function SettingsPage() {
                   <div className='rounded-md border bg-card p-2'>
                     <img
                       src='https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=https%3A%2F%2Fcontas.app%2Fdownload'
-                      alt='QR code to download the Contas mobile app'
+                      alt='QR code to download the Contas Workpace mobile app'
                       width={160}
                       height={160}
                       className='h-24 w-24 md:h-28 md:w-28'
@@ -1400,7 +1400,7 @@ export function SettingsPage() {
                 <div className='flex items-center gap-3'>
                   <SmartphoneNfc className='h-4 w-4 text-muted-foreground' aria-hidden='true' />
                   <div>
-                    <p className='font-medium text-foreground'>Contas Mobile App</p>
+                    <p className='font-medium text-foreground'>Contas Workpace Mobile App</p>
                     <p className='text-sm text-muted-foreground'>Sync push alerts and mobile activity updates.</p>
                   </div>
                 </div>

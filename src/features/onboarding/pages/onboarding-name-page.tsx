@@ -62,7 +62,7 @@ export function OnboardingNamePage() {
 
   return (
     <OnboardingShell
-      title='Welcome to Contas Work'
+      title='Welcome to Contas Workpace'
       subtitle={`You're signing up as ${currentUser?.email ?? 'your account'}`}
     >
       <div className='space-y-6'>

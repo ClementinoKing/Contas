@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -158,6 +158,7 @@ export const MentionRichTextEditor = forwardRef<
     minHeightClassName?: string
     className?: string
     onBlur?: () => void
+    onKeyDown?: (event: ReactKeyboardEvent<HTMLDivElement>) => void
   }
 >(function MentionRichTextEditor(
   {
@@ -169,6 +170,7 @@ export const MentionRichTextEditor = forwardRef<
     minHeightClassName = 'min-h-[120px]',
     className,
     onBlur,
+    onKeyDown,
   },
   ref,
 ) {
@@ -349,34 +351,37 @@ export const MentionRichTextEditor = forwardRef<
           refreshMentionDraft(serializeEditor(editor))
         }}
         onKeyDown={(event) => {
-          if (!mentionDraft || filteredMentionOptions.length === 0) return
-          if (event.key === 'ArrowDown') {
-            event.preventDefault()
-            setMentionActiveIndex((index) => (index + 1) % filteredMentionOptions.length)
-            return
+          if (mentionDraft && filteredMentionOptions.length > 0) {
+            if (event.key === 'ArrowDown') {
+              event.preventDefault()
+              setMentionActiveIndex((index) => (index + 1) % filteredMentionOptions.length)
+              return
+            }
+            if (event.key === 'ArrowUp') {
+              event.preventDefault()
+              setMentionActiveIndex((index) => (index - 1 + filteredMentionOptions.length) % filteredMentionOptions.length)
+              return
+            }
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              const selected = filteredMentionOptions[mentionActiveIndex]
+              if (selected) insertMention(selected)
+              return
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              setMentionDraft(null)
+              return
+            }
           }
-          if (event.key === 'ArrowUp') {
-            event.preventDefault()
-            setMentionActiveIndex((index) => (index - 1 + filteredMentionOptions.length) % filteredMentionOptions.length)
-            return
-          }
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            const selected = filteredMentionOptions[mentionActiveIndex]
-            if (selected) insertMention(selected)
-            return
-          }
-          if (event.key === 'Escape') {
-            event.preventDefault()
-            setMentionDraft(null)
-          }
+          onKeyDown?.(event)
         }}
         onBlur={() => {
           setMentionDraft(null)
           onBlur?.()
         }}
         className={cn(
-          'block h-full w-full min-w-0 whitespace-pre-wrap rounded-md border bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/30',
+          'block h-full w-full min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-md border bg-background px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/30',
           minHeightClassName,
           disabled && 'cursor-not-allowed opacity-70',
           className,
