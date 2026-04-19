@@ -1623,7 +1623,11 @@ export function MyTasksPage() {
   const personalTaskRows = useMemo(() => {
     const currentUserId = currentUser?.id ?? ''
     if (!currentUserId) return []
-    return taskRows.filter((task) => task.assigneeIds.includes(currentUserId))
+    return taskRows.filter(
+      (task) =>
+        task.assigneeIds.includes(currentUserId) ||
+        (task.recurrenceId ? task.createdById === currentUserId : false),
+    )
   }, [currentUser?.id, taskRows])
 
   const assignedByMeTaskRows = useMemo(() => {
