@@ -1889,6 +1889,7 @@ export function MyTasksPage() {
         {
           id: task.id,
           parentTaskId: task.parentTaskId,
+          recurrenceId: task.recurrenceId ?? undefined,
           title: task.title,
           description: task.description,
           createdById: task.createdById ?? currentUser?.id ?? '',

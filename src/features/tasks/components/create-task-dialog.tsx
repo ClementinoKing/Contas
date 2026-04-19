@@ -66,6 +66,7 @@ function formatLocalDate(value: Date) {
 export type CreatedTaskPayload = {
   id: string
   parentTaskId?: string
+  recurrenceId?: string | null
   title: string
   status: string | null
   statusId: string | null
@@ -364,6 +365,7 @@ export function CreateTaskDialog({
       onTaskCreated?.({
         id: data.id,
         parentTaskId: data.parent_task_id ?? undefined,
+        recurrenceId: data.recurrence_id ?? null,
         title: data.title,
         status: data.status,
         statusId: data.status_id ?? null,
