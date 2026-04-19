@@ -299,14 +299,10 @@ export function CreateTaskDialog({
         dueAtIso = rangeEndAt.toISOString()
       }
 
-      if (isRecurring && !singleDueAt) {
-        setErrorMessage('Select a due date before enabling recurrence.')
-        setCreating(false)
-        return
-      }
+      const recurrenceAnchorDate = singleDueAt ?? new Date()
 
-      if (isRecurring && recurrenceEndAt && singleDueAt && startOfDay(recurrenceEndAt).getTime() < startOfDay(singleDueAt).getTime()) {
-        setErrorMessage('The recurrence end date must be on or after the due date.')
+      if (isRecurring && recurrenceEndAt && startOfDay(recurrenceEndAt).getTime() < startOfDay(recurrenceAnchorDate).getTime()) {
+        setErrorMessage('The recurrence end date must be on or after the task start date.')
         setCreating(false)
         return
       }
@@ -753,6 +749,7 @@ export function CreateTaskDialog({
                     <label className='text-sm font-medium text-foreground'>Recurring task</label>
                   </div>
                   <p className='text-xs text-muted-foreground'>Create a new task instance on a repeating schedule.</p>
+                  <p className='text-[11px] text-muted-foreground'>Due date is optional for recurring tasks.</p>
                 </div>
                 <button
                   type='button'
