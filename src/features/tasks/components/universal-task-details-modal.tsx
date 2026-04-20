@@ -1629,7 +1629,7 @@ export function UniversalTaskDetailsModal() {
                         {currentUserMember?.avatarUrl ? <AvatarImage src={currentUserMember.avatarUrl} alt={currentUserMember.name} /> : null}
                         <AvatarFallback className='text-[10px] font-semibold'>{initials(currentUserMember?.name ?? 'Me')}</AvatarFallback>
                       </Avatar>
-                      <div className='min-w-0 flex-1 overflow-hidden rounded-2xl border border-border/70 bg-background/80 shadow-sm'>
+                      <div className='min-w-0 flex-1 overflow-visible rounded-2xl border border-border/70 bg-background/80 shadow-sm'>
                         {isRecordingVoiceComment ? (
                           <div className='flex min-h-[3.25rem] items-center gap-3 px-3 py-2.5'>
                             <div className='grid h-6 min-w-0 flex-1 items-center gap-[2px]' style={{ gridTemplateColumns: `repeat(${recordingLevels.length}, minmax(0, 1fr))` }}>

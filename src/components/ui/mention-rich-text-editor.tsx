@@ -393,7 +393,7 @@ export const MentionRichTextEditor = forwardRef<
       ) : null}
 
       {mentionDraft && filteredMentionOptions.length > 0 ? (
-        <div className='absolute bottom-2 left-2 z-20 w-[min(20rem,calc(100%-1rem))] rounded-md border bg-card p-1 shadow-lg'>
+        <div className='absolute bottom-full left-2 z-20 mb-2 w-[min(20rem,calc(100%-1rem))] rounded-md border bg-card p-1 shadow-lg'>
           {filteredMentionOptions.map((option, index) => (
             <button
               key={option.id}
