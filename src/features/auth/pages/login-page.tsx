@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { LogIn } from 'lucide-react'
+import { Eye, EyeOff, LogIn } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -29,6 +29,7 @@ export function LoginPage() {
   const location = useLocation()
   const [submitting, setSubmitting] = useState(false)
   const [accessNotice, setAccessNotice] = useState<string | null>(null)
+  const [showPassword, setShowPassword] = useState(false)
 
   const {
     register,
@@ -83,7 +84,27 @@ export function LoginPage() {
         </AuthInputGroup>
 
         <AuthInputGroup label='Password' htmlFor='password' error={errors.password?.message}>
-          <Input id='password' type='password' autoComplete='current-password' placeholder='Enter your password' {...register('password')} />
+          <div className='relative'>
+            <Input
+              id='password'
+              type={showPassword ? 'text' : 'password'}
+              autoComplete='current-password'
+              placeholder='Enter your password'
+              className='pr-12'
+              {...register('password')}
+            />
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              className='absolute right-1 top-1/2 h-8 w-8 -translate-y-1/2 text-muted-foreground hover:bg-accent hover:text-foreground'
+              onClick={() => setShowPassword((current) => !current)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+            >
+              {showPassword ? <EyeOff className='h-4 w-4' aria-hidden='true' /> : <Eye className='h-4 w-4' aria-hidden='true' />}
+            </Button>
+          </div>
         </AuthInputGroup>
 
         <Button className='w-full' type='submit' disabled={submitting}>

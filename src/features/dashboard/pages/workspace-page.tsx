@@ -409,7 +409,7 @@ function MemberDetailsDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className='max-w-2xl max-h-[85vh] overflow-y-auto'>
+        <DialogContent className='max-w-2xl max-h-[85vh] overflow-y-auto p-7 sm:p-8'>
           <DialogHeader>
             <DialogTitle>Member details</DialogTitle>
             <DialogDescription>
@@ -639,7 +639,7 @@ function MemberDetailsDialog({
           if (!nextOpen && !actionSaving) setPendingAction(null)
         }}
       >
-        <DialogContent className='max-w-md'>
+        <DialogContent className='max-w-md p-7 sm:p-8'>
           <DialogHeader>
             <DialogTitle>
               {pendingAction === 'delete'
@@ -900,7 +900,7 @@ export function WorkspacePage() {
   return (
     <div className='space-y-4'>
       <Card>
-        <CardContent className='flex flex-wrap items-center justify-between gap-3 p-3'>
+        <CardContent className='flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5'>
           <div>
             <p className='text-sm font-semibold text-foreground'>Organization Hub</p>
             <p className='text-xs text-muted-foreground'>Shared context, team visibility, and operating signals.</p>
