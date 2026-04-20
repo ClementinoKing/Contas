@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { notify } from '@/lib/notify'
 import { supabase } from '@/lib/supabase'
+import { useSearchParams } from 'react-router-dom'
 
 const WORKSPACE_MEMBERS_CACHE_KEY = 'contas.workspace.members.v1'
 const WORKSPACE_PRESENCE_CACHE_KEY = 'contas.workspace.presence.v1'
@@ -693,12 +694,28 @@ function MemberDetailsDialog({
 export function WorkspacePage() {
   const [initialWorkspaceCache] = useState(() => readWorkspaceCacheSnapshot())
   const { currentUser, updateCurrentUser, logout } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [members, setMembers] = useState<TeamMember[]>(() => initialWorkspaceCache.members)
   const [presenceSessions, setPresenceSessions] = useState<PresenceSession[]>(() => initialWorkspaceCache.presenceSessions)
   const [timelineEvents, setTimelineEvents] = useState<OrganizationTimelineEvent[]>(() => initialWorkspaceCache.timelineEvents)
   const [clockMs, setClockMs] = useState(() => Date.now())
   const [loadingWorkspace, setLoadingWorkspace] = useState(() => !initialWorkspaceCache.hasCache)
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const memberId = searchParams.get('memberId')
+    if (!memberId) return
+
+    const timer = window.setTimeout(() => {
+      setSelectedMemberId(memberId)
+
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.delete('memberId')
+      setSearchParams(nextParams, { replace: true })
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [searchParams, setSearchParams])
 
   useEffect(() => {
     let cancelled = false

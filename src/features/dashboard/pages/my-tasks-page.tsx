@@ -90,6 +90,31 @@ function myTasksCacheStorageKey(userId: string) {
   return `${MY_TASKS_CACHE_KEY}:${userId}`
 }
 
+function removeTaskFromMyTasksCache(userId: string, taskId: string) {
+  try {
+    const raw = localStorage.getItem(myTasksCacheStorageKey(userId))
+    if (!raw) return
+
+    const parsed = JSON.parse(raw) as MyTasksCachePayload
+    if (parsed.userId !== userId || !Array.isArray(parsed.taskRows)) return
+
+    const nextCommentsByTaskId = { ...(parsed.commentsByTaskId ?? {}) }
+    delete nextCommentsByTaskId[taskId]
+
+    localStorage.setItem(
+      myTasksCacheStorageKey(userId),
+      JSON.stringify({
+        ...parsed,
+        updatedAt: Date.now(),
+        taskRows: parsed.taskRows.filter((row) => row.id !== taskId),
+        commentsByTaskId: nextCommentsByTaskId,
+      }),
+    )
+  } catch {
+    // Ignore cache write failures.
+  }
+}
+
 function dedupeTaskRowsById(rows: TaskRow[]) {
   const seen = new Set<string>()
   return rows.filter((row) => {
@@ -3018,6 +3043,10 @@ export function MyTasksPage() {
       setTaskRows(previousRows)
       setBackgroundSync('error')
       return false
+    }
+    if (currentUser?.id) {
+      removeTaskFromMyTasksCache(currentUser.id, taskId)
+      window.dispatchEvent(new CustomEvent('contas:realtime-change', { detail: { table: 'tasks', action: 'DELETE', rowId: taskId } }))
     }
     setBackgroundSync('saved')
     return true

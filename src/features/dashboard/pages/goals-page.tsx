@@ -28,6 +28,7 @@ import { Input } from '@/components/ui/input'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
+import { useSearchParams } from 'react-router-dom'
 
 type GoalStatus = 'draft' | 'active' | 'paused' | 'completed' | 'archived'
 type GoalHealth = 'on_track' | 'at_risk' | 'off_track'
@@ -418,6 +419,7 @@ function GoalsPageSkeleton() {
 
 export function GoalsPage() {
   const { currentUser } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const cached = readCachedGoalsState()
   const [goals, setGoals] = useState<GoalRow[]>(cached?.goals ?? [])
@@ -444,6 +446,22 @@ export function GoalsPage() {
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null)
   const [detailMode, setDetailMode] = useState<DetailPanelMode>('overview')
   const [addKrModalOpen, setAddKrModalOpen] = useState(false)
+
+  useEffect(() => {
+    const goalId = searchParams.get('goalId')
+    if (!goalId) return
+
+    const timer = window.setTimeout(() => {
+      setSelectedGoalId(goalId)
+      setDetailMode('overview')
+
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.delete('goalId')
+      setSearchParams(nextParams, { replace: true })
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [searchParams, setSearchParams])
 
   const [newGoalTitle, setNewGoalTitle] = useState('')
   const [newGoalDescription, setNewGoalDescription] = useState('')
@@ -619,17 +637,24 @@ export function GoalsPage() {
     if (!detailContextStep) return
     if (selectedGoalId) return
     if (goals.length === 0) return
-    setSelectedGoalId(goals[0].id)
+    const timer = window.setTimeout(() => {
+      setSelectedGoalId(goals[0].id)
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [detailContextStep, goals, selectedGoalId])
 
   useEffect(() => {
-    if (onboardingTarget === 'checkin') {
-      setDetailMode('checkin')
-      return
-    }
-    if (onboardingTarget === 'decision' || onboardingTarget === 'linking' || onboardingTarget === 'kr') {
-      setDetailMode('overview')
-    }
+    const timer = window.setTimeout(() => {
+      if (onboardingTarget === 'checkin') {
+        setDetailMode('checkin')
+        return
+      }
+      if (onboardingTarget === 'decision' || onboardingTarget === 'linking' || onboardingTarget === 'kr') {
+        setDetailMode('overview')
+      }
+    }, 0)
+
+    return () => window.clearTimeout(timer)
   }, [onboardingTarget])
 
   useEffect(() => {
@@ -896,7 +921,11 @@ export function GoalsPage() {
   const showInsightsTrigger = !selectedGoal && onboardingStep < 0
 
   useEffect(() => {
-    setAddKrModalOpen(false)
+    const timer = window.setTimeout(() => {
+      setAddKrModalOpen(false)
+    }, 0)
+
+    return () => window.clearTimeout(timer)
   }, [selectedGoalId])
 
   const openGoalDetail = (goalId: string, nextMode: DetailPanelMode = 'overview') => {

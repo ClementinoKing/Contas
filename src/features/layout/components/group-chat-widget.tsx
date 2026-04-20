@@ -106,6 +106,15 @@ type ChatRoomMemberRow = {
   created_at: string
 }
 
+type ChatRoomTypingStateRow = {
+  id: string
+  room_id: string
+  user_id: string
+  is_typing: boolean
+  created_at: string
+  updated_at: string
+}
+
 type ChatMessageRow = {
   id: string
   room_id: string
@@ -206,15 +215,10 @@ const CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = new Set([
 ])
 const CHAT_CACHE_KEY = 'contas.group-chat.cache.v1'
 const CHAT_CACHE_MAX_AGE_MS = 10 * 60 * 1000
+const CHAT_TYPING_STATE_TTL_MS = 12_000
+const CHAT_TYPING_START_DELAY_MS = 350
+const CHAT_TYPING_HEARTBEAT_MS = 5_000
 const EMPTY_COMPOSER_ATTACHMENTS: ChatComposerAttachment[] = []
-const CHAT_REALTIME_TABLES = new Set([
-  'chat_rooms',
-  'chat_room_members',
-  'chat_messages',
-  'chat_message_mentions',
-  'chat_message_attachments',
-  'profiles',
-])
 
 type ChatCachePayload = {
   updatedAt: number
@@ -753,6 +757,15 @@ function writeCachedChatState(payload: ChatCachePayload) {
   }
 }
 
+function createTypingDisplayLabel(profiles: ChatProfileRow[]) {
+  if (profiles.length === 0) return null
+  if (profiles.length === 1) return `${getProfileDisplayName(profiles[0])} is typing...`
+  if (profiles.length === 2) {
+    return `${getProfileDisplayName(profiles[0])} and ${getProfileDisplayName(profiles[1])} are typing...`
+  }
+  return `${getProfileDisplayName(profiles[0])} and ${profiles.length - 1} others are typing...`
+}
+
 function cloneChatAttachmentForCache(attachment: ChatAttachmentPreviewRow): ChatAttachmentPreviewRow {
   return {
     ...attachment,
@@ -1277,6 +1290,7 @@ export function GroupChatWidget() {
   const [profiles, setProfiles] = useState<ChatProfileRow[]>([])
   const [roomMembers, setRoomMembers] = useState<ChatRoomMemberRow[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [typingStates, setTypingStates] = useState<ChatRoomTypingStateRow[]>([])
   const [attachments, setAttachments] = useState<ChatComposerAttachment[]>(EMPTY_COMPOSER_ATTACHMENTS)
   const [pendingVoiceMessage, setPendingVoiceMessage] = useState<ChatComposerVoice | null>(null)
   const [mentionDraft, setMentionDraft] = useState<MentionDraft | null>(null)
@@ -1301,6 +1315,10 @@ export function GroupChatWidget() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const hydratingRef = useRef(false)
   const sendingRef = useRef(false)
+  const typingStartTimerRef = useRef<number | null>(null)
+  const typingHeartbeatTimerRef = useRef<number | null>(null)
+  const typingActiveRef = useRef(false)
+  const realtimeReloadTimerRef = useRef<number | null>(null)
   const voiceMediaRecorderRef = useRef<MediaRecorder | null>(null)
   const voiceMicStreamRef = useRef<MediaStream | null>(null)
   const voiceAudioContextRef = useRef<AudioContext | null>(null)
@@ -1343,6 +1361,18 @@ export function GroupChatWidget() {
     [currentUser?.id, profileById, roomMembers],
   )
   const onlineUserIds = useMemo(() => new Set(roomMemberProfiles.map((profile) => profile.id)), [roomMemberProfiles])
+  const typingProfiles = useMemo(() => {
+    const typingProfileMap = new Map<string, ChatProfileRow>()
+    for (const typingState of typingStates) {
+      if (!typingState.is_typing) continue
+      const profile = profileById.get(typingState.user_id)
+      if (!profile || profile.id === currentUser?.id) continue
+      typingProfileMap.set(profile.id, profile)
+    }
+
+    return Array.from(typingProfileMap.values()).sort((left, right) => getProfileDisplayName(left).localeCompare(getProfileDisplayName(right)))
+  }, [currentUser?.id, profileById, typingStates])
+  const typingLabel = useMemo(() => createTypingDisplayLabel(typingProfiles), [typingProfiles])
 
   const filteredMentionOptions = useMemo(() => {
     if (!mentionDraft) return []
@@ -1365,6 +1395,111 @@ export function GroupChatWidget() {
     sendingRef.current = sending
   }, [sending])
 
+  const clearTypingTimers = useCallback(() => {
+    if (typingStartTimerRef.current !== null) {
+      window.clearTimeout(typingStartTimerRef.current)
+      typingStartTimerRef.current = null
+    }
+    if (typingHeartbeatTimerRef.current !== null) {
+      window.clearInterval(typingHeartbeatTimerRef.current)
+      typingHeartbeatTimerRef.current = null
+    }
+  }, [])
+
+  const stopTypingPresence = useCallback(async () => {
+    clearTypingTimers()
+    typingActiveRef.current = false
+
+    if (!room?.id || !currentUser?.id) return
+
+    const { error } = await supabase
+      .from('chat_room_typing_states')
+      .delete()
+      .eq('room_id', room.id)
+      .eq('user_id', currentUser.id)
+
+    if (error) {
+      console.warn('Failed to clear typing presence', error)
+    }
+  }, [clearTypingTimers, currentUser?.id, room?.id])
+
+  const pushTypingPresence = useCallback(async () => {
+    if (!room?.id || !currentUser?.id) return
+
+    const { error } = await supabase.from('chat_room_typing_states').upsert(
+      {
+        room_id: room.id,
+        user_id: currentUser.id,
+        is_typing: true,
+      },
+      { onConflict: 'room_id,user_id' },
+    )
+
+    if (error) {
+      console.warn('Failed to update typing presence', error)
+      return
+    }
+
+    typingActiveRef.current = true
+
+    if (typingHeartbeatTimerRef.current === null) {
+      typingHeartbeatTimerRef.current = window.setInterval(() => {
+        void pushTypingPresence()
+      }, CHAT_TYPING_HEARTBEAT_MS)
+    }
+  }, [currentUser?.id, room?.id])
+
+  const scheduleTypingPresence = useCallback(
+    (value: string) => {
+      if (!room?.id || !currentUser?.id) return
+
+      if (value.trim().length === 0) {
+        void stopTypingPresence()
+        return
+      }
+
+      if (typingActiveRef.current) return
+
+      if (typingStartTimerRef.current !== null) {
+        return
+      }
+
+      typingStartTimerRef.current = window.setTimeout(() => {
+        typingStartTimerRef.current = null
+        void pushTypingPresence()
+      }, CHAT_TYPING_START_DELAY_MS)
+    },
+    [currentUser?.id, pushTypingPresence, room?.id, stopTypingPresence],
+  )
+
+  const loadTypingStates = useCallback(
+    async (roomId: string) => {
+      if (!currentUser?.id) {
+        setTypingStates([])
+        return []
+      }
+
+      const typingCutoffIso = new Date(Date.now() - CHAT_TYPING_STATE_TTL_MS).toISOString()
+      const { data, error } = await supabase
+        .from('chat_room_typing_states')
+        .select('id, room_id, user_id, is_typing, created_at, updated_at')
+        .eq('room_id', roomId)
+        .eq('is_typing', true)
+        .gte('updated_at', typingCutoffIso)
+
+      if (error) {
+        console.error('Failed to load chat typing state', error)
+        setTypingStates([])
+        return []
+      }
+
+      const nextTypingStates = (data ?? []) as ChatRoomTypingStateRow[]
+      setTypingStates(nextTypingStates)
+      return nextTypingStates
+    },
+    [currentUser?.id],
+  )
+
   useLayoutEffect(() => {
     const textarea = inputRef.current
     if (!textarea) return
@@ -1386,6 +1521,7 @@ export function GroupChatWidget() {
         URL.revokeObjectURL(pendingVoiceMessageRef.current.previewUrl)
         pendingVoiceMessageRef.current = null
       }
+      clearTypingTimers()
       if (voiceAnimationFrameRef.current !== null) {
         cancelAnimationFrame(voiceAnimationFrameRef.current)
         voiceAnimationFrameRef.current = null
@@ -1397,7 +1533,7 @@ export function GroupChatWidget() {
       voiceAudioContextRef.current?.close().catch(() => {})
       voiceAudioContextRef.current = null
     }
-  }, [])
+  }, [clearTypingTimers])
 
   const loadChatData = useCallback(async ({ background = false }: { background?: boolean } = {}) => {
     if (!currentUser?.id) {
@@ -1583,6 +1719,7 @@ export function GroupChatWidget() {
         if (!background) return nextMessages
         return mergeChatMessages(currentMessages, nextMessages)
       })
+      void loadTypingStates(roomData.id)
       if (voiceStorageKeyByMessageId.size > 0) {
         void Promise.all(
           Array.from(voiceStorageKeyByMessageId.entries()).map(async ([messageId, voiceStorageKey]) => {
@@ -1643,6 +1780,7 @@ export function GroupChatWidget() {
         setProfiles([])
         setRoomMembers([])
         setMessages([])
+        setTypingStates([])
       }
     } finally {
       if (!background) {
@@ -1650,7 +1788,7 @@ export function GroupChatWidget() {
       }
       hydratingRef.current = false
     }
-  }, [currentUser?.id])
+  }, [currentUser?.id, loadTypingStates])
 
   useEffect(() => {
     if (!open) return
@@ -1666,18 +1804,47 @@ export function GroupChatWidget() {
   }, [loadChatData, open])
 
   useEffect(() => {
-    const onRealtimeChange = (event: Event) => {
-      const detail = (event as CustomEvent<{ table?: string }>).detail
-      if (!detail?.table || !CHAT_REALTIME_TABLES.has(detail.table)) return
-      if (hydratingRef.current) return
-      if (sendingRef.current) return
-      if (!open) return
-      void loadChatData({ background: true })
+    if (!open || !room?.id) return
+
+    let cancelled = false
+
+    const scheduleRoomReload = () => {
+      if (hydratingRef.current || sendingRef.current) return
+
+      if (realtimeReloadTimerRef.current !== null) {
+        window.clearTimeout(realtimeReloadTimerRef.current)
+      }
+
+      realtimeReloadTimerRef.current = window.setTimeout(() => {
+        realtimeReloadTimerRef.current = null
+        if (cancelled || hydratingRef.current || sendingRef.current) return
+        void loadChatData({ background: true })
+      }, 180)
     }
 
-    window.addEventListener('contas:realtime-change', onRealtimeChange as EventListener)
-    return () => window.removeEventListener('contas:realtime-change', onRealtimeChange as EventListener)
-  }, [loadChatData, open])
+    const loadTypingForRoom = () => {
+      void loadTypingStates(room.id)
+    }
+
+    const channel = supabase
+      .channel(`group-chat-room-${room.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages', filter: `room_id=eq.${room.id}` }, scheduleRoomReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_room_members', filter: `room_id=eq.${room.id}` }, scheduleRoomReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_rooms', filter: `id=eq.${room.id}` }, scheduleRoomReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_message_mentions' }, scheduleRoomReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_message_attachments' }, scheduleRoomReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_room_typing_states', filter: `room_id=eq.${room.id}` }, loadTypingForRoom)
+      .subscribe()
+
+    return () => {
+      cancelled = true
+      if (realtimeReloadTimerRef.current !== null) {
+        window.clearTimeout(realtimeReloadTimerRef.current)
+        realtimeReloadTimerRef.current = null
+      }
+      void supabase.removeChannel(channel)
+    }
+  }, [loadChatData, loadTypingStates, open, room?.id])
 
   useEffect(() => {
     if (!currentUser?.id || !room?.slug || loading) return
@@ -1962,7 +2129,8 @@ export function GroupChatWidget() {
     setMentionDraft(null)
     setMentionActiveIndex(0)
     setReplyToMessageId(null)
-  }, [])
+    void stopTypingPresence()
+  }, [stopTypingPresence])
 
   const closeMessageActions = useCallback(() => {
     setMessageActionTarget(null)
@@ -2068,6 +2236,7 @@ export function GroupChatWidget() {
     const previousDraft = draft
 
     setSending(true)
+    void stopTypingPresence()
     setDraft('')
     clearComposerAttachments()
     clearPendingVoiceMessage(false)
@@ -2129,6 +2298,9 @@ export function GroupChatWidget() {
           setMessages((current) => current.filter((chatMessage) => chatMessage.id !== optimisticId))
         }
         setDraft(previousDraft)
+        if (previousDraft.trim().length > 0) {
+          scheduleTypingPresence(previousDraft)
+        }
         setSending(false)
         return
       }
@@ -2183,6 +2355,9 @@ export function GroupChatWidget() {
           setPendingVoiceMessage(voiceSnapshot)
         }
         setDraft(previousDraft)
+        if (previousDraft.trim().length > 0) {
+          scheduleTypingPresence(previousDraft)
+        }
         if (optimisticId) {
           setMessages((current) => current.filter((chatMessage) => chatMessage.id !== optimisticId))
         }
@@ -2254,6 +2429,9 @@ export function GroupChatWidget() {
         setPendingVoiceMessage(voiceSnapshot)
       }
       setDraft(previousDraft)
+      if (previousDraft.trim().length > 0) {
+        scheduleTypingPresence(previousDraft)
+      }
       if (optimisticId) {
         setMessages((current) => current.filter((chatMessage) => chatMessage.id !== optimisticId))
       }
@@ -2363,10 +2541,12 @@ export function GroupChatWidget() {
     loadChatData,
     mentionOptions,
     pendingVoiceMessage,
+    replyToMessageId,
     room?.id,
     sending,
-    startVoiceRecording,
-    stopVoiceRecording,
+    session?.token,
+    scheduleTypingPresence,
+    stopTypingPresence,
     uploadComposerAttachments,
   ])
 
@@ -2424,7 +2604,7 @@ export function GroupChatWidget() {
   const handleAttachmentLoad = useCallback(() => {
     if (!open || !stickToLatestRef.current) return
     window.requestAnimationFrame(scrollMessagesToBottom)
-  }, [open])
+  }, [open, scrollMessagesToBottom])
 
   useEffect(() => {
     if (!open) {
@@ -2465,10 +2645,24 @@ export function GroupChatWidget() {
 
   const shouldHideChatBody = false
 
+  useEffect(() => {
+    if (open) return
+    void stopTypingPresence()
+  }, [open, stopTypingPresence])
+
+  useEffect(() => {
+    return () => {
+      void stopTypingPresence()
+    }
+  }, [stopTypingPresence])
+
   const handleOpenChange = useCallback((nextOpen: boolean) => {
+    if (!nextOpen) {
+      void stopTypingPresence()
+    }
     setOpen(nextOpen)
     setIsFullscreen(false)
-  }, [])
+  }, [stopTypingPresence])
 
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen((current) => {
@@ -2581,16 +2775,22 @@ export function GroupChatWidget() {
               <div className='flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-primary shadow-sm'>
                 <Users2 className='h-5 w-5' aria-hidden='true' />
               </div>
-              <div className='min-w-0 space-y-1'>
-                <div className='flex items-center gap-2'>
-                  <h2 className='truncate text-sm font-semibold text-foreground'>{roomHeader.title}</h2>
-                  <Badge variant='secondary' className='rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.16em]'>
-                    Live
-                  </Badge>
+                <div className='min-w-0 space-y-1'>
+                  <div className='flex items-center gap-2'>
+                    <h2 className='truncate text-sm font-semibold text-foreground'>{roomHeader.title}</h2>
+                    <Badge variant='secondary' className='rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.16em]'>
+                      Live
+                    </Badge>
+                  </div>
+                  <p className='text-xs text-muted-foreground'>{roomHeader.description}</p>
+                  {typingLabel ? (
+                    <p className='flex items-center gap-2 text-xs font-medium text-primary'>
+                      <span className='h-1.5 w-1.5 rounded-full bg-primary animate-pulse' aria-hidden='true' />
+                      <span>{typingLabel}</span>
+                    </p>
+                  ) : null}
                 </div>
-                <p className='text-xs text-muted-foreground'>{roomHeader.description}</p>
               </div>
-            </div>
             <div className='flex items-center gap-1.5'>
               <Button
                 type='button'
@@ -2809,6 +3009,7 @@ export function GroupChatWidget() {
                         const nextValue = event.target.value
                         setDraft(nextValue)
                         updateMentionContext(nextValue, event.target.selectionStart)
+                        scheduleTypingPresence(nextValue)
                       }}
                       onClick={(event) => updateMentionContext(event.currentTarget.value, event.currentTarget.selectionStart)}
                       onKeyUp={(event) => updateMentionContext(event.currentTarget.value, event.currentTarget.selectionStart)}
