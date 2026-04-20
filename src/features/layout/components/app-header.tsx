@@ -65,6 +65,7 @@ type HeaderNotificationItem = {
   title: string
   message: string
   taskId?: string
+  chatRoomId?: string
   createdAt: string
   type: HeaderNotificationType
   read: boolean
@@ -120,10 +121,10 @@ type HeaderSearchItem = {
   id: string
   title: string
   description: string
-  meta?: string
+  meta: string | undefined
   kind: 'task' | 'project' | 'goal' | 'person' | 'action'
   score: number
-  avatarUrl?: string | null
+  avatarUrl: string | null | undefined
   onSelect: () => void
 }
 
@@ -184,8 +185,12 @@ function formatSearchRelativeDate(value: string | null | undefined) {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(parsed)
 }
 
-function getSearchProfileName(profile: Pick<HeaderSearchPersonRow, 'full_name' | 'email'>) {
-  return profile.full_name || profile.email || 'Unknown teammate'
+function getSearchProfileName(profile: Pick<HeaderSearchPersonRow, 'full_name' | 'email'> | null | undefined) {
+  return profile?.full_name || profile?.email || 'Unknown teammate'
+}
+
+function isHeaderSearchItem(item: HeaderSearchItem | null): item is HeaderSearchItem {
+  return item !== null
 }
 
 function getSearchProfileRole(profile: Pick<HeaderSearchPersonRow, 'job_title' | 'role_label' | 'department'>) {
@@ -343,7 +348,7 @@ export function AppHeader({
     setNotificationsLoading(true)
     const { data, error } = await supabase
       .from('notifications')
-      .select('id, title, message, task_id, type, read_at, created_at')
+      .select('id, title, message, task_id, type, read_at, created_at, metadata')
       .eq('recipient_id', currentUser.id)
       .order('created_at', { ascending: false })
       .limit(8)
@@ -364,6 +369,7 @@ export function AppHeader({
               title: row.title,
               message: row.message,
               taskId: row.task_id ?? undefined,
+              chatRoomId: typeof row.metadata?.chat_room_id === 'string' ? row.metadata.chat_room_id : undefined,
               createdAt: row.created_at,
               type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
               read: Boolean(row.read_at),
@@ -441,7 +447,7 @@ export function AppHeader({
 
       for (const row of taskAssigneeRows) {
         const profile = profileById.get(row.assignee_id)
-        const displayName = getSearchProfileName(profile ?? { full_name: null, email: null })
+        const displayName = profile ? getSearchProfileName(profile) : 'Unknown teammate'
         const nextNames = assigneeNamesByTaskId.get(row.task_id) ?? []
         if (!nextNames.includes(displayName)) {
           nextNames.push(displayName)
@@ -648,6 +654,7 @@ export function AppHeader({
         title: 'Create task',
         description: 'Start a new task from the header.',
         meta: 'Quick action',
+        avatarUrl: undefined,
         kind: 'action' as const,
         score: 0,
         onSelect: () => {
@@ -660,6 +667,7 @@ export function AppHeader({
         title: 'Create project',
         description: 'Kick off a new project with the prefilled flow.',
         meta: 'Quick action',
+        avatarUrl: undefined,
         kind: 'action' as const,
         score: 0,
         onSelect: () => {
@@ -672,6 +680,7 @@ export function AppHeader({
         title: 'Invite teammate',
         description: 'Open the invite dialog.',
         meta: 'Quick action',
+        avatarUrl: undefined,
         kind: 'action' as const,
         score: 0,
         onSelect: () => {
@@ -684,6 +693,7 @@ export function AppHeader({
         title: 'Open My Tasks',
         description: 'Jump straight to your task queue.',
         meta: 'Navigation',
+        avatarUrl: undefined,
         kind: 'action' as const,
         score: 0,
         onSelect: () => {
@@ -696,6 +706,7 @@ export function AppHeader({
         title: 'Open workspace',
         description: 'View the team directory and activity.',
         meta: 'Navigation',
+        avatarUrl: undefined,
         kind: 'action' as const,
         score: 0,
         onSelect: () => {
@@ -712,7 +723,7 @@ export function AppHeader({
     if (!query) return []
 
     const taskItems: HeaderSearchItem[] = searchData.tasks
-      .map((task) => {
+      .map((task): HeaderSearchItem | null => {
         const score = scoreSearchMatch(query, [task.title, task.project_name, task.project_key, task.status, ...task.assignee_names])
         if (score === 0) return null
         return {
@@ -720,6 +731,7 @@ export function AppHeader({
           title: task.title,
           description: task.project_name ? `${task.project_name} • ${task.status ?? 'Task'}` : task.status ?? 'Task',
           meta: formatSearchRelativeDate(task.due_at) ?? task.project_key ?? undefined,
+          avatarUrl: undefined,
           kind: 'task' as const,
           score,
           onSelect: () => {
@@ -728,12 +740,12 @@ export function AppHeader({
           },
         }
       })
-      .filter((item): item is HeaderSearchItem => Boolean(item))
+      .filter(isHeaderSearchItem)
       .sort((left, right) => right.score - left.score)
       .slice(0, 6)
 
     const projectItems: HeaderSearchItem[] = searchData.projects
-      .map((project) => {
+      .map((project): HeaderSearchItem | null => {
         const score = scoreSearchMatch(query, [project.name, project.key, project.description, project.status])
         if (score === 0) return null
         return {
@@ -741,6 +753,7 @@ export function AppHeader({
           title: project.name,
           description: project.description ?? project.status ?? 'Project',
           meta: project.key,
+          avatarUrl: undefined,
           kind: 'project' as const,
           score,
           onSelect: () => {
@@ -749,12 +762,12 @@ export function AppHeader({
           },
         }
       })
-      .filter((item): item is HeaderSearchItem => Boolean(item))
+      .filter(isHeaderSearchItem)
       .sort((left, right) => right.score - left.score)
       .slice(0, 6)
 
     const goalItems: HeaderSearchItem[] = searchData.goals
-      .map((goal) => {
+      .map((goal): HeaderSearchItem | null => {
         const score = scoreSearchMatch(query, [goal.title, goal.owner_name, goal.cycle, goal.department, goal.health])
         if (score === 0) return null
         return {
@@ -762,6 +775,7 @@ export function AppHeader({
           title: goal.title,
           description: [goal.owner_name ?? 'Unassigned', goal.department ?? 'No department'].filter(Boolean).join(' • '),
           meta: goal.cycle ?? formatSearchRelativeDate(goal.due_at) ?? undefined,
+          avatarUrl: undefined,
           kind: 'goal' as const,
           score,
           onSelect: () => {
@@ -770,12 +784,12 @@ export function AppHeader({
           },
         }
       })
-      .filter((item): item is HeaderSearchItem => Boolean(item))
+      .filter(isHeaderSearchItem)
       .sort((left, right) => right.score - left.score)
       .slice(0, 6)
 
     const personItems: HeaderSearchItem[] = searchData.people
-      .map((person) => {
+      .map((person): HeaderSearchItem | null => {
         const displayName = getSearchProfileName(person)
         const score = scoreSearchMatch(query, [displayName, person.username, person.email, person.job_title, person.role_label, person.department])
         if (score === 0) return null
@@ -793,7 +807,7 @@ export function AppHeader({
           },
         }
       })
-      .filter((item): item is HeaderSearchItem => Boolean(item))
+      .filter(isHeaderSearchItem)
       .sort((left, right) => right.score - left.score)
       .slice(0, 6)
 
@@ -1047,11 +1061,16 @@ export function AppHeader({
                               void markNotificationRead(item.id, true)
                             }
                             setNotificationsOpen(false)
-                            const params = new URLSearchParams({ openNotificationId: item.id })
                             if (item.taskId) {
-                              params.set('openTaskId', item.taskId)
+                              const params = new URLSearchParams({ openNotificationId: item.id, openTaskId: item.taskId })
+                              navigate(`/dashboard/notifications?${params.toString()}`)
+                              return
                             }
-                            navigate(`/dashboard/notifications?${params.toString()}`)
+                            if (item.chatRoomId) {
+                              navigate('/dashboard/home?openGroupChat=1')
+                              return
+                            }
+                            navigate(`/dashboard/notifications?openNotificationId=${item.id}`)
                           }}
                           className={`w-full rounded-md border px-2.5 py-2 text-left transition-colors ${item.read ? 'bg-muted/10 hover:bg-muted/20' : 'border-primary/30 bg-primary/5 hover:bg-primary/10'}`}
                         >

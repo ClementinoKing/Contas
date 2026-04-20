@@ -3256,6 +3256,7 @@ export function MyTasksPage() {
               type: 'mention' as const,
               taskId: item.task_id as string,
               taskTitle,
+              messagePreview: contentText,
               actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
             })),
         )
@@ -3409,6 +3410,7 @@ export function MyTasksPage() {
               type: 'mention' as const,
               taskId: item.task_id as string,
               taskTitle,
+              messagePreview: content,
               actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
             })),
         )

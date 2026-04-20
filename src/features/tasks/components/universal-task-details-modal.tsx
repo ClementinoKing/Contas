@@ -922,13 +922,14 @@ export function UniversalTaskDetailsModal() {
             console.error('Failed to create mention notifications from global task modal', mentionNotificationsError)
           } else {
             void dispatchNotificationEmails(
-              mentionNotifications.map((item) => ({
+          mentionNotifications.map((item) => ({
                   notificationId: item.id,
                   recipientId: item.recipient_id,
                   recipientEmail: members.find((member) => member.id === item.recipient_id)?.email ?? undefined,
                   type: 'mention' as const,
                   taskId: item.task_id as string,
                   taskTitle: task?.title ?? 'a task',
+                  messagePreview: contentText,
                   actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
                 })),
             )
@@ -1068,6 +1069,7 @@ export function UniversalTaskDetailsModal() {
               type: 'mention' as const,
               taskId: item.task_id as string,
               taskTitle: task?.title ?? 'a task',
+              messagePreview: content,
               actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
             })),
         )

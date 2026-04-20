@@ -1,6 +1,6 @@
 import { AtSign, Bell, Check, CheckCheck, Circle, Filter, MessageSquareText, ShieldAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ type NotificationItem = {
   title: string
   message: string
   taskId?: string
+  chatRoomId?: string
   time: string
   type: NotificationType
   read: boolean
@@ -76,6 +77,7 @@ function NotificationsListSkeleton() {
 
 export function NotificationsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const handledNotificationRedirectRef = useRef<string | null>(null)
   const { currentUser } = useAuth()
   const [filter, setFilter] = useState<NotificationFilter>('all')
@@ -98,7 +100,7 @@ export function NotificationsPage() {
     const fetchNotifications = async () => {
       const { data, error } = await supabase
         .from('notifications')
-        .select('id, title, message, task_id, type, read_at, created_at')
+        .select('id, title, message, task_id, type, read_at, created_at, metadata')
         .eq('recipient_id', currentUser.id)
         .order('created_at', { ascending: false })
       if (cancelled) return
@@ -117,6 +119,7 @@ export function NotificationsPage() {
               title: row.title,
               message: row.message,
               taskId: row.task_id ?? undefined,
+              chatRoomId: typeof row.metadata?.chat_room_id === 'string' ? row.metadata.chat_room_id : undefined,
               time: relativeTimeLabel(row.created_at),
               type: row.type === 'mention' || row.type === 'system' ? row.type : 'task',
               read: Boolean(row.read_at),
@@ -208,28 +211,31 @@ export function NotificationsPage() {
     localStorage.setItem(NOTIFICATIONS_CACHE_KEY, JSON.stringify(next))
   }
 
-  const markReadAndPersist = async (id: string) => {
-    const item = items.find((entry) => entry.id === id)
-    if (!item || item.read) return
+  const markReadAndPersist = useCallback(
+    async (id: string) => {
+      const item = items.find((entry) => entry.id === id)
+      if (!item || item.read) return
 
-    setItems((current) => {
-      const next = current.map((entry) => (entry.id === id ? { ...entry, read: true } : entry))
-      cacheNotificationItems(next)
-      setCachedUnreadCount(next.filter((entry) => !entry.read).length)
-      return next
-    })
-
-    const { error } = await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id)
-    if (error) {
-      console.error('Failed to mark notification as read', error)
       setItems((current) => {
-        const next = current.map((entry) => (entry.id === id ? { ...entry, read: false } : entry))
+        const next = current.map((entry) => (entry.id === id ? { ...entry, read: true } : entry))
         cacheNotificationItems(next)
         setCachedUnreadCount(next.filter((entry) => !entry.read).length)
         return next
       })
-    }
-  }
+
+      const { error } = await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', id)
+      if (error) {
+        console.error('Failed to mark notification as read', error)
+        setItems((current) => {
+          const next = current.map((entry) => (entry.id === id ? { ...entry, read: false } : entry))
+          cacheNotificationItems(next)
+          setCachedUnreadCount(next.filter((entry) => !entry.read).length)
+          return next
+        })
+      }
+    },
+    [items],
+  )
 
   const resolveTaskId = useCallback(async (item: NotificationItem) => {
     if (item.taskId) return item.taskId
@@ -249,13 +255,23 @@ export function NotificationsPage() {
     return resolvedTaskId
   }, [])
 
-  const openNotificationTask = async (item: NotificationItem) => {
+  const openNotificationItem = async (item: NotificationItem) => {
     if (!item.read) {
       await markReadAndPersist(item.id)
     }
-    const taskId = item.taskId ?? (await resolveTaskId(item))
-    if (!taskId) return
-    openTaskDetailsModal(taskId)
+    if (item.taskId) {
+      openTaskDetailsModal(item.taskId)
+      return
+    }
+    if (item.chatRoomId) {
+      navigate('/dashboard/home?openGroupChat=1')
+      return
+    }
+
+    const taskId = await resolveTaskId(item)
+    if (taskId) {
+      openTaskDetailsModal(taskId)
+    }
   }
 
   useEffect(() => {
@@ -271,13 +287,9 @@ export function NotificationsPage() {
     if (redirectTaskId) {
       handledNotificationRedirectRef.current = redirectKey
       if (redirectNotificationId) {
-        setItems((current) => {
-          const next = current.map((item) => (item.id === redirectNotificationId ? { ...item, read: true } : item))
-          cacheNotificationItems(next)
-          setCachedUnreadCount(next.filter((item) => !item.read).length)
-          return next
-        })
-        void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', redirectNotificationId)
+        window.setTimeout(() => {
+          void markReadAndPersist(redirectNotificationId)
+        }, 0)
       }
       openTaskDetailsModal(redirectTaskId)
       const nextParams = new URLSearchParams(searchParams)
@@ -293,25 +305,26 @@ export function NotificationsPage() {
     if (!target) return
     handledNotificationRedirectRef.current = redirectKey
     if (!target.read) {
-      setItems((current) => {
-        const next = current.map((item) => (item.id === target.id ? { ...item, read: true } : item))
-        cacheNotificationItems(next)
-        setCachedUnreadCount(next.filter((item) => !item.read).length)
-        return next
-      })
-      void supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', target.id)
+      window.setTimeout(() => {
+        void markReadAndPersist(target.id)
+      }, 0)
     }
     void (async () => {
+      if (target.chatRoomId) {
+        navigate('/dashboard/home?openGroupChat=1')
+        return
+      }
       const taskId = target.taskId ?? (await resolveTaskId(target))
-      if (!taskId) return
-      openTaskDetailsModal(taskId)
+      if (taskId) {
+        openTaskDetailsModal(taskId)
+      }
     })()
 
     const nextParams = new URLSearchParams(searchParams)
     nextParams.delete('openNotificationId')
     nextParams.delete('openTaskId')
     setSearchParams(nextParams, { replace: true })
-  }, [items, loading, resolveTaskId, searchParams, setSearchParams])
+  }, [items, loading, markReadAndPersist, navigate, resolveTaskId, searchParams, setSearchParams])
 
   return (
     <div className='space-y-4'>
@@ -375,11 +388,11 @@ export function NotificationsPage() {
                 key={item.id}
                 className={cn(
                   'rounded-md border px-3 py-3 transition-colors',
-                  item.taskId ? 'cursor-pointer hover:border-primary/50 hover:bg-primary/10' : '',
+                  item.taskId || item.chatRoomId ? 'cursor-pointer hover:border-primary/50 hover:bg-primary/10' : '',
                   !item.read ? 'border-primary/30 bg-primary/5' : 'bg-muted/10',
                 )}
                 onClick={() => {
-                  void openNotificationTask(item)
+                  void openNotificationItem(item)
                 }}
               >
                 <div className='flex items-start justify-between gap-3'>

@@ -31,12 +31,14 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { useLocation } from 'react-router-dom'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useAuth } from '@/features/auth/context/auth-context'
+import { dispatchNotificationEmails } from '@/features/notifications/lib/email-delivery'
 import { notify } from '@/lib/notify'
 import { optimizeImageFileForUpload, resolveR2ObjectUrl, uploadChatAttachmentToR2, uploadChatVoiceToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
@@ -453,7 +455,7 @@ function VoicePlayback({
     stopAnimation()
   }, [stopAnimation])
 
-  const runAnimation = useCallback(() => {
+  const runAnimation = useCallback(function runAnimationFrame() {
     const audio = audioRef.current
     if (!audio || audio.paused || audio.ended) {
       stopAnimation()
@@ -468,7 +470,7 @@ function VoicePlayback({
         return Math.max(0.16, Math.min(1, 0.46 + wave * 0.3 + shimmer * 0.2))
       }),
     )
-    rafRef.current = requestAnimationFrame(runAnimation)
+    rafRef.current = requestAnimationFrame(runAnimationFrame)
   }, [stopAnimation])
 
   useEffect(() => {
@@ -1283,6 +1285,7 @@ function MessageBubble({
 
 export function GroupChatWidget() {
   const { currentUser, session } = useAuth()
+  const location = useLocation()
   const [open, setOpen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [draft, setDraft] = useState('')
@@ -1382,6 +1385,55 @@ export function GroupChatWidget() {
       .filter((option) => option.name.toLowerCase().includes(query) || option.username.includes(query))
       .slice(0, 6)
   }, [mentionDraft, mentionOptions])
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('openGroupChat') !== '1') return
+    setOpen(true)
+  }, [location.search])
+
+  const dispatchChatMentionEmails = useCallback(
+    async (messageId: string, recipientIds: string[], messagePreview?: string) => {
+      if (!currentUser?.id || recipientIds.length === 0 || !room?.id || !room?.name) return
+
+      const { data: notificationRows, error } = await supabase
+        .from('notifications')
+        .select('id, recipient_id')
+        .eq('actor_id', currentUser.id)
+        .eq('type', 'mention')
+        .contains('metadata', { chat_message_id: messageId })
+        .in('recipient_id', recipientIds)
+        .order('created_at', { ascending: false })
+
+      if (error) {
+        console.error('Failed to load chat mention notifications', error)
+        return
+      }
+
+      const latestNotificationByRecipient = Array.from(
+        new Map((notificationRows ?? []).map((row) => [row.recipient_id, row] as const)).values(),
+      )
+
+      if (latestNotificationByRecipient.length === 0) return
+
+      const appUrl = `${window.location.origin}/dashboard/home?openGroupChat=1`
+      void dispatchNotificationEmails(
+        latestNotificationByRecipient.map((item) => ({
+          notificationId: item.id,
+          recipientId: item.recipient_id,
+          recipientEmail: profileById.get(item.recipient_id)?.email ?? undefined,
+          type: 'mention' as const,
+          contextKind: 'chat' as const,
+          roomId: room.id,
+          roomName: room.name ?? 'Group Chat',
+          messagePreview,
+          appUrl,
+          actorName: currentUser.name ?? currentUser.email ?? 'A teammate',
+        })),
+      )
+    },
+    [currentUser?.email, currentUser?.id, currentUser?.name, profileById, room?.id, room?.name],
+  )
 
   useEffect(() => {
     attachmentsRef.current = attachments
@@ -2365,6 +2417,19 @@ export function GroupChatWidget() {
         return
       }
 
+      const { data: existingMentionRows, error: existingMentionError } = await supabase
+        .from('chat_message_mentions')
+        .select('mentioned_user_id')
+        .eq('message_id', editingMessageId)
+
+      if (existingMentionError) {
+        console.error('Failed to load existing chat mentions before edit', existingMentionError)
+      }
+
+      const previousMentionIds = new Set((existingMentionRows ?? []).map((row) => row.mentioned_user_id))
+      const nextMentionIds = new Set(mentionedUsers.map((user) => user.id))
+      const addedMentionIds = Array.from(nextMentionIds).filter((userId) => !previousMentionIds.has(userId))
+
       const { error: clearMentionsError } = await supabase.from('chat_message_mentions').delete().eq('message_id', editingMessageId)
       if (clearMentionsError) {
         console.error('Failed to clear chat mentions before edit', clearMentionsError)
@@ -2376,6 +2441,8 @@ export function GroupChatWidget() {
         const { error: mentionInsertError } = await supabase.from('chat_message_mentions').insert(mentionRows)
         if (mentionInsertError) {
           console.error('Failed to update chat mentions', mentionInsertError)
+        } else if (addedMentionIds.length > 0) {
+          void dispatchChatMentionEmails(editingMessageId, addedMentionIds, trimmed)
         }
       }
 
@@ -2447,6 +2514,8 @@ export function GroupChatWidget() {
       const { error: mentionInsertError } = await supabase.from('chat_message_mentions').insert(mentionRows)
       if (mentionInsertError) {
         console.error('Failed to create chat mentions', mentionInsertError)
+      } else {
+        void dispatchChatMentionEmails(insertedMessage.id, mentionedUsers.map((user) => user.id), trimmed)
       }
     }
 
@@ -2547,6 +2616,7 @@ export function GroupChatWidget() {
     session?.token,
     scheduleTypingPresence,
     stopTypingPresence,
+    dispatchChatMentionEmails,
     uploadComposerAttachments,
   ])
 

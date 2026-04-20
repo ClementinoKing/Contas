@@ -7,14 +7,26 @@ type NotificationDispatchItem = {
   recipientId: string
   recipientEmail?: string
   type: NotificationEmailType
-  taskId: string
-  taskTitle: string
   actorName: string
+  messagePreview?: string
+  taskId?: string
+  taskTitle?: string
+  roomId?: string
+  roomName?: string
+  contextKind?: 'task' | 'chat'
+  appUrl?: string
 }
 
-function resolveAppUrl(taskId: string) {
+function resolveAppUrl(item: NotificationDispatchItem) {
   if (typeof window === 'undefined') return ''
-  return `${window.location.origin}/dashboard/notifications?openTaskId=${encodeURIComponent(taskId)}`
+  if (item.appUrl) return item.appUrl
+  if (item.contextKind === 'chat') {
+    return `${window.location.origin}/dashboard/home?openGroupChat=1`
+  }
+  if (item.taskId) {
+    return `${window.location.origin}/dashboard/notifications?openTaskId=${encodeURIComponent(item.taskId)}`
+  }
+  return `${window.location.origin}/dashboard/notifications`
 }
 
 export async function dispatchNotificationEmails(items: NotificationDispatchItem[]) {
@@ -51,8 +63,12 @@ export async function dispatchNotificationEmails(items: NotificationDispatchItem
             recipientEmail: item.recipientEmail,
             taskId: item.taskId,
             taskTitle: item.taskTitle,
+            roomId: item.roomId,
+            roomName: item.roomName,
             actorName: item.actorName,
-            appUrl: resolveAppUrl(item.taskId),
+            messagePreview: item.messagePreview,
+            contextKind: item.contextKind,
+            appUrl: resolveAppUrl(item),
             notificationId: item.notificationId,
           },
         })

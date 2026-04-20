@@ -12,9 +12,13 @@ type NotifyPayload = {
   type: NotificationEmailType
   recipientEmail?: string
   recipientId?: string
-  taskId: string
-  taskTitle: string
+  taskId?: string
+  taskTitle?: string
+  roomId?: string
+  roomName?: string
   actorName: string
+  messagePreview?: string
+  contextKind?: 'task' | 'chat'
   appUrl?: string
   notificationId: string
 }
@@ -54,8 +58,9 @@ function json(body: unknown, status = 200) {
   })
 }
 
-function subjectForType(type: NotificationEmailType) {
-  return type === 'mention' ? 'You were mentioned in a task' : 'You were assigned a task'
+function subjectForType(type: NotificationEmailType, contextKind: 'task' | 'chat', contextName: string) {
+  if (type === 'task_assigned') return 'You were assigned a task'
+  return contextKind === 'chat' ? `You were mentioned in ${contextName}` : 'You were mentioned in a task'
 }
 
 function escapeHtml(value: string) {
@@ -67,22 +72,49 @@ function escapeHtml(value: string) {
     .replaceAll("'", '&#39;')
 }
 
-function bodyForType(type: NotificationEmailType, actorName: string, taskTitle: string, appUrl: string) {
+function bodyForType(
+  type: NotificationEmailType,
+  contextKind: 'task' | 'chat',
+  actorName: string,
+  contextName: string,
+  messagePreview: string | undefined,
+  appUrl: string,
+) {
   const safeActorName = escapeHtml(actorName)
-  const safeTaskTitle = escapeHtml(taskTitle)
+  const safeContextName = escapeHtml(contextName)
   const safeAppUrl = escapeHtml(appUrl)
-  const heading = type === 'mention' ? 'You were mentioned' : 'You were assigned a task'
+  const safeMessagePreview = messagePreview?.trim() ? escapeHtml(messagePreview.trim()) : ''
+  const messageBlock = safeMessagePreview
+    ? `
+          <tr>
+            <td style="padding:0 28px 16px 28px;">
+              <div style="border:1px solid #dbe4f0;border-radius:12px;background:#f8fbff;padding:16px;">
+                <p style="margin:0 0 8px 0;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;">Message</p>
+                <p style="margin:0;font-size:14px;line-height:1.7;color:#334155;white-space:pre-wrap;">${safeMessagePreview}</p>
+              </div>
+            </td>
+          </tr>
+        `
+    : ''
+  const heading =
+    type === 'mention' ? (contextKind === 'chat' ? 'You were mentioned in group chat' : 'You were mentioned') : 'You were assigned a task'
   const intro =
     type === 'mention'
-      ? `<strong>${safeActorName}</strong> mentioned you in <strong>${safeTaskTitle}</strong>.`
-      : `<strong>${safeActorName}</strong> assigned you to <strong>${safeTaskTitle}</strong>.`
+      ? contextKind === 'chat'
+        ? `<strong>${safeActorName}</strong> mentioned you in <strong>${safeContextName}</strong>.`
+        : `<strong>${safeActorName}</strong> mentioned you in <strong>${safeContextName}</strong>.`
+      : `<strong>${safeActorName}</strong> assigned you to <strong>${safeContextName}</strong>.`
   const bodyText =
     type === 'mention'
-      ? 'Open the task to view the comment and respond.'
+      ? contextKind === 'chat'
+        ? 'Open the dashboard to read the full message and reply in the group chat.'
+        : 'Open the task to view the comment and respond.'
       : 'Open the task to review the details and begin work.'
   const footerText =
     type === 'mention'
-      ? 'This notification was sent by Contas because a task update requires your attention.'
+      ? contextKind === 'chat'
+        ? 'This notification was sent by Contas because a group chat mention requires your attention.'
+        : 'This notification was sent by Contas because a task update requires your attention.'
       : 'This notification was sent by Contas because a new task was assigned to you.'
 
   return `
@@ -105,10 +137,11 @@ function bodyForType(type: NotificationEmailType, actorName: string, taskTitle: 
               <p style="margin:0;font-size:15px;color:#334155;">${bodyText}</p>
             </td>
           </tr>
+          ${messageBlock}
           <tr>
             <td style="padding:8px 28px;">
               <a href="${safeAppUrl}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#1f2f6f;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;">
-                Open task
+                Open Contas
               </a>
             </td>
           </tr>
@@ -137,8 +170,10 @@ function bodyForType(type: NotificationEmailType, actorName: string, taskTitle: 
 async function sendResendEmail(input: {
   to: string
   type: NotificationEmailType
+  contextKind: 'task' | 'chat'
   actorName: string
-  taskTitle: string
+  contextName: string
+  messagePreview?: string
   appUrl: string
 }) {
   if (!RESEND_API_KEY || !RESEND_FROM_EMAIL) {
@@ -154,8 +189,8 @@ async function sendResendEmail(input: {
     body: JSON.stringify({
       from: RESEND_FROM_EMAIL,
       to: [input.to],
-      subject: subjectForType(input.type),
-      html: bodyForType(input.type, input.actorName, input.taskTitle, input.appUrl),
+      subject: subjectForType(input.type, input.contextKind, input.contextName),
+      html: bodyForType(input.type, input.contextKind, input.actorName, input.contextName, input.messagePreview, input.appUrl),
     }),
   })
 
@@ -202,12 +237,21 @@ Deno.serve(async (req) => {
     return json({ ok: false, message: 'Invalid JSON payload.' }, 400)
   }
 
-  if (!payload.type || !payload.notificationId || !payload.taskId || !payload.taskTitle || !payload.actorName) {
+  if (!payload.type || !payload.notificationId || !payload.actorName) {
     return json({ ok: false, message: 'Missing required notification payload fields.' }, 400)
   }
 
   if (payload.type !== 'mention' && payload.type !== 'task_assigned') {
     return json({ ok: false, message: 'Unsupported notification email type.' }, 400)
+  }
+
+  const contextKind = payload.contextKind ?? 'task'
+  if (contextKind === 'task' && (!payload.taskId || !payload.taskTitle)) {
+    return json({ ok: false, message: 'Missing task notification context.' }, 400)
+  }
+
+  if (contextKind === 'chat' && !payload.roomName) {
+    return json({ ok: false, message: 'Missing chat notification context.' }, 400)
   }
 
   const requesterId =
@@ -223,7 +267,7 @@ Deno.serve(async (req) => {
 
   const { data: notificationRow, error: notificationError } = await serviceClient
     .from('notifications')
-    .select('id, actor_id, recipient_id, task_id')
+    .select('id, actor_id, recipient_id, task_id, metadata')
     .eq('id', payload.notificationId)
     .maybeSingle()
 
@@ -239,8 +283,16 @@ Deno.serve(async (req) => {
     return json({ ok: false, message: 'Only the actor can trigger this email.' }, 403)
   }
 
-  if (notificationRow.task_id !== payload.taskId) {
-    return json({ ok: false, message: 'Task mismatch for this notification.' }, 400)
+  if (contextKind === 'task') {
+    if (notificationRow.task_id !== payload.taskId) {
+      return json({ ok: false, message: 'Task mismatch for this notification.' }, 400)
+    }
+  } else {
+    const roomId = payload.roomId ?? null
+    const metadataRoomId = typeof notificationRow.metadata?.chat_room_id === 'string' ? notificationRow.metadata.chat_room_id : null
+    if (roomId && metadataRoomId !== roomId) {
+      return json({ ok: false, message: 'Chat room mismatch for this notification.' }, 400)
+    }
   }
 
   const recipientId = payload.recipientId ?? notificationRow.recipient_id ?? undefined
@@ -274,14 +326,21 @@ Deno.serve(async (req) => {
   }
 
   const appBaseUrl = (APP_BASE_URL || FALLBACK_APP_BASE_URL).replace(/\/+$/, '')
-  const appUrl = `${appBaseUrl}/dashboard/notifications?openTaskId=${encodeURIComponent(payload.taskId)}`
+  const appUrl =
+    payload.appUrl ??
+    (contextKind === 'chat'
+      ? `${appBaseUrl}/dashboard/home?openGroupChat=1`
+      : `${appBaseUrl}/dashboard/notifications?openTaskId=${encodeURIComponent(payload.taskId ?? '')}`)
+  const contextName = contextKind === 'chat' ? payload.roomName ?? 'Group Chat' : payload.taskTitle ?? 'a task'
 
   try {
     const sent = await sendResendEmail({
       to: recipientEmail,
       type: payload.type,
+      contextKind,
       actorName: payload.actorName,
-      taskTitle: payload.taskTitle,
+      contextName,
+      messagePreview: payload.messagePreview,
       appUrl,
     })
 
