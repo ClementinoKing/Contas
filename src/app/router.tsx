@@ -9,6 +9,7 @@ import { GoalsPage } from '@/features/dashboard/pages/goals-page'
 import { WorkspacePage } from '@/features/dashboard/pages/workspace-page'
 import { ProjectDetailPage } from '@/features/dashboard/pages/project-detail-page'
 import { ProjectsPage } from '@/features/dashboard/pages/projects-page'
+import { DocumentsPage } from '@/features/dashboard/pages/documents-page'
 import { LoginPage } from '@/features/auth/pages/login-page'
 import { ResetPasswordPage } from '@/features/auth/pages/reset-password-page'
 import { AppShellLayout } from '@/features/layout/components/app-shell-layout'
@@ -59,6 +60,7 @@ export const router = createBrowserRouter([
           { path: 'goals', element: <GoalsPage /> },
           { path: 'projects', element: <ProjectsPage /> },
           { path: 'projects/:projectId', element: <ProjectDetailPage /> },
+          { path: 'documents', element: <DocumentsPage /> },
           { path: 'workspace', element: <WorkspacePage /> },
           { path: 'settings', element: <SettingsPage /> },
         ],

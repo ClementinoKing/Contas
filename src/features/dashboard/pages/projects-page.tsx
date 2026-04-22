@@ -1,7 +1,7 @@
 import { formatDistanceToNowStrict } from 'date-fns'
-import { ArrowUpRight, BriefcaseBusiness, Copy, FolderOpen, ListFilter, Lock, MoreHorizontal, PencilLine, Plus, Search, SlidersHorizontal } from 'lucide-react'
+import { ArrowUpRight, BriefcaseBusiness, ChevronLeft, ChevronRight, Copy, FolderOpen, LayoutGrid, LayoutList, ListFilter, Lock, MoreHorizontal, PencilLine, Plus, Search, SlidersHorizontal } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -86,6 +86,10 @@ const STATUS_TONE: Record<string, string> = {
 
 const PROJECTS_CACHE_KEY = 'contas.projects.page.v1'
 const PROJECTS_CACHE_TTL_MS = 3 * 60 * 1000
+const PROJECT_VIEW_STORAGE_KEY = 'contas.projects.view.v1'
+const PROJECTS_LIST_PAGE_SIZE = 8
+
+type ProjectViewMode = 'cards' | 'list'
 
 function readProjectsCache(): ProjectsCachePayload | null {
   try {
@@ -112,6 +116,15 @@ function writeProjectsCache(payload: Omit<ProjectsCachePayload, 'cachedAt'>) {
   )
 }
 
+function readProjectViewMode(): ProjectViewMode {
+  try {
+    const raw = localStorage.getItem(PROJECT_VIEW_STORAGE_KEY)
+    return raw === 'cards' ? 'cards' : 'list'
+  } catch {
+    return 'list'
+  }
+}
+
 function statusLabel(value: string | null) {
   const key = (value ?? 'planned').toLowerCase()
   if (key === 'in_progress') return 'In Progress'
@@ -134,6 +147,12 @@ function initialsFor(name: string) {
       .map((part) => part[0]?.toUpperCase() ?? '')
       .join('') || 'U'
   )
+}
+
+function previewWords(value: string, count: number) {
+  const words = value.split(/\s+/).filter(Boolean)
+  if (words.length <= count) return value
+  return `${words.slice(0, count).join(' ')}...`
 }
 
 function ProjectsGridSkeleton() {
@@ -166,7 +185,68 @@ function ProjectsGridSkeleton() {
   )
 }
 
+function ProjectsListSkeleton() {
+  return (
+    <div className='overflow-hidden rounded-2xl border bg-card shadow-sm'>
+      <div className='overflow-x-auto'>
+        <table className='min-w-[1160px] w-full border-separate border-spacing-0'>
+          <thead className='bg-muted/40'>
+            <tr className='text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground'>
+              <th className='px-4 py-3'>Project</th>
+              <th className='px-4 py-3'>Status</th>
+              <th className='px-4 py-3'>Tasks</th>
+              <th className='px-4 py-3'>Progress</th>
+              <th className='px-4 py-3'>Team</th>
+              <th className='px-4 py-3'>Updated</th>
+              <th className='px-4 py-3 text-right'>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 5 }).map((_, index) => (
+              <tr key={`project-list-skeleton-${index}`} className='[&>td]:border-b [&>td]:border-border/60'>
+                <td className='px-4 py-4'>
+                  <div className='space-y-2'>
+                    <div className='h-4 w-44 rounded bg-muted/60 animate-pulse' />
+                    <div className='h-3 w-24 rounded bg-muted/50 animate-pulse' />
+                    <div className='h-3 w-full rounded bg-muted/40 animate-pulse' />
+                  </div>
+                </td>
+                <td className='px-4 py-4'>
+                  <div className='h-6 w-24 rounded-full bg-muted/50 animate-pulse' />
+                </td>
+                <td className='px-4 py-4'>
+                  <div className='h-4 w-16 rounded bg-muted/50 animate-pulse' />
+                </td>
+                <td className='px-4 py-4'>
+                  <div className='space-y-2'>
+                    <div className='h-2 w-full rounded-full bg-muted/40 animate-pulse' />
+                    <div className='h-3 w-14 rounded bg-muted/50 animate-pulse' />
+                  </div>
+                </td>
+                <td className='px-4 py-4'>
+                  <div className='flex -space-x-2'>
+                    <div className='h-7 w-7 rounded-full bg-muted/50 animate-pulse' />
+                    <div className='h-7 w-7 rounded-full bg-muted/50 animate-pulse' />
+                    <div className='h-7 w-7 rounded-full bg-muted/50 animate-pulse' />
+                  </div>
+                </td>
+                <td className='px-4 py-4'>
+                  <div className='h-4 w-24 rounded bg-muted/50 animate-pulse' />
+                </td>
+                <td className='px-4 py-4 text-right'>
+                  <div className='ml-auto h-9 w-24 rounded-md bg-muted/50 animate-pulse' />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 export function ProjectsPage() {
+  const navigate = useNavigate()
   const { currentUser } = useAuth()
   const cached = readProjectsCache()
   const [projects, setProjects] = useState<ProjectRow[]>(cached?.projects ?? [])
@@ -187,6 +267,12 @@ export function ProjectsPage() {
   const [editProjectStartDate, setEditProjectStartDate] = useState<Date | undefined>()
   const [editProjectEndDate, setEditProjectEndDate] = useState<Date | undefined>()
   const [editProjectDescription, setEditProjectDescription] = useState('')
+  const [viewMode, setViewMode] = useState<ProjectViewMode>(() => readProjectViewMode())
+  const [listPage, setListPage] = useState(1)
+
+  useEffect(() => {
+    localStorage.setItem(PROJECT_VIEW_STORAGE_KEY, viewMode)
+  }, [viewMode])
 
   useEffect(() => {
     let cancelled = false
@@ -340,6 +426,17 @@ export function ProjectsPage() {
     })
   }, [projectCards, search, sortBy, statusFilter])
 
+  const listPageCount = Math.max(1, Math.ceil(filteredCards.length / PROJECTS_LIST_PAGE_SIZE))
+  const activeListPage = Math.min(listPage, listPageCount)
+  const listStart = filteredCards.length === 0 ? 0 : (activeListPage - 1) * PROJECTS_LIST_PAGE_SIZE + 1
+  const listEnd = Math.min(activeListPage * PROJECTS_LIST_PAGE_SIZE, filteredCards.length)
+
+  const visibleListCards = useMemo(() => {
+    if (viewMode !== 'list') return filteredCards
+    const start = (activeListPage - 1) * PROJECTS_LIST_PAGE_SIZE
+    return filteredCards.slice(start, start + PROJECTS_LIST_PAGE_SIZE)
+  }, [activeListPage, filteredCards, viewMode])
+
   const ownerOptions = useMemo(
     () => profiles.map((profile) => ({ id: profile.id, label: profile.full_name ?? 'Unknown user' })).sort((a, b) => a.label.localeCompare(b.label)),
     [profiles],
@@ -356,6 +453,10 @@ export function ProjectsPage() {
     setEditProjectDescription(card.rawDescription ?? '')
     setEditProjectError(null)
     setEditProjectOpen(true)
+  }
+
+  const openProject = (projectId: string) => {
+    navigate(`/dashboard/projects/${projectId}`)
   }
 
   const handleSaveProjectEdits = async () => {
@@ -410,6 +511,176 @@ export function ProjectsPage() {
     window.dispatchEvent(new CustomEvent('contas:realtime-change', { detail: { table: 'projects', eventType: 'manual' } }))
   }
 
+  const renderProjectActions = (card: ProjectCard) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant='ghost'
+          size='icon'
+          className='h-7 w-7 rounded-md opacity-75 transition-opacity group-hover:opacity-100'
+          onClick={(event) => event.stopPropagation()}
+        >
+          <MoreHorizontal className='h-4 w-4' />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align='end' className='w-52 border-border/70 bg-card shadow-[0_10px_28px_rgba(0,0,0,0.25)]'>
+        <DropdownMenuLabel className='text-xs uppercase tracking-[0.12em] text-muted-foreground'>Project</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild className='gap-2'>
+          <Link to={`/dashboard/projects/${card.id}`}>
+            <FolderOpen className='h-4 w-4 text-muted-foreground' />
+            Open project
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem className='gap-2' onSelect={() => openEditProject(card)} disabled={!card.canEdit}>
+          {card.canEdit ? <PencilLine className='h-4 w-4 text-muted-foreground' /> : <Lock className='h-4 w-4 text-muted-foreground' />}
+          {card.canEdit ? 'Edit project' : 'Edit locked'}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className='gap-2'
+          onClick={() => {
+            void navigator.clipboard?.writeText(card.key)
+          }}
+        >
+          <Copy className='h-4 w-4 text-muted-foreground' />
+          Copy code
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
+  const renderTeamAvatars = (team: ProjectMember[]) => {
+    if (team.length === 0) {
+      return <span className='text-xs text-muted-foreground'>No team assigned</span>
+    }
+
+    return (
+      <div className='flex items-center'>
+        {team.map((member, index) => (
+          <Avatar key={member.id} className={cn('h-6 w-6 border border-background', index > 0 && '-ml-2')}>
+            {member.avatar_url ? <AvatarImage src={member.avatar_url} alt={member.full_name ?? 'Team member'} /> : null}
+            <AvatarFallback className='text-[10px] font-semibold'>{initialsFor(member.full_name ?? 'User')}</AvatarFallback>
+          </Avatar>
+        ))}
+      </div>
+    )
+  }
+
+  const renderProjectCard = (card: ProjectCard) => (
+    <article
+      key={card.id}
+      className='group rounded-xl border bg-card p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md'
+    >
+      <div className='flex items-start justify-between gap-2'>
+        <div className='min-w-0'>
+          <div className='flex items-center gap-2'>
+            <span className='h-2.5 w-2.5 shrink-0 rounded-full' style={projectDotStyle(card.color)} />
+            <p className='truncate text-sm font-semibold text-foreground'>{card.name}</p>
+            {!card.canEdit ? <Lock className='h-3.5 w-3.5 shrink-0 text-muted-foreground' aria-label='Locked project' /> : null}
+          </div>
+          <p className='mt-1 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground'>{card.key}</p>
+        </div>
+
+        {renderProjectActions(card)}
+      </div>
+
+      <div className='mt-2 flex items-center justify-between gap-2'>
+        <Badge className={cn('h-6 rounded-full border px-2.5 text-[11px] font-medium', statusTone(card.status))}>{statusLabel(card.status)}</Badge>
+        <span className='text-xs text-muted-foreground'>{card.taskCount} tasks</span>
+      </div>
+
+      <Link to={`/dashboard/projects/${card.id}`} className='mt-3 block rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50'>
+        <p className='line-clamp-2 min-h-[2.5rem] text-xs leading-relaxed text-muted-foreground'>{card.description}</p>
+      </Link>
+
+      <div className='mt-3 space-y-1.5'>
+        <div className='flex items-center justify-between text-[11px] text-muted-foreground'>
+          <span>Progress</span>
+          <span className='font-medium text-foreground'>{card.progressPercent}%</span>
+        </div>
+        <div className='h-1.5 rounded-full bg-muted'>
+          <div className='h-full rounded-full bg-primary transition-[width] duration-300' style={{ width: `${card.progressPercent}%` }} />
+        </div>
+      </div>
+
+      <div className='mt-3 flex items-center justify-between border-t pt-2.5'>
+        {renderTeamAvatars(card.team)}
+        <Link
+          to={`/dashboard/projects/${card.id}`}
+          className='inline-flex items-center gap-1 text-xs font-medium text-primary opacity-80 transition-opacity hover:opacity-100'
+        >
+          Open
+          <ArrowUpRight className='h-3.5 w-3.5' />
+        </Link>
+      </div>
+
+      <p className='mt-2 text-[11px] text-muted-foreground'>Updated {card.lastUpdatedLabel}</p>
+    </article>
+  )
+
+  const renderProjectList = (card: ProjectCard) => (
+    <tr
+      key={card.id}
+      tabIndex={0}
+      role='link'
+      aria-label={`Open project ${card.name}`}
+      onClick={() => openProject(card.id)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          openProject(card.id)
+        }
+      }}
+      className='group cursor-pointer bg-card transition-colors hover:bg-muted/20 focus:outline-none [&>td]:border-b [&>td]:border-border/60'
+    >
+      <td className='w-[34rem] px-4 py-4 align-top'>
+        <div className='flex min-w-0 items-start gap-3'>
+          <span className='mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full' style={projectDotStyle(card.color)} aria-hidden='true' />
+          <div className='min-w-0'>
+            <div className='flex min-w-0 items-center gap-2'>
+              <Link to={`/dashboard/projects/${card.id}`} className='truncate text-sm font-semibold text-foreground hover:underline'>
+                {card.name}
+              </Link>
+              {!card.canEdit ? <Lock className='h-3.5 w-3.5 shrink-0 text-muted-foreground' aria-label='Locked project' /> : null}
+            </div>
+            <p className='mt-1 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground'>{card.key}</p>
+            <p className='mt-2 truncate text-sm leading-relaxed text-muted-foreground'>
+              {previewWords(card.description, 10)}
+            </p>
+          </div>
+        </div>
+      </td>
+      <td className='px-4 py-4 align-top'>
+        <Badge className={cn('h-6 rounded-full border px-2.5 text-[11px] font-medium', statusTone(card.status))}>{statusLabel(card.status)}</Badge>
+      </td>
+      <td className='px-4 py-4 align-top'>
+        <div className='space-y-1'>
+          <p className='text-sm font-medium text-foreground'>{card.taskCount}</p>
+          <p className='text-xs text-muted-foreground'>Tasks total</p>
+        </div>
+      </td>
+      <td className='px-4 py-4 align-top'>
+        <div className='space-y-2'>
+          <div className='h-1.5 rounded-full bg-muted'>
+            <div className='h-full rounded-full bg-primary transition-[width] duration-300' style={{ width: `${card.progressPercent}%` }} />
+          </div>
+          <p className='text-sm font-medium text-foreground'>{card.progressPercent}% complete</p>
+        </div>
+      </td>
+      <td className='px-4 py-4 align-top'>
+        {renderTeamAvatars(card.team)}
+      </td>
+      <td className='px-4 py-4 align-top'>
+        <p className='text-sm font-medium text-foreground'>{card.lastUpdatedLabel}</p>
+      </td>
+      <td className='px-4 py-4 align-top'>
+        <div className='flex items-center justify-end gap-2'>
+          {renderProjectActions(card)}
+        </div>
+      </td>
+    </tr>
+  )
+
   return (
     <div className='space-y-6'>
       <section className='rounded-2xl border bg-card/70 p-4 shadow-sm backdrop-blur-sm md:p-5'>
@@ -424,25 +695,74 @@ export function ProjectsPage() {
               Track delivery health, ownership, and momentum across your workspace in one place.
             </p>
           </div>
-          <Button
-            className='h-10 gap-2 px-4'
-            onClick={() => {
-              window.dispatchEvent(new CustomEvent('contas:open-create-project'))
-            }}
-          >
-            <Plus className='h-4 w-4' />
-            New Project
-          </Button>
+          <div className='flex flex-wrap items-center gap-3'>
+            <div className='inline-flex rounded-lg border bg-background p-1 shadow-sm'>
+              <button
+                type='button'
+                onClick={() => {
+                  setViewMode('list')
+                  setListPage(1)
+                }}
+                aria-pressed={viewMode === 'list'}
+                className={cn(
+                  'inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors',
+                  viewMode === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                )}
+              >
+                <LayoutList className='h-4 w-4' />
+                List
+              </button>
+              <button
+                type='button'
+                onClick={() => {
+                  setViewMode('cards')
+                  setListPage(1)
+                }}
+                aria-pressed={viewMode === 'cards'}
+                className={cn(
+                  'inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors',
+                  viewMode === 'cards' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                )}
+              >
+                <LayoutGrid className='h-4 w-4' />
+                Cards
+              </button>
+            </div>
+            <Button
+              className='h-10 gap-2 px-4'
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('contas:open-create-project'))
+              }}
+            >
+              <Plus className='h-4 w-4' />
+              New Project
+            </Button>
+          </div>
         </div>
 
         <div className='mt-4 grid gap-2 md:grid-cols-[1.25fr_220px_220px]'>
           <div className='relative'>
             <Search className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder='Search by project name, code, or description' className='h-10 pl-9' />
+            <Input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value)
+                setListPage(1)
+              }}
+              placeholder='Search by project name, code, or description'
+              className='h-10 pl-9'
+            />
           </div>
           <div className='relative'>
             <ListFilter className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className='h-10 w-full rounded-md border bg-background pl-9 pr-8 text-sm'>
+            <select
+              value={statusFilter}
+              onChange={(event) => {
+                setStatusFilter(event.target.value)
+                setListPage(1)
+              }}
+              className='h-10 w-full rounded-md border bg-background pl-9 pr-8 text-sm'
+            >
               <option value='all'>All statuses</option>
               {statusOptions.map((status) => (
                 <option key={status.key} value={status.key}>
@@ -453,7 +773,14 @@ export function ProjectsPage() {
           </div>
           <div className='relative'>
             <SlidersHorizontal className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
-            <select value={sortBy} onChange={(event) => setSortBy(event.target.value as 'updated' | 'progress' | 'tasks' | 'name')} className='h-10 w-full rounded-md border bg-background pl-9 pr-8 text-sm'>
+            <select
+              value={sortBy}
+              onChange={(event) => {
+                setSortBy(event.target.value as 'updated' | 'progress' | 'tasks' | 'name')
+                setListPage(1)
+              }}
+              className='h-10 w-full rounded-md border bg-background pl-9 pr-8 text-sm'
+            >
               <option value='updated'>Sort: Updated</option>
               <option value='progress'>Sort: Progress</option>
               <option value='tasks'>Sort: Task volume</option>
@@ -463,111 +790,76 @@ export function ProjectsPage() {
         </div>
       </section>
 
-      <section className='grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
-        {loading ? (
-          <ProjectsGridSkeleton />
-        ) : null}
+      <section>
+        {loading ? (viewMode === 'list' ? <ProjectsListSkeleton /> : <div className='grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'><ProjectsGridSkeleton /></div>) : null}
 
         {!loading && filteredCards.length === 0 ? (
-          <div className='col-span-full rounded-xl border border-dashed bg-muted/10 p-8 text-center'>
+          <div className='rounded-xl border border-dashed bg-muted/10 p-8 text-center'>
             <p className='text-sm font-medium text-foreground'>No projects match your current filters.</p>
             <p className='mt-1 text-sm text-muted-foreground'>Adjust search or create a new project to get started.</p>
           </div>
         ) : null}
 
-        {!loading
-          ? filteredCards.map((card) => (
-              <article
-                key={card.id}
-                className='group rounded-xl border bg-card p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md'
-              >
-                <div className='flex items-start justify-between gap-2'>
-                  <div className='min-w-0'>
-                    <div className='flex items-center gap-2'>
-                      <span className='h-2.5 w-2.5 shrink-0 rounded-full' style={projectDotStyle(card.color)} />
-                      <p className='truncate text-sm font-semibold text-foreground'>{card.name}</p>
-                      {!card.canEdit ? <Lock className='h-3.5 w-3.5 shrink-0 text-muted-foreground' aria-label='Locked project' /> : null}
-                    </div>
-                    <p className='mt-1 text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground'>{card.key}</p>
-                  </div>
-
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant='ghost' size='icon' className='h-7 w-7 rounded-md opacity-75 transition-opacity group-hover:opacity-100'>
-                        <MoreHorizontal className='h-4 w-4' />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align='end' className='w-52 border-border/70 bg-card shadow-[0_10px_28px_rgba(0,0,0,0.25)]'>
-                      <DropdownMenuLabel className='text-xs uppercase tracking-[0.12em] text-muted-foreground'>Project</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem asChild className='gap-2'>
-                        <Link to={`/dashboard/projects/${card.id}`}>
-                          <FolderOpen className='h-4 w-4 text-muted-foreground' />
-                          Open project
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className='gap-2' onSelect={() => openEditProject(card)} disabled={!card.canEdit}>
-                        {card.canEdit ? <PencilLine className='h-4 w-4 text-muted-foreground' /> : <Lock className='h-4 w-4 text-muted-foreground' />}
-                        {card.canEdit ? 'Edit project' : 'Edit locked'}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        className='gap-2'
-                        onClick={() => {
-                          void navigator.clipboard?.writeText(card.key)
-                        }}
-                      >
-                        <Copy className='h-4 w-4 text-muted-foreground' />
-                        Copy code
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-
-                <div className='mt-2 flex items-center justify-between gap-2'>
-                  <Badge className={cn('h-6 rounded-full border px-2.5 text-[11px] font-medium', statusTone(card.status))}>{statusLabel(card.status)}</Badge>
-                  <span className='text-xs text-muted-foreground'>{card.taskCount} tasks</span>
-                </div>
-
-                <Link to={`/dashboard/projects/${card.id}`} className='mt-3 block rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50'>
-                  <p className='line-clamp-2 min-h-[2.5rem] text-xs leading-relaxed text-muted-foreground'>{card.description}</p>
-                </Link>
-
-                <div className='mt-3 space-y-1.5'>
-                  <div className='flex items-center justify-between text-[11px] text-muted-foreground'>
-                    <span>Progress</span>
-                    <span className='font-medium text-foreground'>{card.progressPercent}%</span>
-                  </div>
-                  <div className='h-1.5 rounded-full bg-muted'>
-                    <div className='h-full rounded-full bg-primary transition-[width] duration-300' style={{ width: `${card.progressPercent}%` }} />
-                  </div>
-                </div>
-
-                <div className='mt-3 flex items-center justify-between border-t pt-2.5'>
-                  <div className='flex items-center'>
-                    {card.team.length === 0 ? (
-                      <span className='text-xs text-muted-foreground'>No team assigned</span>
-                    ) : (
-                      card.team.map((member, index) => (
-                        <Avatar key={member.id} className={cn('h-6 w-6 border border-background', index > 0 && '-ml-2')}>
-                          {member.avatar_url ? <AvatarImage src={member.avatar_url} alt={member.full_name ?? 'Team member'} /> : null}
-                          <AvatarFallback className='text-[10px] font-semibold'>{initialsFor(member.full_name ?? 'User')}</AvatarFallback>
-                        </Avatar>
-                      ))
-                    )}
-                  </div>
-                  <Link
-                    to={`/dashboard/projects/${card.id}`}
-                    className='inline-flex items-center gap-1 text-xs font-medium text-primary opacity-80 transition-opacity hover:opacity-100'
+        {!loading ? (
+          viewMode === 'cards' ? (
+            <div className='grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
+              {filteredCards.map((card) => renderProjectCard(card))}
+            </div>
+          ) : (
+            <div className='overflow-hidden rounded-2xl border bg-card shadow-sm'>
+              <div className='overflow-x-auto'>
+                <table className='min-w-[1160px] w-full border-separate border-spacing-0'>
+                  <thead className='sticky top-0 z-10 bg-muted/40'>
+                    <tr className='text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground'>
+                      <th className='px-4 py-3'>Project</th>
+                      <th className='px-4 py-3'>Status</th>
+                      <th className='px-4 py-3'>Tasks</th>
+                      <th className='px-4 py-3'>Progress</th>
+                      <th className='px-4 py-3'>Team</th>
+                      <th className='px-4 py-3'>Updated</th>
+                      <th className='px-4 py-3 text-right'>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleListCards.map((card) => renderProjectList(card))}
+                  </tbody>
+                </table>
+              </div>
+              <div className='flex flex-col gap-3 border-t bg-background/80 px-4 py-3 sm:flex-row sm:items-center sm:justify-between'>
+                <p className='text-sm text-muted-foreground'>
+                  {filteredCards.length === 0
+                    ? 'No projects to show.'
+                    : `Showing ${listStart}-${listEnd} of ${filteredCards.length} projects`}
+                </p>
+                <div className='flex items-center gap-2'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() => setListPage((current) => Math.max(1, current - 1))}
+                    disabled={activeListPage <= 1}
                   >
-                    Open
-                    <ArrowUpRight className='h-3.5 w-3.5' />
-                  </Link>
+                    <ChevronLeft className='h-4 w-4' />
+                    Previous
+                  </Button>
+                  <div className='inline-flex h-9 items-center rounded-md border bg-muted/20 px-3 text-sm font-medium text-foreground'>
+                    Page {activeListPage} of {listPageCount}
+                  </div>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() => setListPage((current) => Math.min(listPageCount, current + 1))}
+                    disabled={activeListPage >= listPageCount}
+                  >
+                    Next
+                    <ChevronRight className='h-4 w-4' />
+                  </Button>
                 </div>
-
-                <p className='mt-2 text-[11px] text-muted-foreground'>Updated {card.lastUpdatedLabel}</p>
-              </article>
-            ))
-          : null}
+              </div>
+            </div>
+          )
+        ) : null}
       </section>
 
       <Dialog open={editProjectOpen} onOpenChange={setEditProjectOpen}>

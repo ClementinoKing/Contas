@@ -639,8 +639,8 @@ function MemberDetailsDialog({
           if (!nextOpen && !actionSaving) setPendingAction(null)
         }}
       >
-        <DialogContent className='max-w-md p-7 sm:p-8'>
-          <DialogHeader>
+        <DialogContent className='max-w-md overflow-hidden p-0'>
+          <DialogHeader className='px-6 pt-6 pb-3 text-left'>
             <DialogTitle>
               {pendingAction === 'delete'
                 ? 'Delete account?'
@@ -657,34 +657,41 @@ function MemberDetailsDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className='rounded-lg border bg-muted/10 p-3'>
-            <p className='text-sm font-medium text-foreground'>{displayName}</p>
-            <p className='mt-1 text-sm text-muted-foreground'>{member?.email ?? 'No email on file'}</p>
-          </div>
+          <div className='px-6 pb-6'>
+            <div className='space-y-6'>
+              <div className='space-y-2 rounded-2xl bg-muted/35 px-4 py-4'>
+                <p className='text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground'>Selected account</p>
+                <div className='space-y-1'>
+                  <p className='text-base font-semibold text-foreground'>{displayName}</p>
+                  <p className='text-sm text-muted-foreground'>{member?.email ?? 'No email on file'}</p>
+                </div>
+              </div>
 
-          <DialogFooter className='gap-2 sm:gap-0'>
-            <Button type='button' variant='outline' onClick={() => setPendingAction(null)} disabled={actionSaving}>
-              Cancel
-            </Button>
-            <Button
-              type='button'
-              variant={pendingAction === 'delete' ? 'destructive' : pendingAction === 'reactivate' ? 'default' : 'default'}
-              className={pendingAction === 'reactivate' ? 'bg-emerald-600 text-white hover:bg-emerald-500' : undefined}
-              onClick={() => {
-                if (!pendingAction) return
-                void handleAccountAction(pendingAction)
-              }}
-              disabled={!pendingAction || actionSaving}
-            >
-              {actionSaving
-                ? 'Processing...'
-                : pendingAction === 'delete'
-                  ? 'Delete account'
-                  : pendingAction === 'reactivate'
-                    ? 'Reactivate account'
-                    : 'Deactivate account'}
-            </Button>
-          </DialogFooter>
+              <div className='flex flex-col-reverse gap-3 sm:flex-row sm:justify-end'>
+                <Button type='button' variant='outline' onClick={() => setPendingAction(null)} disabled={actionSaving}>
+                  Cancel
+                </Button>
+                <Button
+                  type='button'
+                  variant={pendingAction === 'delete' ? 'destructive' : pendingAction === 'reactivate' ? 'default' : 'default'}
+                  className={pendingAction === 'reactivate' ? 'bg-emerald-600 text-white hover:bg-emerald-500' : undefined}
+                  onClick={() => {
+                    if (!pendingAction) return
+                    void handleAccountAction(pendingAction)
+                  }}
+                  disabled={!pendingAction || actionSaving}
+                >
+                  {actionSaving
+                    ? 'Processing...'
+                    : pendingAction === 'delete'
+                      ? 'Delete account'
+                      : pendingAction === 'reactivate'
+                        ? 'Reactivate account'
+                        : 'Deactivate account'}
+                </Button>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </>

@@ -27,6 +27,8 @@ const REQUIRED_SCHEMA_CHECKS: SchemaCheck[] = [
   { key: 'chat_message_mentions', query: 'id,message_id,mentioned_user_id,created_at' },
   { key: 'chat_message_attachments', query: 'id,message_id,storage_bucket,storage_path,file_name,mime_type,file_size_bytes,attachment_kind,created_at' },
   { key: 'chat_room_typing_states', query: 'id,room_id,user_id,is_typing,created_at,updated_at' },
+  { key: 'drive_folders', query: 'id,parent_id,owner_id,visibility,name,sort_order,deleted_at,created_by,created_at,updated_at' },
+  { key: 'drive_documents', query: 'id,folder_id,owner_id,visibility,storage_bucket,storage_path,file_name,mime_type,file_size_bytes,sort_order,deleted_at,uploaded_by,created_at,updated_at' },
   { key: 'goals', query: 'id,title,owner_id,cycle,status,health,confidence,department,due_at' },
   { key: 'goal_key_results', query: 'id,goal_id,title,metric_type,current_value,target_value,due_at,owner_id,source' },
   { key: 'goal_checkins', query: 'id,goal_id,author_id,progress_delta,confidence,created_at' },
