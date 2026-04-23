@@ -10,6 +10,7 @@ import { WorkspacePage } from '@/features/dashboard/pages/workspace-page'
 import { ProjectDetailPage } from '@/features/dashboard/pages/project-detail-page'
 import { ProjectsPage } from '@/features/dashboard/pages/projects-page'
 import { DocumentsPage } from '@/features/dashboard/pages/documents-page'
+import { ToolsPage } from '@/features/dashboard/pages/tools-page'
 import { LoginPage } from '@/features/auth/pages/login-page'
 import { ResetPasswordPage } from '@/features/auth/pages/reset-password-page'
 import { AppShellLayout } from '@/features/layout/components/app-shell-layout'
@@ -61,6 +62,7 @@ export const router = createBrowserRouter([
           { path: 'projects', element: <ProjectsPage /> },
           { path: 'projects/:projectId', element: <ProjectDetailPage /> },
           { path: 'documents', element: <DocumentsPage /> },
+          { path: 'tools', element: <ToolsPage /> },
           { path: 'workspace', element: <WorkspacePage /> },
           { path: 'settings', element: <SettingsPage /> },
         ],

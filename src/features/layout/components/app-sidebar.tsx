@@ -1,4 +1,4 @@
-import { FileText, FolderKanban, LogOut, Moon, Settings, Sun } from 'lucide-react'
+import { FileText, FolderKanban, Grip, LogOut, Moon, Settings, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 
@@ -137,6 +137,21 @@ function SidebarContent({ collapsed, onNavigate }: { collapsed: boolean; onNavig
             >
               <FileText className='h-4 w-4 shrink-0' aria-hidden='true' />
               <span className={cn('ml-3', collapsed && 'sr-only')}>Documents</span>
+            </NavLink>
+            <NavLink
+              to='/dashboard/tools'
+              onClick={onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  'group flex h-10 items-center rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  isActive ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-accent hover:text-accent-foreground',
+                  collapsed && 'justify-center px-0',
+                )
+              }
+              title='Tools'
+            >
+              <Grip className='h-4 w-4 shrink-0' aria-hidden='true' />
+              <span className={cn('ml-3', collapsed && 'sr-only')}>Tools</span>
             </NavLink>
           </section>
         </nav>
