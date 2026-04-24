@@ -5,11 +5,11 @@ import {
   ChevronRight,
   CircleAlert,
   Download,
-  FileText,
   FolderPlus,
   GripVertical,
   Info,
-  Image,
+  LayoutGrid,
+  LayoutList,
   MoreVertical,
   Loader2,
   Search,
@@ -21,11 +21,8 @@ import {
   Upload,
   Trash2,
   UserRound,
-  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
-import { FaFilePdf } from 'react-icons/fa6'
-import { PiMicrosoftExcelLogo, PiMicrosoftPowerpointLogo, PiMicrosoftWordLogo } from 'react-icons/pi'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -37,8 +34,17 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { DocumentViewerModal } from '@/components/document-viewer-modal'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { notify } from '@/lib/notify'
+import {
+  getAttachmentExtension,
+  getDocumentStyle,
+  getDocumentTypeLabel,
+  getDocumentViewerMode,
+  getExcelViewerUrl,
+  parseCsvText,
+} from '@/lib/document-preview'
 import { supabase } from '@/lib/supabase'
 import { deleteDriveDocumentFromR2, resolveR2ObjectUrl, uploadDriveDocumentToR2 } from '@/lib/r2'
 import { cn } from '@/lib/utils'
@@ -187,6 +193,17 @@ function previewWords(value: string, count: number) {
   return `${words.slice(0, count).join(' ')}...`
 }
 
+function formatDocumentUploadDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unknown'
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'Africa/Blantyre',
+  }).format(date)
+}
+
 function hasFilePayload(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes('Files')
 }
@@ -196,68 +213,6 @@ function getUploadStatusLabel(status: UploadStatus) {
   if (status === 'done') return 'Done'
   if (status === 'error') return 'Failed'
   return 'Uploading'
-}
-
-function getAttachmentExtension(fileName: string) {
-  return fileName.split('.').pop()?.toLowerCase() ?? ''
-}
-
-function isImageAttachmentName(fileName: string) {
-  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif'].includes(getAttachmentExtension(fileName))
-}
-
-function getDocumentStyle(name: string) {
-  const extension = getAttachmentExtension(name)
-  if (isImageAttachmentName(name)) {
-    return {
-      shellClassName: 'border-sky-500/20 bg-gradient-to-br from-sky-500/10 via-background to-background',
-      iconClassName: 'text-sky-600',
-      Icon: Image,
-    }
-  }
-  if (extension === 'pdf') {
-    return {
-      shellClassName: 'border-rose-500/20 bg-gradient-to-br from-rose-500/10 via-background to-background',
-      iconClassName: 'text-rose-600',
-      Icon: FaFilePdf,
-    }
-  }
-  if (extension === 'docx' || extension === 'doc' || extension === 'odt' || extension === 'rtf') {
-    return {
-      shellClassName: 'border-sky-500/20 bg-gradient-to-br from-sky-500/10 via-background to-background',
-      iconClassName: 'text-sky-600',
-      Icon: PiMicrosoftWordLogo,
-    }
-  }
-  if (extension === 'xlsx' || extension === 'xls' || extension === 'csv' || extension === 'ods') {
-    return {
-      shellClassName: 'border-emerald-500/20 bg-gradient-to-br from-emerald-500/10 via-background to-background',
-      iconClassName: 'text-emerald-600',
-      Icon: PiMicrosoftExcelLogo,
-    }
-  }
-  if (extension === 'pptx' || extension === 'ppt' || extension === 'odp') {
-    return {
-      shellClassName: 'border-amber-500/20 bg-gradient-to-br from-amber-500/10 via-background to-background',
-      iconClassName: 'text-amber-600',
-      Icon: PiMicrosoftPowerpointLogo,
-    }
-  }
-
-  return {
-    shellClassName: 'border-border/70 bg-gradient-to-br from-muted/50 via-background to-background',
-    iconClassName: 'text-muted-foreground',
-    Icon: FileText,
-  }
-}
-
-function getDocumentTypeLabel(name: string) {
-  const extension = getAttachmentExtension(name)
-  if (isImageAttachmentName(name)) return 'IMG'
-  if (extension === 'xlsx' || extension === 'xls' || extension === 'csv' || extension === 'ods') return 'SHEET'
-  if (extension === 'docx' || extension === 'doc' || extension === 'odt' || extension === 'rtf') return 'DOC'
-  if (extension === 'pptx' || extension === 'ppt' || extension === 'odp') return 'PPT'
-  return extension ? extension.toUpperCase() : 'FILE'
 }
 
 function getProfileDisplayName(profile?: Pick<UserProfileSummary, 'fullName' | 'username' | 'email'> | null) {
@@ -301,94 +256,6 @@ function getDocumentFilterCategory(file: DriveDocument): DocumentFilter {
   }
 
   return 'docs'
-}
-
-function getDocumentViewerMode(fileName: string, mimeType?: string | null) {
-  const extension = getAttachmentExtension(fileName)
-  const normalizedMimeType = (mimeType ?? '').toLowerCase()
-
-  if (
-    normalizedMimeType.startsWith('image/') ||
-    ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif'].includes(extension)
-  ) {
-    return 'image' as const
-  }
-
-  if (normalizedMimeType.includes('pdf') || extension === 'pdf') {
-    return 'pdf' as const
-  }
-
-  if (normalizedMimeType.includes('csv') || extension === 'csv') {
-    return 'csv' as const
-  }
-
-  return 'office' as const
-}
-
-function getOfficeViewerUrl(url: string) {
-  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`
-}
-
-function getExcelViewerUrl(url: string) {
-  return `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(url)}`
-}
-
-function parseCsvText(text: string) {
-  const rows: string[][] = []
-  let currentRow: string[] = []
-  let currentCell = ''
-  let inQuotes = false
-
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]
-    const next = text[index + 1]
-
-    if (inQuotes) {
-      if (char === '"' && next === '"') {
-        currentCell += '"'
-        index += 1
-        continue
-      }
-      if (char === '"') {
-        inQuotes = false
-        continue
-      }
-      currentCell += char
-      continue
-    }
-
-    if (char === '"') {
-      inQuotes = true
-      continue
-    }
-
-    if (char === ',') {
-      currentRow.push(currentCell)
-      currentCell = ''
-      continue
-    }
-
-    if (char === '\r') {
-      continue
-    }
-
-    if (char === '\n') {
-      currentRow.push(currentCell)
-      rows.push(currentRow)
-      currentRow = []
-      currentCell = ''
-      continue
-    }
-
-    currentCell += char
-  }
-
-  currentRow.push(currentCell)
-  if (currentRow.some((cell) => cell.trim().length > 0) || rows.length === 0) {
-    rows.push(currentRow)
-  }
-
-  return rows.filter((row) => row.some((cell) => cell.trim().length > 0))
 }
 
 function FolderMark({ className, active = false }: { className?: string; active?: boolean }) {
@@ -561,7 +428,7 @@ export function DocumentsPage() {
   })
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [documentLayout, setDocumentLayout] = useState<DocumentLayout>('cards')
+  const [documentLayout, setDocumentLayout] = useState<DocumentLayout>('list')
   const [documentFilter, setDocumentFilter] = useState<DocumentFilter>('all')
   const [documentSort, setDocumentSort] = useState<DocumentSort>('newest')
   const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false)
@@ -599,13 +466,17 @@ export function DocumentsPage() {
       return false
     }
 
+    const ownerIds = Array.from(
+      new Set((documentsResult.data ?? []).map((document) => document.owner_id).filter((value): value is string => Boolean(value))),
+    )
     const uploadedByIds = Array.from(
       new Set((documentsResult.data ?? []).map((document) => document.uploaded_by).filter((value): value is string => Boolean(value))),
     )
+    const profileIds = Array.from(new Set([...ownerIds, ...uploadedByIds]))
 
     let profileMap: Record<string, UserProfileSummary> = {}
-    if (uploadedByIds.length > 0) {
-      const profilesResult = await supabase.from('profiles').select('id,full_name,username,email').in('id', uploadedByIds)
+    if (profileIds.length > 0) {
+      const profilesResult = await supabase.from('profiles').select('id,full_name,username,email').in('id', profileIds)
       if (profilesResult.error) {
         setStatusMessage(profilesResult.error.message)
       } else {
@@ -786,13 +657,16 @@ export function DocumentsPage() {
     }
     return getProfileDisplayName(selectedInfoDocumentUploader)
   }, [currentUser?.id, selectedInfoDocument, selectedInfoDocumentUploader])
+  const getDocumentUploaderLabel = (document: DriveDocument) => {
+    if (document.uploadedBy && document.uploadedBy === currentUser?.id) {
+      return 'You'
+    }
+    if (!document.uploadedBy) return 'Unknown'
+    return getProfileDisplayName(userProfilesById[document.uploadedBy] ?? null)
+  }
   const selectedDocumentViewerMode = useMemo(
     () => (selectedDocument ? getDocumentViewerMode(selectedDocument.name, selectedDocument.mimeType) : null),
     [selectedDocument],
-  )
-  const selectedDocumentOfficeUrl = useMemo(
-    () => (previewUrl && selectedDocumentViewerMode === 'office' ? getOfficeViewerUrl(previewUrl) : null),
-    [previewUrl, selectedDocumentViewerMode],
   )
   const selectedDocumentExcelUrl = useMemo(
     () => (previewUrl && selectedDocumentViewerMode === 'csv' ? getExcelViewerUrl(previewUrl) : null),
@@ -1023,14 +897,15 @@ export function DocumentsPage() {
     if (state.view === 'trash') return
     const entries = Array.from(files)
     if (entries.length === 0) return
-    setUploading(true)
-    setStatusMessage(null)
     const resolvedTargetFolderId = targetFolderId ?? null
     if (!resolvedTargetFolderId) {
-      setStatusMessage('Open a folder to upload files.')
-      setUploading(false)
+      notify.error('Upload blocked', {
+        description: 'Open a folder to upload files.',
+      })
       return
     }
+    setUploading(true)
+    setStatusMessage(null)
     const resolvedTargetLabel =
       folderMap.get(resolvedTargetFolderId)?.name ??
       currentFolderLabel
@@ -1194,7 +1069,9 @@ export function DocumentsPage() {
 
     if (hasFilePayload(event)) {
       if (targetFolderId === null) {
-        setStatusMessage('Open a folder to upload files.')
+        notify.error('Upload blocked', {
+          description: 'Open a folder to upload files.',
+        })
         return
       }
       void handleUpload(event.dataTransfer.files, targetFolderId)
@@ -1479,7 +1356,7 @@ export function DocumentsPage() {
         onChange={(event) => {
           const files = event.target.files
           if (files) {
-            void handleUpload(files)
+            void handleUpload(files, state.activeFolderId)
             event.target.value = ''
           }
         }}
@@ -1770,6 +1647,38 @@ export function DocumentsPage() {
                 )}
               </div>
               <div className='flex flex-wrap items-center gap-3'>
+                {!isTrashView ? (
+                  <div className='inline-flex rounded-lg border bg-background p-1 shadow-sm'>
+                    <button
+                      type='button'
+                      onClick={() => setDocumentLayout('list')}
+                      aria-pressed={documentLayout === 'list'}
+                      className={cn(
+                        'inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors',
+                        documentLayout === 'list'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                      )}
+                    >
+                      <LayoutList className='h-4 w-4' />
+                      List
+                    </button>
+                    <button
+                      type='button'
+                      onClick={() => setDocumentLayout('cards')}
+                      aria-pressed={documentLayout === 'cards'}
+                      className={cn(
+                        'inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors',
+                        documentLayout === 'cards'
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                      )}
+                    >
+                      <LayoutGrid className='h-4 w-4' />
+                      Cards
+                    </button>
+                  </div>
+                ) : null}
                 <div className='relative w-full min-w-[240px] lg:w-[320px]'>
                   <Search className='pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground' />
                   <Input
@@ -1949,7 +1858,12 @@ export function DocumentsPage() {
                     </div>
 
                     {currentFolders.length > 0 ? (
-                      <div className='grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
+                      <div
+                        className={cn(
+                          'grid gap-4 sm:grid-cols-2',
+                          documentLayout === 'list' ? 'lg:grid-cols-3 xl:grid-cols-4' : 'xl:grid-cols-3 2xl:grid-cols-4',
+                        )}
+                      >
                         {currentFolders.map((folder) => {
                           const isActive = folder.id === activeFolderId
                           const isTarget = dropTarget === folder.id
@@ -1959,6 +1873,7 @@ export function DocumentsPage() {
                           const overview = folderOverview.get(folder.id)
                           const documentCount = overview?.documents ?? childDocuments
                           const folderCount = overview?.folders ?? childFolders
+                          const compactFolderLayout = documentLayout === 'list'
 
                           return (
                             <div
@@ -1988,7 +1903,8 @@ export function DocumentsPage() {
                                 }
                               }}
                               className={cn(
-                                'group relative overflow-hidden rounded-[1.6rem] border border-border/70 bg-card/80 p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md',
+                                'group relative overflow-hidden border border-border/70 bg-card/80 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-md',
+                                compactFolderLayout ? 'rounded-2xl p-3' : 'rounded-[1.6rem] p-4',
                                 isSharedRoot ? 'cursor-default' : 'cursor-grab active:cursor-grabbing',
                                 isActive && 'border-primary/40 bg-primary/5',
                                 isTarget && 'ring-2 ring-primary/30',
@@ -2032,13 +1948,16 @@ export function DocumentsPage() {
                                 </DropdownMenu>
                               </div>
 
-                              <div className='flex flex-col items-start pt-4'>
-                                <FolderMark active={isActive} className='h-24 w-32' />
-                                <div className='mt-3 min-w-0'>
+                              <div className={cn('min-w-0', compactFolderLayout ? 'flex items-center gap-3 pr-10' : 'flex flex-col items-start pt-4')}>
+                                <FolderMark active={isActive} className={compactFolderLayout ? 'h-8 w-10 shrink-0' : 'h-24 w-32'} />
+                                <div className={cn('min-w-0', compactFolderLayout ? 'flex-1' : 'mt-3')}>
                                   <p className='truncate text-sm font-semibold text-foreground'>{folder.name}</p>
-                                  <p className='mt-1 text-xs text-muted-foreground'>
-                                    {folderCount} subfolder{folderCount === 1 ? '' : 's'} · {documentCount} document{documentCount === 1 ? '' : 's'}
-                                  </p>
+                                  {!compactFolderLayout ? (
+                                    <p className='mt-1 text-xs text-muted-foreground'>
+                                      {folderCount} subfolder{folderCount === 1 ? '' : 's'} · {documentCount} document
+                                      {documentCount === 1 ? '' : 's'}
+                                    </p>
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
@@ -2069,26 +1988,6 @@ export function DocumentsPage() {
                               Sort: {selectedDocumentSortLabel}
                             </Badge>
                           ) : null}
-                          <div className='flex items-center gap-1 rounded-full border border-border/70 bg-card/70 p-1'>
-                            <Button
-                              type='button'
-                              variant={documentLayout === 'cards' ? 'secondary' : 'ghost'}
-                              size='sm'
-                              className='h-8 rounded-full px-3 text-xs'
-                              onClick={() => setDocumentLayout('cards')}
-                            >
-                              Cards
-                            </Button>
-                            <Button
-                              type='button'
-                              variant={documentLayout === 'list' ? 'secondary' : 'ghost'}
-                              size='sm'
-                              className='h-8 rounded-full px-3 text-xs'
-                              onClick={() => setDocumentLayout('list')}
-                            >
-                              List
-                            </Button>
-                          </div>
                         </div>
                       </div>
 
@@ -2203,8 +2102,10 @@ export function DocumentsPage() {
                         </div>
                       ) : (
                         <div className='space-y-2'>
-                          <div className='hidden grid-cols-[minmax(0,1fr)_110px_56px] items-center gap-4 px-4 pb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground md:grid'>
+                          <div className='hidden grid-cols-[minmax(0,1fr)_180px_140px_110px_56px] items-center gap-4 px-4 pb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground md:grid'>
                             <span>Name</span>
+                            <span>Uploaded by</span>
+                            <span>Uploaded</span>
                             <span className='text-right'>Type</span>
                             <span className='text-right'>Actions</span>
                           </div>
@@ -2213,6 +2114,8 @@ export function DocumentsPage() {
                             const folderName = folderMap.get(document.folderId ?? '')?.name ?? 'My Drive'
                             const documentStyle = getDocumentStyle(document.name)
                             const DocumentIcon = documentStyle.Icon
+                            const uploaderLabel = getDocumentUploaderLabel(document)
+                            const uploadedLabel = formatDocumentUploadDate(document.uploadedAt)
 
                             return (
                               <div
@@ -2227,7 +2130,7 @@ export function DocumentsPage() {
                                   }
                                 }}
                                 className={cn(
-                                  'group grid gap-3 rounded-2xl border border-border/70 bg-card/70 px-3 py-2.5 shadow-sm transition-colors hover:bg-accent/30 md:grid-cols-[minmax(0,1fr)_110px_56px] md:items-center',
+                                  'group grid gap-3 rounded-2xl border border-border/70 bg-card/70 px-3 py-2.5 shadow-sm transition-colors hover:bg-accent/30 md:grid-cols-[minmax(0,1fr)_180px_140px_110px_56px] md:items-center',
                                   isPreview && 'border-primary/40 bg-primary/5',
                                 )}
                               >
@@ -2237,6 +2140,14 @@ export function DocumentsPage() {
                                     <p className='truncate text-sm font-medium leading-none text-foreground'>{document.name}</p>
                                     <p className='mt-0.5 text-xs text-muted-foreground'>{folderName}</p>
                                   </div>
+                                </div>
+
+                                <div className='flex min-w-0 items-center md:justify-start'>
+                                  <span className='truncate text-sm text-muted-foreground'>{uploaderLabel}</span>
+                                </div>
+
+                                <div className='flex min-w-0 items-center md:justify-start'>
+                                  <span className='truncate text-sm text-muted-foreground'>{uploadedLabel}</span>
                                 </div>
 
                                 <div className='flex items-center justify-end md:justify-end'>
@@ -2339,201 +2250,70 @@ export function DocumentsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(selectedDocument)} onOpenChange={(open) => !open && setPreviewDocumentId(null)}>
-        <DialogContent
-          showClose={false}
-          className='left-0 top-0 h-[100dvh] max-h-[100dvh] w-[100vw] max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 shadow-none'
-        >
-          <DialogTitle className='sr-only'>{selectedDocument?.name ?? 'Document preview'}</DialogTitle>
-          <DialogDescription className='sr-only'>
-            Full-screen document viewer for images, PDFs, and office documents.
-          </DialogDescription>
-
-          <div className='flex h-full flex-col overflow-hidden bg-background'>
-            <div className='flex items-start justify-between gap-4 border-b border-border/70 px-4 py-3 sm:px-6'>
-              <div className='min-w-0 space-y-1'>
-                <div className='flex flex-wrap items-center gap-2'>
-                  <h3 className='truncate text-sm font-semibold text-foreground'>{selectedDocument?.name ?? 'Document'}</h3>
-                  {selectedDocument ? (
-                    <Badge variant='secondary' className='rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.16em]'>
-                      {getFileKind(selectedDocument)}
-                    </Badge>
-                  ) : null}
-                </div>
-                <p className='text-xs text-muted-foreground'>
-                  {selectedDocument ? folderMap.get(selectedDocument.folderId ?? '')?.name ?? 'My Drive' : ''}
-                </p>
-              </div>
-
-              <div className='flex items-center gap-2'>
-                {previewUrl ? (
-                  <>
-                    <Button
-                      type='button'
-                      variant='outline'
-                      size='sm'
-                      onClick={() => {
-                        const targetUrl = selectedDocumentViewerMode === 'csv' ? selectedDocumentExcelUrl ?? previewUrl : previewUrl
-                        window.open(targetUrl, '_blank', 'noopener,noreferrer')
-                      }}
-                    >
-                      <ArrowUpRight className='mr-2 h-4 w-4' aria-hidden='true' />
-                      {selectedDocumentViewerMode === 'csv' ? 'Open in Excel' : 'Open file'}
-                    </Button>
-                    <Button
-                      type='button'
-                      variant='outline'
-                      size='sm'
-                      onClick={() => {
-                        const link = document.createElement('a')
-                        link.href = previewUrl
-                        link.download = selectedDocument?.name ?? 'document'
-                        link.rel = 'noopener noreferrer'
-                        document.body.appendChild(link)
-                        link.click()
-                        link.remove()
-                      }}
-                    >
-                      <Download className='mr-2 h-4 w-4' aria-hidden='true' />
-                      Download
-                    </Button>
-                  </>
-                ) : null}
-                {selectedDocument ? (
+      <DocumentViewerModal
+        open={Boolean(selectedDocument)}
+        title={selectedDocument?.name ?? 'Document preview'}
+        subtitle={selectedDocument ? folderMap.get(selectedDocument.folderId ?? '')?.name ?? 'My Drive' : null}
+        kindLabel={selectedDocument ? getFileKind(selectedDocument) : null}
+        viewerMode={selectedDocumentViewerMode}
+        resolvedUrl={previewUrl}
+        loading={previewLoading}
+        csvRows={selectedDocumentCsvRows}
+        csvLoading={csvPreviewLoading}
+        csvError={csvPreviewError}
+        onClose={() => setPreviewDocumentId(null)}
+        headerActions={
+          selectedDocument ? (
+            <>
+              {previewUrl ? (
+                <>
                   <Button
                     type='button'
-                    variant='destructive'
+                    variant='outline'
                     size='sm'
                     onClick={() => {
-                      softDeleteDocument(selectedDocument.id)
-                      setPreviewDocumentId(null)
+                      const targetUrl = selectedDocumentViewerMode === 'csv' ? selectedDocumentExcelUrl ?? previewUrl : previewUrl
+                      window.open(targetUrl, '_blank', 'noopener,noreferrer')
                     }}
                   >
-                    <Trash2 className='mr-2 h-4 w-4' aria-hidden='true' />
-                    Move to trash
+                    <ArrowUpRight className='mr-2 h-4 w-4' aria-hidden='true' />
+                    {selectedDocumentViewerMode === 'csv' ? 'Open in Excel' : 'Open file'}
                   </Button>
-                ) : null}
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='icon'
-                  className='h-9 w-9 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
-                  onClick={() => setPreviewDocumentId(null)}
-                  aria-label='Close viewer'
-                >
-                  <X className='h-4 w-4' aria-hidden='true' />
-                </Button>
-              </div>
-            </div>
-
-            <div className='flex min-h-0 flex-1 items-stretch justify-center bg-black/95'>
-              {!selectedDocument ? (
-                <div className='flex h-full w-full items-center justify-center p-8 text-center text-sm text-muted-foreground'>
-                  <div className='max-w-md space-y-2'>
-                    <p className='font-medium text-foreground'>Preview unavailable</p>
-                    <p>This file can still be opened in a new tab using the action in the header.</p>
-                  </div>
-                </div>
-              ) : previewLoading ? (
-                <div className='flex h-full w-full items-center justify-center p-8 text-center'>
-                  <div className='max-w-sm space-y-3'>
-                    <FileText className='mx-auto h-10 w-10 animate-pulse text-muted-foreground' />
-                    <p className='text-sm font-medium text-foreground'>Loading preview...</p>
-                  </div>
-                </div>
-              ) : !previewUrl ? (
-                <div className='flex h-full w-full items-center justify-center p-8 text-center text-sm text-muted-foreground'>
-                  <div className='max-w-md space-y-2'>
-                    <p className='font-medium text-foreground'>Preview unavailable</p>
-                    <p>This file can still be opened in a new tab using the action in the header.</p>
-                  </div>
-                </div>
-              ) : selectedDocumentViewerMode === 'image' ? (
-                <div className='flex h-full w-full items-center justify-center p-4 sm:p-6'>
-                  <img
-                    src={previewUrl}
-                    alt={selectedDocument.name}
-                    className='max-h-full max-w-full rounded-2xl object-contain shadow-[0_20px_60px_hsl(var(--foreground)/0.2)]'
-                  />
-                </div>
-              ) : selectedDocumentViewerMode === 'pdf' ? (
-                <iframe title={selectedDocument.name} src={previewUrl} className='h-full w-full border-0 bg-background' />
-              ) : selectedDocumentViewerMode === 'csv' ? (
-                <div className='flex h-full w-full items-stretch justify-center bg-background p-4 sm:p-6'>
-                  <div className='w-full max-w-[1400px] overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm'>
-                    {csvPreviewLoading ? (
-                      <div className='flex min-h-[18rem] items-center justify-center p-8 text-center'>
-                        <div className='max-w-sm space-y-3'>
-                          <Loader2 className='mx-auto h-10 w-10 animate-spin text-muted-foreground' />
-                          <p className='text-sm font-medium text-foreground'>Loading CSV preview...</p>
-                        </div>
-                      </div>
-                    ) : csvPreviewError ? (
-                      <div className='flex min-h-[18rem] items-center justify-center p-8 text-center text-sm text-muted-foreground'>
-                        <div className='max-w-md space-y-2'>
-                          <p className='font-medium text-foreground'>CSV preview unavailable</p>
-                          <p>{csvPreviewError}</p>
-                        </div>
-                      </div>
-                    ) : selectedDocumentCsvRows.length === 0 ? (
-                      <div className='flex min-h-[18rem] items-center justify-center p-8 text-center text-sm text-muted-foreground'>
-                        <div className='max-w-md space-y-2'>
-                          <p className='font-medium text-foreground'>CSV file is empty</p>
-                          <p>This file does not contain any previewable rows.</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className='max-h-full overflow-auto'>
-                        <table className='min-w-full border-collapse text-sm'>
-                          <thead className='sticky top-0 z-10 bg-card/95 backdrop-blur'>
-                            <tr className='border-b border-border/70'>
-                              {selectedDocumentCsvRows[0].map((cell, index) => (
-                                <th
-                                  key={`csv-head-${index}`}
-                                  className='whitespace-nowrap border-r border-border/70 px-4 py-3 text-left text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground last:border-r-0'
-                                >
-                                  {cell || `Column ${index + 1}`}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {selectedDocumentCsvRows.slice(1).map((row, rowIndex) => (
-                              <tr key={`csv-row-${rowIndex}`} className='border-b border-border/50 last:border-b-0'>
-                                {row.map((cell, cellIndex) => (
-                                  <td
-                                    key={`csv-row-${rowIndex}-cell-${cellIndex}`}
-                                    className='max-w-[18rem] border-r border-border/50 px-4 py-3 align-top text-foreground last:border-r-0'
-                                  >
-                                    <span className='block break-words'>{cell || '\u00A0'}</span>
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <iframe
-                  title={selectedDocument.name}
-                  src={selectedDocumentOfficeUrl ?? previewUrl}
-                  className='h-full w-full border-0 bg-background'
-                />
-              )}
-            </div>
-
-            <div className='border-t border-border/70 px-4 py-3 text-xs text-muted-foreground sm:px-6'>
-              <p>
-                Documents open in the built-in viewer when possible. If a file does not render inline, use{' '}
-                <span className='font-medium text-foreground'>Open file</span> or <span className='font-medium text-foreground'>Download</span>.
-              </p>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={() => {
+                      const link = document.createElement('a')
+                      link.href = previewUrl
+                      link.download = selectedDocument?.name ?? 'document'
+                      link.rel = 'noopener noreferrer'
+                      document.body.appendChild(link)
+                      link.click()
+                      link.remove()
+                    }}
+                  >
+                    <Download className='mr-2 h-4 w-4' aria-hidden='true' />
+                    Download
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                type='button'
+                variant='destructive'
+                size='sm'
+                onClick={() => {
+                  softDeleteDocument(selectedDocument.id)
+                  setPreviewDocumentId(null)
+                }}
+              >
+                <Trash2 className='mr-2 h-4 w-4' aria-hidden='true' />
+                Move to trash
+              </Button>
+            </>
+          ) : null
+        }
+      />
 
       <Dialog open={Boolean(selectedInfoDocument)} onOpenChange={(open) => !open && setInfoDocumentId(null)}>
         <DialogContent className='max-w-lg overflow-hidden p-0'>

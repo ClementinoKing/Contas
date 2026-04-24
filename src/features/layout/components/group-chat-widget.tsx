@@ -16,8 +16,6 @@ import {
   Users2,
   X,
 } from 'lucide-react'
-import { FaFilePdf } from 'react-icons/fa6'
-import { PiMicrosoftExcelLogo, PiMicrosoftPowerpointLogo, PiMicrosoftWordLogo } from 'react-icons/pi'
 import {
   useCallback,
   useEffect,
@@ -25,7 +23,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
   type ChangeEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent,
@@ -37,8 +34,17 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { DocumentViewerModal } from '@/components/document-viewer-modal'
 import { useAuth } from '@/features/auth/context/auth-context'
 import { dispatchNotificationEmails } from '@/features/notifications/lib/email-delivery'
+import {
+  getAttachmentExtension,
+  getDocumentStyle,
+  getDocumentTypeLabel,
+  getDocumentViewerMode as getAttachmentViewerMode,
+  parseCsvText,
+  type DocumentViewerMode,
+} from '@/lib/document-preview'
 import { notify } from '@/lib/notify'
 import { optimizeImageFileForUpload, resolveR2ObjectUrl, uploadChatAttachmentToR2, uploadChatVoiceToR2 } from '@/lib/r2'
 import { supabase } from '@/lib/supabase'
@@ -73,12 +79,6 @@ type MentionOption = {
   role: string
   username: string
   avatarUrl?: string | null
-}
-
-type DocumentStyle = {
-  shellClassName: string
-  iconClassName: string
-  Icon: ComponentType<{ className?: string }>
 }
 
 type ChatRoomRow = {
@@ -171,7 +171,7 @@ type AttachmentViewerState = {
   displaySize: string
   publicUrl: string | null
   mimeType: string | null
-  viewerMode: 'image' | 'pdf' | 'office'
+  viewerMode: DocumentViewerMode
 }
 
 type ReplyPreviewMessage = {
@@ -230,80 +230,6 @@ type ChatCachePayload = {
   profiles: ChatProfileRow[]
   roomMembers: ChatRoomMemberRow[]
   messages: ChatMessage[]
-}
-
-function getAttachmentExtension(name: string) {
-  const rawExtension = name.split('.').pop()?.toLowerCase() ?? ''
-  if (rawExtension === 'pttx') return 'pptx'
-  return rawExtension
-}
-
-function getDocumentStyle(name: string): DocumentStyle {
-  const extension = getAttachmentExtension(name)
-  if (extension === 'pdf') {
-    return {
-      shellClassName: 'border-rose-500/20 bg-gradient-to-br from-rose-500/10 via-background to-background',
-      iconClassName: 'text-rose-600',
-      Icon: FaFilePdf,
-    }
-  }
-  if (extension === 'docx' || extension === 'doc' || extension === 'odt' || extension === 'rtf') {
-    return {
-      shellClassName: 'border-sky-500/20 bg-gradient-to-br from-sky-500/10 via-background to-background',
-      iconClassName: 'text-sky-600',
-      Icon: PiMicrosoftWordLogo,
-    }
-  }
-  if (extension === 'xlsx' || extension === 'xls' || extension === 'csv' || extension === 'ods') {
-    return {
-      shellClassName: 'border-emerald-500/20 bg-gradient-to-br from-emerald-500/10 via-background to-background',
-      iconClassName: 'text-emerald-600',
-      Icon: PiMicrosoftExcelLogo,
-    }
-  }
-  if (extension === 'pptx' || extension === 'ppt' || extension === 'odp') {
-    return {
-      shellClassName: 'border-amber-500/20 bg-gradient-to-br from-amber-500/10 via-background to-background',
-      iconClassName: 'text-amber-600',
-      Icon: PiMicrosoftPowerpointLogo,
-    }
-  }
-
-  return {
-    shellClassName: 'border-border/70 bg-gradient-to-br from-muted/50 via-background to-background',
-    iconClassName: 'text-muted-foreground',
-    Icon: FileText,
-  }
-}
-
-function getDocumentTypeLabel(name: string) {
-  const extension = getAttachmentExtension(name)
-  if (extension === 'xlsx' || extension === 'xls' || extension === 'csv' || extension === 'ods') return 'SHEET'
-  if (extension === 'docx' || extension === 'doc' || extension === 'odt' || extension === 'rtf') return 'DOC'
-  if (extension === 'pptx' || extension === 'ppt' || extension === 'odp') return 'PPT'
-  return extension ? extension.toUpperCase() : 'FILE'
-}
-
-function getAttachmentViewerMode(fileName: string, mimeType?: string | null) {
-  const extension = getAttachmentExtension(fileName)
-  const normalizedMimeType = (mimeType ?? '').toLowerCase()
-
-  if (
-    normalizedMimeType.startsWith('image/') ||
-    ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'heic', 'heif'].includes(extension)
-  ) {
-    return 'image' as const
-  }
-
-  if (normalizedMimeType.includes('pdf') || extension === 'pdf') {
-    return 'pdf' as const
-  }
-
-  return 'office' as const
-}
-
-function getOfficeViewerUrl(url: string) {
-  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`
 }
 
 function createLocalId() {
@@ -1004,127 +930,6 @@ function MessageAttachmentPreview({
   )
 }
 
-function DocumentViewerModal({
-  attachment,
-  onClose,
-}: {
-  attachment: AttachmentViewerState | null
-  onClose: () => void
-}) {
-  const resolvedUrl = attachment?.publicUrl ?? null
-  const officeViewerUrl = resolvedUrl ? getOfficeViewerUrl(resolvedUrl) : null
-
-  const handleOpenOriginal = () => {
-    if (!resolvedUrl) return
-    window.open(resolvedUrl, '_blank', 'noopener,noreferrer')
-  }
-
-  const handleDownloadOriginal = () => {
-    if (!resolvedUrl) return
-
-    const link = document.createElement('a')
-    link.href = resolvedUrl
-    link.download = attachment?.fileName ?? 'attachment'
-    link.rel = 'noopener noreferrer'
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-  }
-
-  return (
-    <Dialog open={Boolean(attachment)} onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent
-        showClose={false}
-        style={{ zIndex: 90 }}
-        className='left-0 top-0 h-[100dvh] max-h-[100dvh] w-[100vw] max-w-none translate-x-0 translate-y-0 rounded-none border-0 bg-background p-0 shadow-none'
-      >
-        <DialogTitle className='sr-only'>{attachment?.fileName ?? 'Attachment viewer'}</DialogTitle>
-        <DialogDescription className='sr-only'>
-          Full-screen attachment viewer for images, PDFs, and office documents.
-        </DialogDescription>
-        <div className='flex h-full flex-col overflow-hidden bg-background'>
-          <div className='flex items-start justify-between gap-4 border-b border-border/70 px-4 py-3 sm:px-6'>
-            <div className='min-w-0 space-y-1'>
-              <div className='flex flex-wrap items-center gap-2'>
-                <h3 className='truncate text-sm font-semibold text-foreground'>{attachment?.fileName ?? 'Attachment'}</h3>
-                {attachment ? (
-                  <Badge variant='secondary' className='rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.16em]'>
-                    {getDocumentTypeLabel(attachment.fileName)}
-                  </Badge>
-                ) : null}
-              </div>
-              <p className='text-xs text-muted-foreground'>{attachment?.displaySize ?? ''}</p>
-            </div>
-
-            <div className='flex items-center gap-2'>
-              {resolvedUrl ? (
-                <>
-                  <Button type='button' variant='outline' size='sm' onClick={handleDownloadOriginal}>
-                    <Download className='mr-2 h-4 w-4' aria-hidden='true' />
-                    Download
-                  </Button>
-                  <Button type='button' variant='outline' size='sm' onClick={handleOpenOriginal}>
-                    <ExternalLink className='mr-2 h-4 w-4' aria-hidden='true' />
-                    Open file
-                  </Button>
-                </>
-              ) : null}
-              <Button
-                type='button'
-                variant='ghost'
-                size='icon'
-                className='h-9 w-9 rounded-full text-muted-foreground hover:bg-accent hover:text-foreground'
-                onClick={onClose}
-                aria-label='Close viewer'
-              >
-                <X className='h-4 w-4' aria-hidden='true' />
-              </Button>
-            </div>
-          </div>
-
-          <div className='flex min-h-0 flex-1 items-stretch justify-center bg-black/95'>
-            {!attachment || !resolvedUrl ? (
-              <div className='flex h-full w-full items-center justify-center p-8 text-center text-sm text-muted-foreground'>
-                <div className='max-w-md space-y-2'>
-                  <p className='font-medium text-foreground'>Preview unavailable</p>
-                  <p>This file can still be opened in a new tab using the action in the header.</p>
-                </div>
-              </div>
-            ) : attachment.viewerMode === 'image' ? (
-              <div className='flex h-full w-full items-center justify-center p-4 sm:p-6'>
-                <img
-                  src={resolvedUrl}
-                  alt={attachment.fileName}
-                  className='max-h-full max-w-full rounded-2xl object-contain shadow-[0_20px_60px_hsl(var(--foreground)/0.2)]'
-                />
-              </div>
-            ) : attachment.viewerMode === 'pdf' ? (
-              <iframe
-                src={resolvedUrl}
-                title={attachment.fileName}
-                className='h-full w-full border-0 bg-background'
-              />
-            ) : (
-              <iframe
-                src={officeViewerUrl ?? resolvedUrl}
-                title={attachment.fileName}
-                className='h-full w-full border-0 bg-background'
-              />
-            )}
-          </div>
-
-          <div className='border-t border-border/70 px-4 py-3 text-xs text-muted-foreground sm:px-6'>
-            <p>
-              Documents open in the built-in viewer when possible. If a file does not render inline, use{' '}
-              <span className='font-medium text-foreground'>Open file</span> or <span className='font-medium text-foreground'>Download</span>.
-            </p>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 function MessageBubble({
   message,
   knownHandles,
@@ -1302,6 +1107,9 @@ export function GroupChatWidget() {
   const [messageActionTarget, setMessageActionTarget] = useState<ChatMessage | null>(null)
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null)
   const [attachmentViewer, setAttachmentViewer] = useState<AttachmentViewerState | null>(null)
+  const [attachmentCsvText, setAttachmentCsvText] = useState<string | null>(null)
+  const [attachmentCsvLoading, setAttachmentCsvLoading] = useState(false)
+  const [attachmentCsvError, setAttachmentCsvError] = useState<string | null>(null)
   const [isDraggingFiles, setIsDraggingFiles] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -2212,6 +2020,48 @@ export function GroupChatWidget() {
       viewerMode: getAttachmentViewerMode(attachment.file_name, attachment.mime_type),
     })
   }, [])
+
+  const attachmentCsvRows = useMemo(
+    () => (attachmentCsvText ? parseCsvText(attachmentCsvText) : []),
+    [attachmentCsvText],
+  )
+
+  useEffect(() => {
+    if (attachmentViewer?.viewerMode !== 'csv' || !attachmentViewer.publicUrl) {
+      setAttachmentCsvText(null)
+      setAttachmentCsvLoading(false)
+      setAttachmentCsvError(null)
+      return
+    }
+
+    let cancelled = false
+    setAttachmentCsvText(null)
+    setAttachmentCsvLoading(true)
+    setAttachmentCsvError(null)
+
+    void fetch(attachmentViewer.publicUrl)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`CSV preview failed (${response.status})`)
+        }
+        return response.text()
+      })
+      .then((text) => {
+        if (cancelled) return
+        setAttachmentCsvText(text)
+        setAttachmentCsvLoading(false)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setAttachmentCsvText(null)
+        setAttachmentCsvLoading(false)
+        setAttachmentCsvError(error instanceof Error ? error.message : 'CSV preview failed.')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [attachmentViewer?.publicUrl, attachmentViewer?.viewerMode])
 
   const startEditingMessage = useCallback((message: ChatMessage) => {
     setEditingMessageId(message.id)
@@ -3259,7 +3109,53 @@ export function GroupChatWidget() {
           </div>
         </DialogContent>
       </Dialog>
-      <DocumentViewerModal attachment={attachmentViewer} onClose={closeAttachmentViewer} />
+      <DocumentViewerModal
+        open={Boolean(attachmentViewer)}
+        title={attachmentViewer?.fileName ?? 'Attachment viewer'}
+        subtitle={attachmentViewer?.displaySize ?? null}
+        kindLabel={attachmentViewer ? getDocumentTypeLabel(attachmentViewer.fileName) : null}
+        viewerMode={attachmentViewer?.viewerMode ?? null}
+        resolvedUrl={attachmentViewer?.publicUrl ?? null}
+        csvRows={attachmentCsvRows}
+        csvLoading={attachmentCsvLoading}
+        csvError={attachmentCsvError}
+        onClose={closeAttachmentViewer}
+        contentStyle={{ zIndex: 90 }}
+        headerActions={
+          attachmentViewer?.publicUrl ? (
+            <>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  const link = document.createElement('a')
+                  link.href = attachmentViewer.publicUrl ?? ''
+                  link.download = attachmentViewer.fileName
+                  link.rel = 'noopener noreferrer'
+                  document.body.appendChild(link)
+                  link.click()
+                  link.remove()
+                }}
+              >
+                <Download className='mr-2 h-4 w-4' aria-hidden='true' />
+                Download
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={() => {
+                  window.open(attachmentViewer.publicUrl ?? '', '_blank', 'noopener,noreferrer')
+                }}
+              >
+                <ExternalLink className='mr-2 h-4 w-4' aria-hidden='true' />
+                Open file
+              </Button>
+            </>
+          ) : null
+        }
+      />
     </>
   )
 }
