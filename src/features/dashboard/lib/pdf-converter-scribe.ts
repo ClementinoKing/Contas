@@ -1,6 +1,8 @@
 import { resolveR2ObjectUrl } from '@/lib/r2'
+import { supabase } from '@/lib/supabase'
 
-export type PdfConversionTarget = 'excel' | 'word' | 'powerpoint'
+export type PdfConversionTarget = 'excel' | 'csv' | 'word' | 'powerpoint'
+export type PdfConversionEngine = 'server' | 'local-text' | 'local-ocr' | 'legacy'
 
 export type DrivePdfDocument = {
   id: string
@@ -24,6 +26,7 @@ type DocxParagraph = import('docx').Paragraph
 export type PdfConversionResult = {
   fileName: string
   blob: Blob
+  engine: PdfConversionEngine
 }
 
 export type PdfConversionProgress = {
@@ -42,7 +45,7 @@ function getSourceName(source: SelectedPdfSource) {
 
 function getOutputFileName(source: SelectedPdfSource, target: PdfConversionTarget) {
   const baseName = stripPdfExtension(getSourceName(source)).trim() || 'converted-document'
-  const extension = target === 'excel' ? 'xlsx' : target === 'word' ? 'docx' : 'pptx'
+  const extension = target === 'excel' ? 'xlsx' : target === 'csv' ? 'csv' : target === 'word' ? 'docx' : 'pptx'
   return `${baseName}.${extension}`
 }
 
@@ -51,22 +54,8 @@ function normalizeText(value: string) {
 }
 
 const PDFJS_STANDARD_FONT_DATA_URL = `${import.meta.env.BASE_URL}pdfjs/standard_fonts/`
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, '') ?? ''
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? ''
-const PDF_CONVERT_FUNCTION = 'pdf-convert'
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = ''
-  const chunkSize = 0x8000
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize)
-    binary += String.fromCharCode(...chunk)
-  }
-
-  return btoa(binary)
-}
-
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 function groupPageText(textItems: Array<{ str?: string; transform?: number[] }>) {
   const positionedItems = textItems
     .map((item) => ({
@@ -117,68 +106,7 @@ async function loadPdfFile(source: SelectedPdfSource) {
   return new File([bytes], getSourceName(source), { type: 'application/pdf' })
 }
 
-async function convertWithServerEngine(
-  source: SelectedPdfSource,
-  target: PdfConversionTarget,
-  onProgress?: (progress: PdfConversionProgress) => void,
-) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error('Supabase configuration is missing.')
-  }
-
-  const fileName = getOutputFileName(source, target)
-  const bytes = await loadPdfBytes(source)
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), 60_000)
-
-  onProgress?.({
-    percent: 12,
-    label: 'Uploading PDF',
-    detail: 'Sending the document to the conversion engine.',
-  })
-
-  try {
-    const response = await fetch(`${SUPABASE_URL}/functions/v1/${PDF_CONVERT_FUNCTION}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({
-        fileName: getSourceName(source),
-        pdfBase64: bytesToBase64(bytes),
-        target,
-      }),
-      signal: controller.signal,
-    })
-
-    if (!response.ok) {
-      const message = await response.text().catch(() => '')
-      throw new Error(message || `The conversion service returned ${response.status}.`)
-    }
-
-    const blob = await response.blob()
-    if (!(blob instanceof Blob) || blob.size === 0) {
-      throw new Error('The conversion service did not return a file.')
-    }
-
-    onProgress?.({
-      percent: 100,
-      label: 'Conversion complete',
-      detail: `Prepared ${fileName}.`,
-    })
-
-    return {
-      fileName,
-      blob,
-    }
-  } finally {
-    window.clearTimeout(timeout)
-  }
-}
-
-async function extractTextPdfPages(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function extractTextPdfPages(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const data = await loadPdfBytes(source)
   const { getDocument } = await import('pdfjs-dist/webpack.mjs')
   const loadingTask = getDocument({
@@ -218,40 +146,6 @@ async function extractTextPdfPages(source: SelectedPdfSource, onProgress?: (prog
   }
 }
 
-async function detectTextNativePdf(source: SelectedPdfSource) {
-  const data = await loadPdfBytes(source)
-  const { getDocument } = await import('pdfjs-dist/webpack.mjs')
-  const loadingTask = getDocument({
-    data,
-    disableWorker: true,
-    standardFontDataUrl: PDFJS_STANDARD_FONT_DATA_URL,
-  } as any)
-
-  try {
-    const pdfDocument = await loadingTask.promise
-    const pagesToSample = Math.min(2, pdfDocument.numPages)
-
-    for (let pageNumber = 1; pageNumber <= pagesToSample; pageNumber++) {
-      const page = await pdfDocument.getPage(pageNumber)
-      const textContent = await page.getTextContent()
-      const textItems = (textContent.items as Array<{ str?: string }>).filter((item) => normalizeText(String(item.str ?? '')).length > 0)
-
-      if (textItems.length >= 8) {
-        return true
-      }
-
-      const textLength = textItems.map((item) => normalizeText(String(item.str ?? ''))).join(' ').length
-      if (textLength >= 80) {
-        return true
-      }
-    }
-
-    return false
-  } finally {
-    loadingTask.destroy()
-  }
-}
-
 type ScribeProgressMessage = {
   n?: number
   type?: string
@@ -268,6 +162,68 @@ async function getScribe() {
     scribePromise = import('scribe.js-ocr').then((module) => module.default)
   }
   return await scribePromise
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = ''
+  const chunkSize = 0x8000
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize)
+    binary += String.fromCharCode(...chunk)
+  }
+
+  return btoa(binary)
+}
+
+async function getSupabaseAccessToken() {
+  const { data } = await supabase.auth.getSession()
+  return data.session?.access_token ?? SUPABASE_ANON_KEY ?? ''
+}
+
+async function convertWithServerEngine(
+  source: SelectedPdfSource,
+  target: PdfConversionTarget,
+  onProgress?: (progress: PdfConversionProgress) => void,
+) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Supabase environment variables are missing.')
+  }
+
+  onProgress?.({ percent: 5, label: 'Loading PDF' })
+  const bytes = await loadPdfBytes(source)
+  onProgress?.({ percent: 15, label: 'Uploading PDF' })
+
+  const token = await getSupabaseAccessToken()
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/pdf-convert`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: SUPABASE_ANON_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      fileName: getSourceName(source),
+      pdfBase64: bytesToBase64(bytes),
+      target,
+    }),
+  })
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => '')
+    throw new Error(message || `Server conversion failed with status ${response.status}.`)
+  }
+
+  onProgress?.({ percent: 95, label: 'Downloading result' })
+  const blob = await response.blob()
+  const contentDisposition = response.headers.get('content-disposition') ?? ''
+  const fileNameMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i)
+
+  return {
+    fileName: fileNameMatch?.[1] ?? getOutputFileName(source, target),
+    blob,
+    engine: 'server' as const,
+  }
 }
 
 function createProgressReporter(
@@ -379,7 +335,7 @@ async function extractWithScribe(source: SelectedPdfSource, onProgress?: (progre
   }
 }
 
-async function buildWordBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function buildWordBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const scribe = await getScribe()
   const pdfFile = await loadPdfFile(source)
   const previousProgressHandler = scribe.opt.progressHandler
@@ -400,7 +356,7 @@ async function buildWordBlob(source: SelectedPdfSource, onProgress?: (progress: 
   }
 }
 
-async function buildExcelBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function buildExcelBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const scribe = await getScribe()
   const pdfFile = await loadPdfFile(source)
   const previousProgressHandler = scribe.opt.progressHandler
@@ -421,7 +377,7 @@ async function buildExcelBlob(source: SelectedPdfSource, onProgress?: (progress:
   }
 }
 
-async function buildPowerPointBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function buildPowerPointBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const PptxGenJSModule = await import('pptxgenjs')
   const PptxGenJS = PptxGenJSModule.default
   const extracted = await extractWithScribe(source, onProgress)
@@ -476,7 +432,7 @@ async function buildPowerPointBlob(source: SelectedPdfSource, onProgress?: (prog
   return result
 }
 
-async function buildTextWordBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function buildTextWordBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const { AlignmentType, Document, HeadingLevel, Paragraph, Packer, TextRun } = await import('docx')
   const extracted = await extractTextPdfPages(source, onProgress)
   onProgress?.({ percent: 92, label: 'Building Word file' })
@@ -525,7 +481,7 @@ async function buildTextWordBlob(source: SelectedPdfSource, onProgress?: (progre
   return result
 }
 
-async function buildTextExcelBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function buildTextExcelBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const XLSX = await import('xlsx')
   const extracted = await extractTextPdfPages(source, onProgress)
   onProgress?.({ percent: 92, label: 'Building Excel file' })
@@ -561,7 +517,7 @@ async function buildTextExcelBlob(source: SelectedPdfSource, onProgress?: (progr
   return result
 }
 
-async function buildTextPowerPointBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
+export async function buildTextPowerPointBlob(source: SelectedPdfSource, onProgress?: (progress: PdfConversionProgress) => void) {
   const PptxGenJSModule = await import('pptxgenjs')
   const PptxGenJS = PptxGenJSModule.default
   const extracted = await extractTextPdfPages(source, onProgress)
@@ -616,7 +572,7 @@ async function buildTextPowerPointBlob(source: SelectedPdfSource, onProgress?: (
   return result
 }
 
-async function convertWithLegacyEngine(
+export async function convertWithLegacyEngine(
   source: SelectedPdfSource,
   target: PdfConversionTarget,
   onProgress?: (progress: PdfConversionProgress) => void,
@@ -632,32 +588,25 @@ export async function convertPdfSource(
 ): Promise<PdfConversionResult> {
   onProgress?.({ percent: 0, label: 'Starting conversion' })
 
-  try {
-    return await convertWithServerEngine(source, target, onProgress)
-  } catch (error) {
-    onProgress?.({
-      percent: 35,
-      label: 'Primary engine unavailable',
-      detail: 'Falling back to the legacy PDF converter.',
-    })
-    const textNative = await detectTextNativePdf(source)
+  if (target === 'excel' || target === 'csv') {
     try {
-      if (textNative) {
-        onProgress?.({
-          percent: 42,
-          label: 'Text PDF detected',
-          detail: 'Using the local text conversion pipeline.',
-        })
-        if (target === 'excel') return await buildTextExcelBlob(source, onProgress)
-        if (target === 'word') return await buildTextWordBlob(source, onProgress)
-        return await buildTextPowerPointBlob(source, onProgress)
-      }
+      const result = await convertWithLegacyEngine(source, target, onProgress)
+      onProgress?.({ percent: 100, label: 'Conversion complete' })
+      return result
+    } catch (localError) {
+      console.warn('[pdf-converter-scribe] local spreadsheet conversion failed, trying server engine', localError)
 
-      if (target === 'excel') return await buildExcelBlob(source, onProgress)
-      if (target === 'word') return await buildWordBlob(source, onProgress)
-      return await buildPowerPointBlob(source, onProgress)
-    } catch {
-      return await convertWithLegacyEngine(source, target, onProgress)
+      try {
+        const result = await convertWithServerEngine(source, target, onProgress)
+        onProgress?.({ percent: 100, label: 'Conversion complete' })
+        return result
+      } catch (serverError) {
+        throw serverError
+      }
     }
   }
+
+  const result = await convertWithLegacyEngine(source, target, onProgress)
+  onProgress?.({ percent: 100, label: 'Conversion complete' })
+  return result
 }

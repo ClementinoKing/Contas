@@ -124,7 +124,7 @@ if (!globalThis.DOMMatrix) {
   ;(globalThis as any).DOMMatrix = SimpleDOMMatrix
 }
 
-type PdfConversionTarget = 'excel' | 'word' | 'powerpoint'
+type PdfConversionTarget = 'excel' | 'csv' | 'word' | 'powerpoint'
 
 type ConvertRequest = {
   fileName: string
@@ -161,6 +161,7 @@ type PdfLayoutPage = {
   items: PdfLayoutItem[]
   lines: PdfLayoutLine[]
   images: PdfLayoutImage[]
+  rows: string[][]
 }
 
 type PdfLayoutImage = {
@@ -519,8 +520,135 @@ function groupPageLayout(textItems: Array<{ str?: string; transform?: number[]; 
     .filter((line) => line.text.length > 0)
 }
 
+function buildCellsFromLayoutLine(line: PdfLayoutLine) {
+  const cells: string[] = []
+  const cellEnds: number[] = []
+  const threshold = Math.max(18, line.fontSize * 1.5)
+
+  for (const item of line.items) {
+    const cellText = item.text.replace(/\s+/g, ' ').trim()
+    if (!cellText) continue
+
+    const cellEnd = item.x + Math.max(item.width, 1)
+    const lastIndex = cells.length - 1
+
+    if (lastIndex < 0) {
+      cells.push(cellText)
+      cellEnds.push(cellEnd)
+      continue
+    }
+
+    const gap = item.x - cellEnds[lastIndex]
+    if (gap > threshold) {
+      cells.push(cellText)
+      cellEnds.push(cellEnd)
+      continue
+    }
+
+    cells[lastIndex] = `${cells[lastIndex]} ${cellText}`.replace(/\s+/g, ' ').trim()
+    cellEnds[lastIndex] = Math.max(cellEnds[lastIndex], cellEnd)
+  }
+
+  return cells.filter(Boolean)
+}
+
+function buildSpreadsheetRowsFromPages(pages: PdfLayoutPage[]) {
+  const maxContentColumns = 6
+  const keyValueLabelLimit = 48
+
+  function normalizeCells(cells: string[]) {
+    return cells.map((cell) => normalizeText(cell)).filter(Boolean)
+  }
+
+  function pageLooksTabular(page: PdfLayoutPage) {
+    const rows = page.rows.map(normalizeCells).filter((row) => row.length > 0)
+
+    if (rows.length === 0) return false
+
+    const wideRows = rows.filter((row) => row.length >= 3).length
+    const dataRows = rows.filter((row) => {
+      const text = row.join(' ')
+      return /(?:\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b)/.test(text)
+    }).length
+
+    return wideRows >= 2 || dataRows >= 3 || (wideRows >= 1 && dataRows >= 2)
+  }
+
+  function compactFormRow(cells: string[]) {
+    const normalized = normalizeCells(cells)
+    if (normalized.length <= 1) return normalized
+
+    const [first, ...rest] = normalized
+    const remainder = rest.join(' ').trim()
+
+    if (!remainder) return [first]
+
+    if (first.length <= keyValueLabelLimit) {
+      return [first.replace(/:\s*$/, ''), remainder]
+    }
+
+    return [normalized.join(' ')]
+  }
+
+  function compactTableRow(cells: string[]) {
+    const normalized = normalizeCells(cells)
+
+    if (normalized.length <= maxContentColumns) return normalized
+
+    return [
+      ...normalized.slice(0, maxContentColumns - 1),
+      normalized.slice(maxContentColumns - 1).join(' '),
+    ]
+  }
+
+  const rows: Array<{ pageNumber: number; rowNumber: number; cells: string[] }> = []
+
+  pages.forEach((page) => {
+    const tableLike = pageLooksTabular(page)
+    page.rows.forEach((cells, rowIndex) => {
+      const normalized = tableLike ? compactTableRow(cells) : compactFormRow(cells)
+      if (normalized.length === 0) return
+
+      rows.push({
+        pageNumber: page.pageNumber,
+        rowNumber: rowIndex + 1,
+        cells: normalized,
+      })
+    })
+  })
+
+  return rows
+}
+
+function selectSpreadsheetRows(pages: PdfLayoutPage[]) {
+  const rows = buildSpreadsheetRowsFromPages(pages)
+  if (rows.length === 0) return rows
+
+  const frequency = new Map<number, number>()
+  rows.forEach((row) => {
+    const count = row.cells.length
+    frequency.set(count, (frequency.get(count) ?? 0) + 1)
+  })
+
+  const dominantEntry = Array.from(frequency.entries()).sort((left, right) => {
+    if (right[1] !== left[1]) return right[1] - left[1]
+    return right[0] - left[0]
+  })[0]
+
+  const dominantColumnCount = dominantEntry?.[0] ?? 1
+  const dominantShare = (dominantEntry?.[1] ?? 0) / rows.length
+  const tableLike = dominantColumnCount >= 4 && dominantShare >= 0.25
+
+  if (!tableLike) {
+    return rows
+  }
+
+  const filteredRows = rows.filter((row) => row.cells.length >= Math.max(2, dominantColumnCount - 1))
+  return filteredRows.length > 0 ? filteredRows : rows
+}
+
 function buildOutputFileName(fileName: string, target: PdfConversionTarget) {
-  const extension = target === 'excel' ? 'xlsx' : target === 'word' ? 'docx' : 'pptx'
+  const extension = target === 'excel' ? 'xlsx' : target === 'csv' ? 'csv' : target === 'word' ? 'docx' : 'pptx'
   const baseName = stripPdfExtension(fileName).trim() || 'converted-document'
   return `${baseName}.${extension}`
 }
@@ -544,6 +672,7 @@ async function extractPdfLayout(pdfBytes: Uint8Array) {
       const operatorList = await page.getOperatorList()
       const rawItems = normalizeLayoutItems(textContent.items as Array<{ str?: string; transform?: number[]; width?: number }>)
       const lines = groupPageLayout(textContent.items as Array<{ str?: string; transform?: number[]; width?: number }>)
+      const rows = lines.map((line) => buildCellsFromLayoutLine(line))
       const images = await extractPageImages(page, operatorList as { fnArray: number[]; argsArray: any[] }, viewport.width, viewport.height)
 
       pages.push({
@@ -553,6 +682,7 @@ async function extractPdfLayout(pdfBytes: Uint8Array) {
         items: rawItems,
         lines,
         images,
+        rows: rows.length > 0 ? rows : [['No extractable text found on this page.']],
       })
     }
 
@@ -964,140 +1094,27 @@ async function buildWordFile(pages: PdfLayoutPage[]) {
 async function buildExcelFile(pages: PdfLayoutPage[]) {
   const XLSX = await import('npm:xlsx')
   const workbook = XLSX.utils.book_new()
-  const worksheet = XLSX.utils.aoa_to_sheet([])
-
-  const titleStyle = {
-    font: { name: 'Arial', bold: true, sz: 18 },
-    alignment: { horizontal: 'center', vertical: 'center' },
-  }
-
-  const sectionStyle = {
-    font: { name: 'Arial', bold: true, sz: 13 },
-    alignment: { horizontal: 'center', vertical: 'center' },
-  }
-
-  const labelStyle = {
-    font: { name: 'Arial', bold: true, sz: 11 },
-    alignment: { horizontal: 'right', vertical: 'center', wrapText: true },
-  }
-
-  const valueStyle = {
-    font: { name: 'Arial', sz: 11 },
-    alignment: { horizontal: 'left', vertical: 'center', wrapText: true },
-  }
-
-  const centerStyle = {
-    font: { name: 'Arial', sz: 11 },
-    alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-  }
-
-  const bodyStyle = {
-    font: { name: 'Arial', sz: 11 },
-    alignment: { horizontal: 'left', vertical: 'top', wrapText: true },
-  }
-
-  const setCell = (cellRef: string, value: string, style?: Record<string, unknown>) => {
-    worksheet[cellRef] = {
-      t: 's',
-      v: value,
-      s: style,
-    }
-  }
-
-  const merges: Array<{ s: { r: number; c: number }; e: { r: number; c: number } }> = []
-  const merge = (start: string, end: string) => {
-    const startCell = XLSX.utils.decode_cell(start)
-    const endCell = XLSX.utils.decode_cell(end)
-    merges.push({ s: startCell, e: endCell })
-  }
-
-  worksheet['!cols'] = [{ wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }]
-  worksheet['!rows'] = [
-    { hpt: 26 },
-    { hpt: 24 },
-    { hpt: 24 },
-    { hpt: 18 },
-    { hpt: 22 },
-    { hpt: 18 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 18 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 36 },
-    { hpt: 36 },
-    { hpt: 18 },
-    { hpt: 24 },
-    { hpt: 24 },
-    { hpt: 24 },
-    { hpt: 24 },
-    { hpt: 24 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
-    { hpt: 22 },
+  const spreadsheetRows = selectSpreadsheetRows(pages)
+  const maxColumns = Math.max(1, spreadsheetRows.reduce((max, row) => Math.max(max, row.cells.length), 0))
+  const worksheetRows: Array<Array<string | number>> = [
+    ['Page', 'Row', ...Array.from({ length: maxColumns }, (_, index) => `Content ${index + 1}`)],
   ]
 
-  merge('A1', 'H1')
-  merge('A2', 'H2')
-  merge('A3', 'H3')
-  merge('A7', 'H7')
-  merge('A15', 'H15')
-  merge('A20', 'H22')
-  merge('A30', 'H30')
+  spreadsheetRows.forEach((row) => {
+    worksheetRows.push([
+      row.pageNumber,
+      row.rowNumber,
+      ...row.cells,
+      ...Array.from({ length: maxColumns - row.cells.length }, () => ''),
+    ])
+  })
 
-  setCell('A1', 'MALAWI REVENUE AUTHORITY', titleStyle)
-  setCell('A2', 'DOMESTIC TAXES DIVISION', titleStyle)
-  setCell('A3', 'TAX CLEARANCE CERTIFICATE', titleStyle)
-  setCell('H4', 'Scan to validate certificate', { ...centerStyle, alignment: { horizontal: 'right', vertical: 'center', wrapText: true } })
+  if (worksheetRows.length === 1) {
+    worksheetRows.push([1, 1, 'No extractable text found on this PDF.'])
+  }
 
-  setCell('B5', 'Certificate No:', labelStyle)
-  setCell('D5', 'MRA/LSTO/TCC/036668', centerStyle)
-
-  setCell('A7', 'Taxpayer Details', sectionStyle)
-  setCell('B8', 'TIN', labelStyle)
-  setCell('D8', '70477312', valueStyle)
-  setCell('B9', 'Taxpayer Name', labelStyle)
-  setCell('D9', 'MR HOPE NYASULU', valueStyle)
-  setCell('B10', 'Trading Name', labelStyle)
-  setCell('D10', 'BLUE SACK INVESTMENT & ENTERPRISES', valueStyle)
-  setCell('B11', 'Contact Number', labelStyle)
-  setCell('D11', '0998192564,265884979801', valueStyle)
-  setCell('B12', 'Email', labelStyle)
-  setCell('D12', 'hpnyasulu@gmail.com', valueStyle)
-  setCell('B13', 'Postal Address', labelStyle)
-  setCell('D13', 'LILONGWE, Lilongwe, Central Region, Malawi', valueStyle)
-
-  setCell('A15', 'Transaction Details', sectionStyle)
-  setCell('B16', 'Type of Transaction', labelStyle)
-  setCell('D16', 'Supply of Goods or Services', valueStyle)
-  setCell('B17', 'Description Of', labelStyle)
-  setCell('B18', 'Transaction', labelStyle)
-  setCell('D17', 'GENERAL TAX CLEARANCE CERTIFICATE', valueStyle)
-
-  setCell(
-    'A20',
-    'This is to certify that the above mentioned Taxpayer has been cleared by the Malawi Revenue Authority on the discharge of Domestic Taxes obligations for the period 12/2025 in accordance with provisions under Section 85 A of the Taxation Act',
-    bodyStyle,
-  )
-  setCell('A23', 'This Certificate is valid up to', labelStyle)
-  setCell('D23', '31-03-2026', valueStyle)
-  setCell('A25', 'Date of Issue', labelStyle)
-  setCell('D25', '12-08-2025', valueStyle)
-  setCell('F27', '______________________________', centerStyle)
-  setCell('F28', 'COMMISSIONER GENERAL', { ...titleStyle, font: { name: 'Arial', bold: true, sz: 14 } })
-  setCell('A30', 'Validation Code: 95252248900572    Learn how to validate MRA documents, visit:', bodyStyle)
-
-  worksheet['!ref'] = 'A1:H30'
-  worksheet['!merges'] = merges
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Certificate')
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetRows)
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Extracted Rows')
 
   const arrayBuffer = XLSX.write(workbook, {
     bookType: 'xlsx',
@@ -1108,6 +1125,35 @@ async function buildExcelFile(pages: PdfLayoutPage[]) {
 
   return new Blob([arrayBuffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+}
+
+async function buildCsvFile(pages: PdfLayoutPage[]) {
+  const XLSX = await import('npm:xlsx')
+  const spreadsheetRows = selectSpreadsheetRows(pages)
+  const maxColumns = Math.max(1, spreadsheetRows.reduce((max, row) => Math.max(max, row.cells.length), 0))
+  const worksheetRows: Array<Array<string | number>> = [
+    ['Page', 'Row', ...Array.from({ length: maxColumns }, (_, index) => `Content ${index + 1}`)],
+  ]
+
+  spreadsheetRows.forEach((row) => {
+    worksheetRows.push([
+      row.pageNumber,
+      row.rowNumber,
+      ...row.cells,
+      ...Array.from({ length: maxColumns - row.cells.length }, () => ''),
+    ])
+  })
+
+  if (worksheetRows.length === 1) {
+    worksheetRows.push([1, 1, 'No extractable text found on this PDF.'])
+  }
+
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetRows)
+  const csvText = XLSX.utils.sheet_to_csv(worksheet)
+
+  return new Blob([`\ufeff${csvText}`], {
+    type: 'text/csv;charset=utf-8',
   })
 }
 
@@ -1204,6 +1250,17 @@ Deno.serve(async (req) => {
         headers: {
           ...corsHeaders,
           'Content-Type': 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="${buildOutputFileName(payload.fileName, payload.target)}"`,
+        },
+      })
+    }
+
+    if (payload.target === 'csv') {
+      const blob = await buildCsvFile(extracted.pages)
+      return new Response(blob, {
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/csv; charset=utf-8',
           'Content-Disposition': `attachment; filename="${buildOutputFileName(payload.fileName, payload.target)}"`,
         },
       })

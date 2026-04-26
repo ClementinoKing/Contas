@@ -9,7 +9,6 @@ import {
   FileSpreadsheet,
   FileText,
   Loader2,
-  Presentation,
   ScanSearch,
   Sparkles,
   UploadCloud,
@@ -35,6 +34,7 @@ import {
   convertPdfSource,
   type DrivePdfDocument,
   type PdfConversionProgress,
+  type PdfConversionResult,
   type PdfConversionTarget,
   type SelectedPdfSource,
 } from '@/features/dashboard/lib/pdf-converter-scribe'
@@ -120,7 +120,14 @@ const CONVERSION_TARGETS: Array<{
     value: 'excel',
     label: 'PDF to Excel',
     shortLabel: 'XLSX',
-    description: 'Best for tables, statements, and ledgers.',
+    description: 'Best for reviewing bank statements and transaction tables.',
+    icon: FileSpreadsheet,
+  },
+  {
+    value: 'csv',
+    label: 'PDF to CSV',
+    shortLabel: 'CSV',
+    description: 'Best for accounting imports and clean row exports.',
     icon: FileSpreadsheet,
   },
   {
@@ -129,13 +136,6 @@ const CONVERSION_TARGETS: Array<{
     shortLabel: 'DOCX',
     description: 'Best for editable text-heavy documents.',
     icon: FileText,
-  },
-  {
-    value: 'powerpoint',
-    label: 'PDF to PowerPoint',
-    shortLabel: 'PPTX',
-    description: 'Best for slide-based reports and decks.',
-    icon: Presentation,
   },
 ]
 
@@ -156,6 +156,28 @@ function formatBytes(bytes: number) {
 
 function isPdfFileName(name: string) {
   return name.toLowerCase().endsWith('.pdf')
+}
+
+function formatFileDate(value?: string | null) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'Africa/Blantyre',
+  }).format(date)
+}
+
+function getEngineLabel(engine?: PdfConversionResult['engine']) {
+  if (engine === 'server') return 'Server conversion'
+  if (engine === 'local-ocr') return 'Local OCR fallback'
+  if (engine === 'local-text') return 'Local text extraction'
+  if (engine === 'legacy') return 'Legacy local engine'
+  return 'Pending'
 }
 
 function ComingSoonBadge({ className }: { className?: string }) {
@@ -244,7 +266,10 @@ function TargetCard({
         >
           <Icon className='h-4 w-4' aria-hidden='true' />
         </span>
-        <Badge variant='outline' className='border-border/70 bg-background/70 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground'>
+        <Badge
+          variant='outline'
+          className='border-border/70 bg-background/70 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground'
+        >
           {target.shortLabel}
         </Badge>
       </div>
@@ -260,18 +285,6 @@ function TargetCard({
         </span>
       </div>
     </button>
-  )
-}
-
-function EmptyWorkspaceCard() {
-  return (
-    <div className='flex min-h-[220px] flex-col items-center justify-center rounded-3xl border border-dashed border-border/80 bg-muted/20 px-6 py-8 text-center'>
-      <div className='inline-flex h-14 w-14 items-center justify-center rounded-2xl border border-border/70 bg-background text-muted-foreground shadow-sm'>
-        <UploadCloud className='h-6 w-6' aria-hidden='true' />
-      </div>
-      <h3 className='mt-4 text-base font-semibold text-foreground'>Drop a PDF to stage a conversion</h3>
-      <p className='mt-2 max-w-md text-sm leading-6 text-muted-foreground'>Pick a PDF and the workspace will generate an office export immediately.</p>
-    </div>
   )
 }
 
@@ -320,6 +333,7 @@ export function ToolsPage() {
   const selectedSourceName = selectedSource?.kind === 'drive' ? selectedSource.document.name : selectedSource?.file.name ?? null
   const selectedSourceSize = selectedSource?.kind === 'drive' ? selectedSource.document.size : selectedSource?.file.size ?? null
   const selectedSourceLabel = selectedSource?.kind === 'drive' ? 'My Drive' : selectedSource ? 'Local storage' : null
+  const selectedSourceTimestamp = selectedSource?.kind === 'drive' ? formatFileDate(selectedSource.document.uploadedAt) : null
   const filteredDrivePdfDocuments = useMemo(() => {
     const query = sourceSearch.trim().toLowerCase()
     if (!query) return drivePdfDocuments
@@ -470,7 +484,7 @@ export function ToolsPage() {
         open: true,
         status: 'success',
         title: 'Conversion complete',
-        detail: `${result.fileName} is ready in your downloads.`,
+        detail: `${result.fileName} is ready in your downloads. ${getEngineLabel(result.engine)} handled this file.`,
         progress: 100,
       })
       conversionToastTimerRef.current = window.setTimeout(() => {
@@ -585,122 +599,127 @@ export function ToolsPage() {
         <main className='flex h-full min-w-0 flex-col'>
           <Card className='flex h-full min-h-0 flex-col overflow-hidden border-border/70 bg-card/90 shadow-[var(--elevation-sm)]'>
             <CardHeader className='border-b border-border/70 bg-muted/20'>
-              <CardTitle className='text-2xl'>Convert PDF into editable office files</CardTitle>
+              <CardTitle className='text-2xl'>Spreadsheet-first PDF conversion</CardTitle>
+              <p className='max-w-2xl text-sm leading-6 text-muted-foreground'>
+                Build clean Excel or CSV exports for statements and keep Word or PowerPoint available for general document work.
+              </p>
             </CardHeader>
 
             <CardContent className='flex-1 overflow-y-auto p-5 lg:p-6'>
               <section className='space-y-5'>
-                <div
-                  onDragEnter={(event) => {
-                    event.preventDefault()
-                    setDragging(true)
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault()
-                    setDragging(true)
-                  }}
-                  onDragLeave={(event) => {
-                    event.preventDefault()
-                    setDragging(false)
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault()
-                    setDragging(false)
-                    handleFileSelection(event.dataTransfer.files)
-                  }}
-                  className={cn(
-                    'rounded-3xl border border-dashed px-6 py-8 transition-colors',
-                    dragging ? 'border-primary/50 bg-primary/5' : 'border-border/80 bg-background/40',
-                  )}
-                >
-                  <div className='flex flex-col items-center justify-center gap-5 text-center md:min-h-[260px]'>
-                    <div className='inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-border/70 bg-background text-primary shadow-sm'>
-                      <UploadCloud className='h-5 w-5' aria-hidden='true' />
-                    </div>
-                    <div className='space-y-1'>
-                      <h3 className='text-lg font-semibold text-foreground'>Upload a PDF</h3>
-                    </div>
-                    <div className='flex flex-wrap items-center justify-center gap-3'>
-                      <input
-                        ref={fileInputRef}
-                        type='file'
-                        accept='.pdf,application/pdf'
-                        className='hidden'
-                        onChange={(event) => handleFileSelection(event.target.files ?? [])}
-                      />
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={() => {
-                          setSourcePickerView('chooser')
-                          setSourceSearch('')
-                          setSourcePickerOpen(true)
-                        }}
-                      >
-                        <UploadCloud className='h-4 w-4' />
-                        Browse files
-                      </Button>
-                      <Button type='button' disabled={!selectedSource || isConverting} onClick={handleConvert}>
-                        {isConverting ? <Loader2 className='h-4 w-4 animate-spin' /> : <ArrowRightLeft className='h-4 w-4' />}
-                        {isConverting ? 'Converting' : 'Convert'}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {selectedSource ? (
-                    <div className='mt-6 rounded-2xl border border-border/70 bg-card/90 p-4 shadow-sm'>
-                      <div className='flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between'>
-                        <div className='min-w-0'>
-                          <p className='text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground'>Selected file</p>
-                          <p className='mt-1 truncate text-sm font-semibold text-foreground'>{selectedSourceName}</p>
-                          <p className='mt-1 text-xs text-muted-foreground'>
-                            {selectedSourceSize !== null ? `${formatBytes(selectedSourceSize)} · PDF ready for conversion` : 'PDF ready for conversion'}
-                          </p>
-                        </div>
-                        <div className='flex flex-wrap items-center gap-2'>
-                          <Badge variant='outline' className='border-emerald-500/20 bg-emerald-500/10 text-emerald-700 shadow-none dark:text-emerald-300'>
-                            <CheckCircle2 className='mr-1 h-3.5 w-3.5' />
-                            Ready
-                          </Badge>
-                          <Badge variant='outline' className='border-border/70 bg-background/70 text-muted-foreground shadow-none'>
-                            <Clock3 className='mr-1 h-3.5 w-3.5' />
-                            Conversion pending
-                          </Badge>
-                          {selectedSourceLabel ? (
-                            <Badge variant='outline' className='border-border/70 bg-background/70 text-muted-foreground shadow-none'>
-                              {selectedSourceLabel}
-                            </Badge>
-                          ) : null}
-                        </div>
+                <div className='space-y-4'>
+                  <div
+                    onDragEnter={(event) => {
+                      event.preventDefault()
+                      setDragging(true)
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      setDragging(true)
+                    }}
+                    onDragLeave={(event) => {
+                      event.preventDefault()
+                      setDragging(false)
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      setDragging(false)
+                      handleFileSelection(event.dataTransfer.files)
+                    }}
+                    className={cn(
+                      'rounded-3xl border border-dashed px-6 py-8 transition-colors',
+                      dragging ? 'border-primary/50 bg-primary/5' : 'border-border/80 bg-background/40',
+                    )}
+                  >
+                    <div className='flex flex-col items-center justify-center gap-5 text-center md:min-h-[240px]'>
+                      <div className='inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-border/70 bg-background text-primary shadow-sm'>
+                        <UploadCloud className='h-5 w-5' aria-hidden='true' />
+                      </div>
+                      <div className='space-y-1'>
+                        <h3 className='text-lg font-semibold text-foreground'>Upload a PDF</h3>
+                        <p className='max-w-lg text-sm leading-6 text-muted-foreground'>
+                          Use bank statements, invoices, or reports. Excel and CSV are prioritized for statement-style files.
+                        </p>
+                      </div>
+                      <div className='flex flex-wrap items-center justify-center gap-3'>
+                        <input
+                          ref={fileInputRef}
+                          type='file'
+                          accept='.pdf,application/pdf'
+                          className='hidden'
+                          onChange={(event) => handleFileSelection(event.target.files ?? [])}
+                        />
+                        <Button
+                          type='button'
+                          variant='outline'
+                          onClick={() => {
+                            setSourcePickerView('chooser')
+                            setSourceSearch('')
+                            setSourcePickerOpen(true)
+                          }}
+                        >
+                          <UploadCloud className='h-4 w-4' />
+                          Browse files
+                        </Button>
+                        <Button type='button' disabled={!selectedSource || isConverting} onClick={handleConvert}>
+                          {isConverting ? <Loader2 className='h-4 w-4 animate-spin' /> : <ArrowRightLeft className='h-4 w-4' />}
+                          {isConverting ? 'Converting' : `Convert to ${activeTarget.shortLabel}`}
+                        </Button>
                       </div>
                     </div>
-                  ) : (
-                    <div className='mt-6'>
-                      <EmptyWorkspaceCard />
-                    </div>
-                  )}
-                </div>
 
-                <div className='space-y-3'>
-                  <div className='flex items-center justify-between gap-3'>
-                    <div>
-                      <h3 className='text-sm font-semibold text-foreground'>Conversion targets</h3>
-                      <p className='text-xs text-muted-foreground'>Choose the output format the workspace should prepare for.</p>
-                    </div>
-                    <Badge variant='outline' className='border-border/70 bg-background/70 text-muted-foreground shadow-none'>
-                      {activeTarget.shortLabel} selected
-                    </Badge>
+                    {selectedSource ? (
+                      <div className='mt-6 rounded-2xl border border-border/70 bg-card/90 p-4 shadow-sm'>
+                        <div className='flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between'>
+                          <div className='min-w-0'>
+                            <p className='text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground'>Selected file</p>
+                            <p className='mt-1 truncate text-sm font-semibold text-foreground'>{selectedSourceName}</p>
+                            <p className='mt-1 text-xs text-muted-foreground'>
+                              {selectedSourceSize !== null ? `${formatBytes(selectedSourceSize)} · PDF ready for conversion` : 'PDF ready for conversion'}
+                            </p>
+                            {selectedSourceTimestamp ? <p className='mt-1 text-xs text-muted-foreground'>Uploaded {selectedSourceTimestamp}</p> : null}
+                          </div>
+                          <div className='flex flex-wrap items-center gap-2'>
+                            <Badge variant='outline' className='border-emerald-500/20 bg-emerald-500/10 text-emerald-700 shadow-none dark:text-emerald-300'>
+                              <CheckCircle2 className='mr-1 h-3.5 w-3.5' />
+                              Ready
+                            </Badge>
+                            <Badge variant='outline' className='border-border/70 bg-background/70 text-muted-foreground shadow-none'>
+                              <Clock3 className='mr-1 h-3.5 w-3.5' />
+                              Conversion pending
+                            </Badge>
+                            {selectedSourceLabel ? (
+                              <Badge variant='outline' className='border-border/70 bg-background/70 text-muted-foreground shadow-none'>
+                                {selectedSourceLabel}
+                              </Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
-                  <div className='grid gap-3 md:grid-cols-3'>
-                    {CONVERSION_TARGETS.map((target) => (
-                      <TargetCard
-                        key={target.value}
-                        target={target}
-                        active={selectedTarget === target.value}
-                        onClick={() => setSelectedTarget(target.value)}
-                      />
-                    ))}
+                  <div className='space-y-3'>
+                    <div className='flex items-center justify-between gap-3'>
+                      <div>
+                        <h3 className='text-sm font-semibold text-foreground'>Conversion targets</h3>
+                        <p className='text-xs text-muted-foreground'>Excel and CSV are the primary paths. Word stays available for general documents.</p>
+                      </div>
+                      <Badge variant='outline' className='border-border/70 bg-background/70 text-muted-foreground shadow-none'>
+                        {activeTarget.shortLabel} selected
+                      </Badge>
+                    </div>
+
+                    <div className='grid gap-3 lg:grid-cols-3'>
+                      {CONVERSION_TARGETS.map((target) => (
+                        <TargetCard
+                          key={target.value}
+                          target={target}
+                          active={selectedTarget === target.value}
+                          onClick={() => setSelectedTarget(target.value)}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
               </section>
